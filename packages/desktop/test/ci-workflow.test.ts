@@ -8,15 +8,18 @@ const yaml = createRequire(import.meta.url)('js-yaml') as {
   load(source: string): unknown
 }
 interface Step {
+  id?: string
   uses?: string
   run?: string
   with?: Record<string, unknown>
+  env?: Record<string, string>
 }
 interface Job {
   if?: string
   needs?: string | string[]
   uses?: string
   secrets?: string
+  outputs?: Record<string, string>
   'runs-on'?: string | string[]
   'timeout-minutes'?: number
   steps?: Step[]
@@ -47,8 +50,30 @@ describe('desktop workflows', () => {
   it('runs typecheck, all unit tests, and a Linux build on pull requests', () => {
     expect(ci.on).toMatchObject({ pull_request: null })
     expect(ci.permissions).toEqual({ contents: 'read' })
-    expect(Object.keys(ci.jobs)).toEqual(['test'])
+    expect(Object.keys(ci.jobs)).toEqual(['frontend-access', 'test'])
+    const access = ci.jobs['frontend-access']!
+    expect(access['timeout-minutes']).toBe(2)
+    expect(access['runs-on']).toBe(
+      '${{ fromJSON(vars.DINKSTER_PR_RUNNER || \'["self-hosted", "linux", "x64"]\') }}',
+    )
+    expect(access.outputs).toEqual({
+      available: '${{ steps.availability.outputs.available }}',
+    })
+    expect(access.steps).toEqual([
+      {
+        id: 'availability',
+        env: {
+          FRONTEND_READ_TOKEN:
+            '${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}',
+        },
+        run: 'if [ -n "$FRONTEND_READ_TOKEN" ]; then\n  echo "available=true" >> "$GITHUB_OUTPUT"\nelse\n  echo "available=false" >> "$GITHUB_OUTPUT"\nfi\n',
+      },
+    ])
     const job = ci.jobs['test']!
+    expect(job.needs).toBe('frontend-access')
+    expect(job.if).toBe(
+      "needs.frontend-access.outputs.available == 'true'",
+    )
     expect(job['timeout-minutes']).toBe(10)
     expect(job['runs-on']).toBe(
       '${{ fromJSON(vars.DINKSTER_PR_RUNNER || \'["self-hosted", "linux", "x64"]\') }}',

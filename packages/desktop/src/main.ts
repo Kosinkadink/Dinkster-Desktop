@@ -176,15 +176,15 @@ async function flushWindowLayout(): Promise<void> {
 }
 
 const packagedEngine = app.isPackaged
-  ? join(process.resourcesPath, 'engine', ENGINE_RELEASE.sourceArchive)
-  : process.env['DINKSTER_ENGINE_ARCHIVE']
+  ? join(process.resourcesPath, 'engine')
+  : process.env['DINKSTER_ENGINE_WHEEL_BUNDLE']
 const packagedAimdo = app.isPackaged
   ? join(process.resourcesPath, 'engine', ENGINE_RELEASE.aimdo.archive)
   : process.env['DINKSTER_AIMDO_WHEEL']
 function createRuntime(selected?: EngineSelection): EngineRuntime {
   return new EngineRuntime({
     dataDirectory,
-    ...(packagedEngine ? { sourceArchive: packagedEngine } : {}),
+    ...(packagedEngine ? { wheelBundle: packagedEngine } : {}),
     ...(packagedAimdo ? { aimdoWheel: packagedAimdo } : {}),
     ...(process.env['DINKSTER_ENGINE_SOURCE'] ? { sourceDirectory: process.env['DINKSTER_ENGINE_SOURCE'] } : {}),
     ...(process.env['DINKSTER_UV'] ? { uvExecutable: process.env['DINKSTER_UV'] } : {}),

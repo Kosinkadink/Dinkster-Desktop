@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { join } from 'node:path'
 import type { EngineAccelerator } from './accelerator.js'
 import backend from './backend-release.json' with { type: 'json' }
 
@@ -6,8 +7,9 @@ const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
 
 export const ENGINE_RELEASE = {
   commit: backend.commit,
-  sourceArchive: backend.archive,
-  sourceSha256: backend.sha256,
+  tag: backend.releaseTag,
+  version: backend.version,
+  manifest: backend.releaseManifest,
   workerProtocol: backend.workerProtocol,
   aimdo,
   cudaTorch,
@@ -42,8 +44,16 @@ export function supportedPlatform(platform = process.platform, arch = process.ar
   return key as SupportedPlatform
 }
 
-export function syncArguments(_accelerator: EngineAccelerator): readonly string[] {
+export function sourceSyncArguments(_accelerator: EngineAccelerator): readonly string[] {
   return ['sync', '--python', '3.12', '--locked', '--no-dev', '--all-packages', '--extra', 'torch']
+}
+
+export function wheelInstallArguments(python: string, bundle: string): readonly string[] {
+  return [
+    'pip', 'install', '--python', python,
+    '--no-deps', '--require-hashes', '--find-links', bundle,
+    '--requirement', join(bundle, 'constraints.txt'),
+  ]
 }
 
 export function torchBackend(accelerator: EngineAccelerator, platform = process.platform, arch = process.arch): string | undefined {

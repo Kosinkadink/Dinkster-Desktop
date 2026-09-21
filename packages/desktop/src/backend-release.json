@@ -1,7 +1,13 @@
 {
   "repository": "Kosinkadink/Dinkster",
-  "commit": "4258cb557cb684f8723c4dc0cf022b4a65e48baa",
-  "releaseTag": "backend-4258cb557cb684f8723c4dc0cf022b4a65e48baa",
+  "commit": "613386e336ef574bc57759ba560fc4caa3296d04",
+  "releaseTag": "v0.0.1",
+  "version": "0.0.1",
+  "releaseManifest": {
+    "archive": "release-manifest.json",
+    "sha256": "1f3b96f45f208fa7aa6efcdee3f29bd8126b012e3a00e6223b62b3353f485064",
+    "size": 7315
+  },
   "workerProtocol": 9,
   "requiresPython": ">=3.12",
   "desktopWindowsRuntime": {
@@ -30,9 +36,5 @@
     "requiresInternet": true,
     "requiresGit": false
   },
-  "identityCommit": "67b84c769c7add627c738245553c932772610b34",
-  "archive": "dinkster-backend-4258cb557cb684f8723c4dc0cf022b4a65e48baa.zip",
-  "sha256": "ca31a87a9e56f37a9cfb390b555116633d88121fa53247957b218ab96da0bdf0",
-  "size": 49220200,
-  "install": "uv run --no-project --python 3.12 scripts/install.py"
+  "identityCommit": "67b84c769c7add627c738245553c932772610b34"
 }

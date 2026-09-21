@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { ENGINE_RELEASE, supportedPlatform, syncArguments, torchBackend } from '../src/release.js'
+import { ENGINE_RELEASE, sourceSyncArguments, supportedPlatform, torchBackend, wheelInstallArguments } from '../src/release.js'
 import backend from '../src/backend-release.json'
 
 describe('engine release selection', () => {
-  it('pins the engine source and uv payloads by checksum', () => {
+  it('pins the engine wheel manifest, commit, and uv payloads by checksum', () => {
     expect(backend.repository).toBe('Kosinkadink/Dinkster')
     expect(backend.commit).toMatch(/^[a-f0-9]{40}$/)
-    expect(backend.sha256).toMatch(/^[a-f0-9]{64}$/)
-    expect(backend.archive).toBe(`dinkster-backend-${backend.commit}.zip`)
-    expect(backend.releaseTag).toBe(`backend-${backend.commit}`)
+    expect(backend.version).toMatch(/^\d+\.\d+\.\d+$/)
+    expect(backend.releaseTag).toBe(`v${backend.version}`)
+    expect(backend.releaseManifest).toEqual({
+      archive: 'release-manifest.json',
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      size: expect.any(Number),
+    })
     expect(backend.identityCommit).toMatch(/^[a-f0-9]{40}$/)
     const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
     expect(aimdo.repository).toBe('Kosinkadink/dinkster-aimdo')
@@ -18,7 +22,9 @@ describe('engine release selection', () => {
     expect(aimdo.archive).toBe(`dinkster_aimdo-${aimdo.version}-cp39-abi3-win_amd64.whl`)
     expect(ENGINE_RELEASE).toMatchObject({
       commit: backend.commit,
-      sourceSha256: backend.sha256,
+      version: backend.version,
+      tag: backend.releaseTag,
+      manifest: backend.releaseManifest,
       workerProtocol: backend.workerProtocol,
       aimdo,
       cudaTorch,
@@ -38,10 +44,17 @@ describe('engine release selection', () => {
 
   it('uses one locked provisioning path for every accelerator', () => {
     for (const accelerator of ['cpu', 'cuda', 'mps', 'rocm', 'xpu'] as const) {
-      expect(syncArguments(accelerator)).toEqual([
+      expect(sourceSyncArguments(accelerator)).toEqual([
         'sync', '--python', '3.12', '--locked', '--no-dev', '--all-packages', '--extra', 'torch',
       ])
     }
+  })
+
+  it('installs packaged wheels without dependency resolution or a source project', () => {
+    expect(wheelInstallArguments('python.exe', 'wheel-bundle')).toEqual([
+      'pip', 'install', '--python', 'python.exe', '--no-deps', '--require-hashes',
+      '--find-links', 'wheel-bundle', '--requirement', 'wheel-bundle/constraints.txt',
+    ])
   })
 
   it('pins the supplemental Windows CUDA wheel separately from the backend lock', () => {

@@ -462,7 +462,7 @@ export class EngineRuntime extends EventEmitter {
       ...engineProcessEnvironment(variant),
       UV_CACHE_DIR: join(this.options.dataDirectory, 'cache', 'uv'),
       UV_PROJECT_ENVIRONMENT: join(source, '.venv'),
-      DINKSTER_COMFYUI_PYTHON: executable(source, 'python'),
+      DINKSTER_EXECUTION_PYTHON: executable(source, 'python'),
     }
     delete env['UV_CONSTRAINT']
     delete env['UV_TORCH_BACKEND']

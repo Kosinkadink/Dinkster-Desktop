@@ -1,0 +1,24 @@
+{
+  "name": "dinkster-desktop-workspace",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "packageManager": "pnpm@10.31.0",
+  "scripts": {
+    "build": "pnpm prepare:frontend && pnpm --filter @dinkster/desktop build",
+    "lint": "prettier --check .",
+    "prepare:frontend": "node scripts/prepare-frontend.mjs",
+    "test": "pnpm --filter @dinkster/desktop test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2",
+    "typescript": "^5.7.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  }
+}

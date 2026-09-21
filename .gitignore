@@ -1,0 +1,13 @@
+node_modules/
+.frontend/
+packages/app/
+packages/desktop/dist/
+packages/desktop/release/
+packages/desktop/resources/engine/*.tar.gz
+packages/desktop/resources/engine/*.zip
+packages/desktop/resources/engine/*.whl
+coverage/
+*.tsbuildinfo
+.DS_Store
+test-results/
+playwright-report/

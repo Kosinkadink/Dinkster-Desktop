@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+    secrets:
+      DINKSTER_FRONTEND_READ_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DINKSTER_FRONTEND_REF: fa99988eb5fcbf645fbcf7ead85a523b650de660
+
+jobs:
+  test:
+    name: types, unit tests and Linux build
+    runs-on: ${{ fromJSON(vars.DINKSTER_PR_RUNNER || '["self-hosted", "linux", "x64"]') }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+          token: ${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            .frontend/pnpm-lock.yaml
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build

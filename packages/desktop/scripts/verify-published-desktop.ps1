@@ -12,7 +12,7 @@ $install = Join-Path $root 'app'
 $data = Join-Path $root 'run'
 $owner = Join-Path $root 'owned-install.json'
 $desktop = Get-Content (Join-Path $PSScriptRoot 'published-desktop.json') -Raw | ConvertFrom-Json
-if (-not $env:DINKSTER_PUBLISHED_SOURCE) { throw 'Set DINKSTER_PUBLISHED_SOURCE to the published frontend checkout' }
+if (-not $env:DINKSTER_PUBLISHED_SOURCE) { throw 'Set DINKSTER_PUBLISHED_SOURCE to the published Desktop checkout' }
 $backend = Get-Content (Join-Path $env:DINKSTER_PUBLISHED_SOURCE 'packages/desktop/src/backend-release.json') -Raw | ConvertFrom-Json
 $aimdo = $backend.desktopWindowsRuntime.aimdo
 if ($desktop.published -ne $true -and $Action -ne 'Cleanup') {

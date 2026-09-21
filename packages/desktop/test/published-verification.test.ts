@@ -43,10 +43,10 @@ describe('published Desktop verification workflow', () => {
     ])
   })
 
-  it('keeps its safety contracts in fast CI without running the published installer', async () => {
-    const fast = await readFile(resolve(root, 'scripts/ci-fast.mjs'), 'utf8')
-    expect(fast).toContain('test/published-verification.test.ts')
-    expect(fast).not.toMatch(/verify:installed|prepare:engine|verify-published-desktop\.ps1/)
+  it('keeps its safety contracts in pull-request CI without running the published installer', async () => {
+    const ci = await readFile(resolve(root, '.github/workflows/ci.yml'), 'utf8')
+    expect(ci).toContain('pnpm test')
+    expect(ci).not.toMatch(/verify:installed|prepare:engine|verify-published-desktop\.ps1/)
   })
 
   it('guards before checkout and routes each acquisition token exclusively', () => {
@@ -82,7 +82,7 @@ describe('published Desktop verification workflow', () => {
 
   it('records that no Dinkster Desktop release has been published', async () => {
     const desktop = JSON.parse(await readFile(resolve(root, 'packages/desktop/scripts/published-desktop.json'), 'utf8'))
-    expect(desktop).toEqual({ repository: 'Kosinkadink/Dinkster-Frontend', published: false })
+    expect(desktop).toEqual({ repository: 'Kosinkadink/Dinkster-Desktop', published: false })
     expect(workflow.jobs.verify.if).toContain('&& false')
     expect(helper).toContain("throw 'No Dinkster Desktop release has been published'")
     expect(helper).toContain('Assert-Artifact $Pin (Join-Path $assets $Pin.archive)')
@@ -90,7 +90,7 @@ describe('published Desktop verification workflow', () => {
   })
 
   it('keeps the proof code ready but does not select an unpublished source commit', async () => {
-    const checkout = steps.find((step) => step.name === 'Check out the published frontend proof harness')!
+    const checkout = steps.find((step) => step.name === 'Check out the published Desktop proof harness')!
     expect(checkout.with).toEqual({ clean: true, ref: 'main', path: 'published-source', 'persist-credentials': false })
     expect(workflow.jobs.verify.env['DINKSTER_PUBLISHED_SOURCE']).toBe('published-source')
     const commands = steps.filter((step) => step.run?.startsWith('pnpm '))
@@ -145,7 +145,7 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     const content = 'fixture'
     const digest = { size: content.length, sha256: createHash('sha256').update(content).digest('hex') }
     const desktop = {
-      repository: 'Kosinkadink/Dinkster-Frontend', published: true,
+      repository: 'Kosinkadink/Dinkster-Desktop', published: true,
       releaseTag: 'desktop-v0.2.0', commit: 'c'.repeat(40),
       archive: 'Dinkster-Desktop-0.2.0-Setup.exe', backendCommit: 'a'.repeat(40),
     }
@@ -169,17 +169,17 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
         elseif ($args[0] -eq 'release' -and $args[1] -eq 'download') { $repo=$args[4] }
         else { throw 'UNEXPECTED_GH_OPERATION' }
         $allowed = if ($env:GH_TOKEN -eq 'backend-only') { @('Kosinkadink/Dinkster','Kosinkadink/dinkster-aimdo') }
-          elseif ($env:GH_TOKEN -eq 'frontend-only') { @('Kosinkadink/Dinkster-Frontend') } else { @() }
+          elseif ($env:GH_TOKEN -eq 'desktop-only') { @('Kosinkadink/Dinkster-Desktop') } else { @() }
         if ($repo -notin $allowed) { throw 'WRONG_TOKEN_ROUTE' }
         if ($args[0] -eq 'api') { '{"private":true}' }
         else { [IO.File]::WriteAllText((Join-Path $args[8] $args[6]), 'fixture') }
       }
       $env:GH_TOKEN='backend-only'; & ${psQuote(fixtureScript)} -Action DownloadBackend
-      $env:GH_TOKEN='frontend-only'; & ${psQuote(fixtureScript)} -Action DownloadDesktop`)
+      $env:GH_TOKEN='desktop-only'; & ${psQuote(fixtureScript)} -Action DownloadDesktop`)
     const exported = await readFile(envFile, 'utf8')
     expect(exported).toContain('DINKSTER_ENGINE_ARCHIVE=')
     expect(exported).toContain('DINKSTER_AIMDO_WHEEL=')
-    expect(exported).not.toMatch(/TOKEN|backend-only|frontend-only/)
+    expect(exported).not.toMatch(/TOKEN|backend-only|desktop-only/)
     expect(await readFile(resolve(scratch, 'work/assets', desktop.archive), 'utf8')).toBe(content)
   })
 

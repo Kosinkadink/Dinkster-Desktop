@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   verify:
-    if: github.repository == 'Kosinkadink/Dinkster-Frontend' && github.event.repository.private == true && github.ref == 'refs/heads/main' && false
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.event.repository.private == true && github.ref == 'refs/heads/main' && false
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 60
     defaults:
@@ -27,7 +27,7 @@ jobs:
         with:
           clean: true
           persist-credentials: false
-      - name: Check out the published frontend proof harness
+      - name: Check out the published Desktop proof harness
         uses: actions/checkout@v4
         with:
           clean: true

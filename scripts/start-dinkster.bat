@@ -1,0 +1,1 @@
+@echo offsetlocalset "ROOT=%~dp0.."if not defined DINKSTER_ENGINE_SOURCE set "DINKSTER_ENGINE_SOURCE=%ROOT%\..\Dinkster"cd /d "%ROOT%"pnpm --filter @dinkster/desktop start:web

@@ -6,19 +6,22 @@ on:
 permissions:
   contents: read
 
+env:
+  DINKSTER_FRONTEND_REF: fa99988eb5fcbf645fbcf7ead85a523b650de660
+
 concurrency:
   group: private-desktop-release
   cancel-in-progress: false
 
 jobs:
   validation:
-    if: github.repository == 'Kosinkadink/Dinkster-Frontend' && github.event.repository.private == true && github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/full-validation.yml
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.event.repository.private == true && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
     secrets: inherit
 
   release:
     needs: validation
-    if: github.repository == 'Kosinkadink/Dinkster-Frontend' && github.event.repository.private == true && github.ref == 'refs/heads/main'
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.event.repository.private == true && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 90
     permissions:
@@ -28,6 +31,14 @@ jobs:
         with:
           clean: true
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+          token: ${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}
       - name: Download pinned private backend and Aimdo
         env:
           GH_TOKEN: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
@@ -57,6 +68,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
@@ -93,17 +106,17 @@ jobs:
           $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
           $installer = Get-Item packages/desktop/release/*-Setup.exe
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
-          @{ repository = 'Kosinkadink/Dinkster-Frontend'; commit = $env:GITHUB_SHA; version = $package.version; backend = $pin; archive = $installer.Name; sha256 = $hash; size = $installer.Length } | ConvertTo-Json -Depth 8 | Set-Content packages/desktop/release/desktop-release.json
+          @{ repository = 'Kosinkadink/Dinkster-Desktop'; commit = $env:GITHUB_SHA; version = $package.version; backend = $pin; archive = $installer.Name; sha256 = $hash; size = $installer.Length } | ConvertTo-Json -Depth 8 | Set-Content packages/desktop/release/desktop-release.json
           "$hash  $($installer.Name)" | Set-Content packages/desktop/release/SHA256SUMS
           "DESKTOP_TAG=desktop-v$($package.version)" >> $env:GITHUB_ENV
       - name: Create private release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $repo = gh api repos/Kosinkadink/Dinkster-Frontend | ConvertFrom-Json
+          $repo = gh api repos/Kosinkadink/Dinkster-Desktop | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or -not $repo.private) { throw 'Desktop release repository must remain private' }
-          $tags = gh api "repos/Kosinkadink/Dinkster-Frontend/git/matching-refs/tags/$env:DESKTOP_TAG" | ConvertFrom-Json
+          $tags = gh api "repos/Kosinkadink/Dinkster-Desktop/git/matching-refs/tags/$env:DESKTOP_TAG" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Could not verify release tag availability' }
           if (@($tags | Where-Object { $_.ref -ceq "refs/tags/$env:DESKTOP_TAG" }).Count -ne 0) { throw 'Desktop version tag already exists; bump the package version' }
-          gh release create $env:DESKTOP_TAG packages/desktop/release/*-Setup.exe packages/desktop/release/desktop-release.json packages/desktop/release/SHA256SUMS --repo Kosinkadink/Dinkster-Frontend --target $env:GITHUB_SHA --title "Dinkster Desktop $env:DESKTOP_TAG" --notes 'Unsigned Windows x64 installer. Source commits and SHA256 are in desktop-release.json. Requires internet for locked first-run dependencies. See docs/desktop.md at the release commit.'
+          gh release create $env:DESKTOP_TAG packages/desktop/release/*-Setup.exe packages/desktop/release/desktop-release.json packages/desktop/release/SHA256SUMS --repo Kosinkadink/Dinkster-Desktop --target $env:GITHUB_SHA --title "Dinkster Desktop $env:DESKTOP_TAG" --notes 'Unsigned Windows x64 installer. Source commits and SHA256 are in desktop-release.json. Requires internet for locked first-run dependencies. See README.md at the release commit.'
           if ($LASTEXITCODE -ne 0) { throw 'Private release creation failed; existing versions are never overwritten' }

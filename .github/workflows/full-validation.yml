@@ -1,0 +1,169 @@
+name: Full validation
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '31 11 * * *'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DINKSTER_FRONTEND_REF: fa99988eb5fcbf645fbcf7ead85a523b650de660
+
+jobs:
+  linux:
+    name: format, types, unit tests and Linux build
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            .frontend/pnpm-lock.yaml
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  frontend-e2e:
+    name: frontend browser assets
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @dinkster/e2e exec playwright install chromium
+      - run: pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts
+        env:
+          DINKSTER_E2E_PORT: '15376'
+
+  windows-package:
+    name: Windows package and update feed
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+      - name: Download pinned backend and Aimdo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
+          if ($pin.repository -ne 'Kosinkadink/Dinkster' -or $pin.commit -notmatch '^[a-f0-9]{40}$') { throw 'Invalid backend pin' }
+          if ($pin.releaseTag -ne "backend-$($pin.commit)") { throw 'Invalid backend release tag' }
+          $destination = Join-Path $env:RUNNER_TEMP backend-artifact
+          gh release download $pin.releaseTag --repo Kosinkadink/Dinkster --pattern $pin.archive --dir $destination
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned backend release download failed' }
+          "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $destination $pin.archive)" >> $env:GITHUB_ENV
+          $aimdo = $pin.desktopWindowsRuntime.aimdo
+          if ($aimdo.repository -ne 'Kosinkadink/dinkster-aimdo' -or $aimdo.releaseTag -ne "v$($aimdo.version)") { throw 'Invalid Aimdo pin' }
+          gh release download $aimdo.releaseTag --repo Kosinkadink/dinkster-aimdo --pattern $aimdo.archive --dir $destination
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Aimdo wheel download failed' }
+          "DINKSTER_AIMDO_WHEEL=$(Join-Path $destination $aimdo.archive)" >> $env:GITHUB_ENV
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            .frontend/pnpm-lock.yaml
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm --filter @dinkster/desktop package:win
+      - run: pnpm --filter @dinkster/desktop verify:update-feed
+
+  main-status:
+    name: main validation status
+    if: always()
+    needs: [linux, frontend-e2e, windows-package]
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 2
+    steps:
+      - name: Record every lane result
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          E2E_RESULT: ${{ needs.frontend-e2e.result }}
+          WINDOWS_RESULT: ${{ needs.windows-package.result }}
+        run: |
+          printf '{"commit":"%s","lanes":{"linux":"%s","frontend-e2e":"%s","windows-package":"%s"}}\n' \
+            "$GITHUB_SHA" "$LINUX_RESULT" "$E2E_RESULT" "$WINDOWS_RESULT" > main-validation-status.json
+          cat main-validation-status.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: main-validation-status
+          path: main-validation-status.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Require every lane to pass
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          E2E_RESULT: ${{ needs.frontend-e2e.result }}
+          WINDOWS_RESULT: ${{ needs.windows-package.result }}
+        run: |
+          test "$LINUX_RESULT" = success
+          test "$E2E_RESULT" = success
+          test "$WINDOWS_RESULT" = success

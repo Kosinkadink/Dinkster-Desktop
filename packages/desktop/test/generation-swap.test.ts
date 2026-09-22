@@ -137,6 +137,24 @@ describe('project generation swap', () => {
     )
   })
 
+  it('stops a restored supervisor that fails its own readiness check', async () => {
+    const events: string[] = []
+    const { options, journals } = swapOptions(events, {
+      waitForReady: async (_running, expectedInstanceId) => {
+        events.push(`ready:${expectedInstanceId}`)
+        throw new Error(expectedInstanceId === 'instance-1' ? 'target readiness failed' : 'recovery readiness failed')
+      },
+    })
+
+    await expect(swapProjectGeneration(options)).rejects.toThrow('generation swap and recovery both failed')
+    expect(events).toContain('stop:generation-new')
+    expect(events).toContain('stop:generation-old')
+    expect(events).not.toContain('restored:generation-old')
+    expect(journals.at(-1)?.error).toBe(
+      'generation swap and recovery both failed: target readiness failed; recovery readiness failed',
+    )
+  })
+
   it('keeps swaps for different projects isolated by supervisor and port', async () => {
     const alphaEvents: string[] = []
     const betaEvents: string[] = []

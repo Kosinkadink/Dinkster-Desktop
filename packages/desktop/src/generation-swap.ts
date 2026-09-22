@@ -96,16 +96,26 @@ export async function swapProjectGeneration<Generation, Target, Supervisor exten
   } catch (error) {
     let recoveryError: unknown
     if (previousStopped) {
+      let restored: Supervisor | undefined
+      let restoredReady = false
       try {
         await candidate?.stop()
         await options.activate(options.previous)
         const instanceId = (options.supervisorInstanceId ?? randomUUID)()
-        const restored = await options.startSupervisor(options.previous, { port: options.port, instanceId })
+        restored = await options.startSupervisor(options.previous, { port: options.port, instanceId })
         await options.waitForReady(restored, instanceId)
+        restoredReady = true
         options.onSupervisorRestored?.(restored)
         await options.persistSelection(options.previous)
       } catch (caught) {
-        recoveryError = caught
+        if (restored && !restoredReady) {
+          try {
+            await restored.stop()
+          } catch (stopError) {
+            recoveryError = new AggregateError([caught, stopError], 'recovery and cleanup both failed')
+          }
+        }
+        recoveryError ??= caught
       }
     }
     const recordedError = recoveryError === undefined

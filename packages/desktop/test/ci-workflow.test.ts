@@ -121,7 +121,16 @@ describe('desktop workflows', () => {
       (step) => step.run ?? [],
     )
     expect(browserCommands).toContain(
+      'uv sync --project .dinkster --locked --package dinkster --no-dev',
+    )
+    expect(browserCommands).toContain(
       'pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts',
+    )
+    const browserRun = full.jobs['frontend-e2e']!.steps?.find((step) =>
+      step.run?.includes('playwright.audit-assets.config.ts'),
+    )
+    expect(browserRun?.env?.['DINKSTER_E2E_DINKSTER_ROOT']).toBe(
+      '${{ github.workspace }}/.dinkster',
     )
   })
 

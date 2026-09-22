@@ -28,7 +28,9 @@ pnpm test
 Pull requests run formatting, types, unit tests, and the Linux build with a
 10-minute budget. Main adds the pinned frontend browser suite and Windows
 packaging in parallel, with a 20-minute end-to-end budget. The `CI_RUNNERS`
-repository variable is required. Its private-repository value is:
+repository variable is required. A pull request without private frontend
+access reports that validation did not run and fails rather than appearing
+green. The private-repository variable value is:
 
 ```json
 {

@@ -54,7 +54,11 @@ describe('desktop workflows', () => {
   it('runs typecheck, all unit tests, and a Linux build on pull requests', () => {
     expect(ci.on).toMatchObject({ pull_request: null })
     expect(ci.permissions).toEqual({ contents: 'read' })
-    expect(Object.keys(ci.jobs)).toEqual(['frontend-access', 'test'])
+    expect(Object.keys(ci.jobs)).toEqual([
+      'frontend-access',
+      'test',
+      'pr-status',
+    ])
     const access = ci.jobs['frontend-access']!
     expect(access['timeout-minutes']).toBe(2)
     expect(access['runs-on']).toBe('${{ fromJSON(vars.CI_RUNNERS).linux }}')
@@ -97,6 +101,12 @@ describe('desktop workflows', () => {
       path: '.frontend',
       token: '${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}',
     })
+    const status = ci.jobs['pr-status']!
+    expect(status.if).toBe('always()')
+    expect(status.needs).toEqual(['frontend-access', 'test'])
+    const statusSource = status.steps?.flatMap((step) => step.run ?? []).join('\n')
+    expect(statusSource).toContain('validation did not run')
+    expect(statusSource).toContain('test "$TEST_RESULT" = success')
   })
 
   it('runs complete Linux, browser, and Windows lanes on main', () => {

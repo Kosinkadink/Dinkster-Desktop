@@ -49,6 +49,9 @@ export interface GenerationSwapResult<Supervisor> {
 }
 
 function errorMessage(error: unknown): string {
+  if (error instanceof AggregateError) {
+    return `${error.message}: ${error.errors.map(errorMessage).join('; ')}`
+  }
   return error instanceof Error ? error.message : String(error)
 }
 

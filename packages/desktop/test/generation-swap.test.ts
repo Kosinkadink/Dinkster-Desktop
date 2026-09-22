@@ -115,6 +115,25 @@ describe('project generation swap', () => {
     expect(journals.at(-1)?.error).toBe('code layer checksum mismatch')
   })
 
+  it('retains both the swap and recovery failures in the support journal', async () => {
+    const events: string[] = []
+    let start = 0
+    const { options, journals } = swapOptions(events, {
+      startSupervisor: async (generation, request) => {
+        events.push(`start:${generation}:${request.instanceId}`)
+        start++
+        if (start === 2) throw new Error('previous supervisor restart failed')
+        return supervisor(generation, events)
+      },
+      waitForReady: async () => { throw new Error('target readiness failed') },
+    })
+
+    await expect(swapProjectGeneration(options)).rejects.toThrow('generation swap and recovery both failed')
+    expect(journals.at(-1)?.error).toBe(
+      'generation swap and recovery both failed: target readiness failed; previous supervisor restart failed',
+    )
+  })
+
   it('keeps swaps for different projects isolated by supervisor and port', async () => {
     const alphaEvents: string[] = []
     const betaEvents: string[] = []

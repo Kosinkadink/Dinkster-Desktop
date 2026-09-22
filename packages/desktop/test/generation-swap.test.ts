@@ -38,6 +38,7 @@ function swapOptions(events: string[], overrides: Partial<GenerationSwapOptions<
     },
     waitForReady: async (_running, expectedInstanceId) => { events.push(`ready:${expectedInstanceId}`) },
     persistSelection: async (generation) => { events.push(`persist:${generation}`) },
+    onSupervisorRestored: (running) => { events.push(`restored:${running.name}`) },
     writeJournal: async (journal) => { journals.push(journal); events.push(`journal:${journal.stage}`) },
     clearJournal: async () => { events.push('journal:clear') },
     operationId: () => 'operation-1',
@@ -93,6 +94,7 @@ describe('project generation swap', () => {
       'activate:generation-old',
       'start:generation-old:4100:instance-2',
       'ready:instance-2',
+      'restored:generation-old',
       'persist:generation-old',
       'journal:failed',
     ])

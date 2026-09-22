@@ -37,6 +37,7 @@ export interface GenerationSwapOptions<Generation, Target, Supervisor extends Ge
   startSupervisor(generation: Generation, start: GenerationSupervisorStart): Promise<Supervisor>
   waitForReady(supervisor: Supervisor, expectedInstanceId: string): Promise<void>
   persistSelection(generation: Generation): Promise<void>
+  onSupervisorRestored?(supervisor: Supervisor): void
   writeJournal(journal: GenerationSwapJournal): Promise<void>
   clearJournal(): Promise<void>
   operationId?(): string
@@ -101,6 +102,7 @@ export async function swapProjectGeneration<Generation, Target, Supervisor exten
         const instanceId = (options.supervisorInstanceId ?? randomUUID)()
         const restored = await options.startSupervisor(options.previous, { port: options.port, instanceId })
         await options.waitForReady(restored, instanceId)
+        options.onSupervisorRestored?.(restored)
         await options.persistSelection(options.previous)
       } catch (caught) {
         recoveryError = caught

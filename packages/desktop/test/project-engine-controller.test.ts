@@ -175,6 +175,7 @@ describe('project engine controller', () => {
     vi.spyOn(controlledCli, 'generations').mockResolvedValue([generation(1, true, installRoot)])
     vi.spyOn(controlledCli, 'install').mockResolvedValue(generation(2, false, installRoot))
     const previous = supervisor(1)
+    const started: TestSupervisor[] = []
     let start = 0
     const controller = new ProjectEngineController({
       dataDirectory,
@@ -184,7 +185,12 @@ describe('project engine controller', () => {
       cli: controlledCli,
       currentSupervisor: previous,
       inspectFeed: async () => inspection('github-live'),
-      startSupervisor: async (installed) => { start++; return supervisor(installed.generation) },
+      startSupervisor: async (installed) => {
+        start++
+        const running = supervisor(installed.generation)
+        started.push(running)
+        return running
+      },
       waitForReady: async (running) => {
         if (running.generation === 2) throw new Error('new supervisor never became ready')
       },
@@ -203,6 +209,9 @@ describe('project engine controller', () => {
       stage: 'failed', previousGeneration: '1', targetGeneration: '2', error: 'new supervisor never became ready',
     })
     expect(getProjectBinding(await readProjectRegistry(dataDirectory), 'studio')?.channel).toBe('stable')
+
+    await controller.remove(false)
+    expect(started[1]?.stop).toHaveBeenCalledOnce()
   })
 
   it('preserves project data by default and requires its exact path to delete it', async () => {

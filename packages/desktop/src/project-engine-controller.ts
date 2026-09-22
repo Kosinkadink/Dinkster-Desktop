@@ -173,6 +173,7 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
         installRoot,
         generation.generation === previous.generation ? existing!.channel : channel,
       ),
+      onSupervisorRestored: (supervisor) => { this.supervisor = supervisor },
       writeJournal: (journal) => writeGenerationSwapJournal(this.options.dataDirectory, journal),
       clearJournal: () => clearGenerationSwapJournal(this.options.dataDirectory, this.options.projectId),
     })
@@ -208,6 +209,7 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
       startSupervisor: (generation, start) => this.start(generation, start),
       waitForReady: this.options.waitForReady,
       persistSelection: async () => {},
+      onSupervisorRestored: (supervisor) => { this.supervisor = supervisor },
       writeJournal: (journal) => writeGenerationSwapJournal(this.options.dataDirectory, journal),
       clearJournal: () => clearGenerationSwapJournal(this.options.dataDirectory, this.options.projectId),
     })

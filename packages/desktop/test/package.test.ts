@@ -276,20 +276,19 @@ describe('desktop package inputs', () => {
     expect(manifest.build.win.forceCodeSigning).toBe(false)
   })
 
-  it('fails early without the dedicated cross-repository release credential and never falls back', async () => {
+  it('uses the workflow token for public release inputs and publication', async () => {
     const yaml = createRequire(import.meta.url)('js-yaml') as { load(source: string): unknown }
     const source = await readFile(resolve(root, '.github/workflows/release-desktop.yml'), 'utf8')
     const workflow = yaml.load(source) as {
       jobs: { release: { steps: { name?: string; run?: string; env?: Record<string, string> }[] } }
     }
     const steps = workflow.jobs.release.steps
-    const acquire = steps.find((step) => step.name === 'Download pinned private backend and Aimdo')!
+    const acquire = steps.find((step) => step.name === 'Download pinned backend and Aimdo')!
     expect(steps.find((step) => step.run !== undefined)).toBe(acquire)
-    expect(acquire.env).toEqual({ GH_TOKEN: '${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}' })
-    expect(acquire.run?.trim().split('\n')[0]).toBe("if (-not $env:GH_TOKEN) { throw 'Configure DINKSTER_RELEASE_READ_TOKEN with read access to private Kosinkadink/Dinkster and Kosinkadink/dinkster-aimdo releases' }")
-    expect(acquire.run).not.toMatch(/GITHUB_TOKEN|github\.token|githubtoken|\$env:GH_TOKEN\s*=/i)
-    expect(source.match(/secrets\.DINKSTER_RELEASE_READ_TOKEN/g)).toHaveLength(1)
-    expect(steps.find((step) => step.name === 'Create private release')?.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
+    expect(acquire.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
+    expect(acquire.run).not.toMatch(/DINKSTER_RELEASE_READ_TOKEN|githubtoken|\$env:GH_TOKEN\s*=/i)
+    expect(source).not.toContain('secrets.')
+    expect(steps.find((step) => step.name === 'Create release')?.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
   })
 
   it('keeps both tinkerer launchers on the shared web runtime', async () => {

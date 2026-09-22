@@ -36,7 +36,8 @@ green. The private-repository variable value is:
 {
   "linux": ["self-hosted", "linux", "x64"],
   "windows": ["self-hosted", "windows", "x64"],
-  "macos": ["self-hosted", "macos", "arm64"]
+  "macos": ["self-hosted", "macos", "arm64"],
+  "forkLinux": ["ubuntu-latest"]
 }
 ```
 
@@ -47,7 +48,8 @@ GitHub-hosted runners:
 {
   "linux": ["ubuntu-latest"],
   "windows": ["windows-latest"],
-  "macos": ["macos-latest"]
+  "macos": ["macos-latest"],
+  "forkLinux": ["ubuntu-latest"]
 }
 ```
 

@@ -37,7 +37,7 @@ const directory = resolve(import.meta.dirname, '../resources/engine')
 const canonicalDirectory = await canonicalPath(directory)
 for (const payload of payloads) {
   const { source, variable, pin } = payload
-  if (!source) throw new Error(`Set ${variable} to the pinned private release artifact; see docs/desktop.md`)
+  if (!source) throw new Error(`Set ${variable} to the pinned release artifact; see docs/desktop.md`)
   // An outward alias is also unsafe if deleting its parent makes the input unreachable.
   for (let ancestor = resolve(source); ; ancestor = dirname(ancestor)) {
     const inputRelative = relative(canonicalDirectory, await canonicalPath(ancestor))

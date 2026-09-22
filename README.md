@@ -21,7 +21,7 @@ pnpm typecheck
 pnpm test
 ```
 
-`pnpm --filter @dinkster/desktop package:win` additionally requires the two verified backend release artifacts. The private release workflows remain manual; local validation must not dispatch them or publish a release.
+`pnpm --filter @dinkster/desktop package:win` additionally requires the two verified backend release artifacts. Release workflows remain manual; local validation must not dispatch them or publish a release.
 
 Pull requests run formatting, types, unit tests, and the Linux build with a
 10-minute budget. Main adds the pinned frontend browser suite and Windows

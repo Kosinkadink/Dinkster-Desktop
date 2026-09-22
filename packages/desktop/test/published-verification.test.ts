@@ -38,7 +38,6 @@ describe('published Desktop verification workflow', () => {
     expect(workflow.jobs.verify.permissions).toBeUndefined()
     expect(source).not.toMatch(/contents: write|package:win|release-desktop\.yml|gh release (create|upload|edit)|git push/)
     expect(helper.match(/\bgh .*/g)).toEqual([
-      'gh api "repos/$($Pin.repository)" | ConvertFrom-Json',
       'gh release download $Pin.releaseTag --repo $Pin.repository --pattern $Pin.archive --dir $assets',
     ])
   })
@@ -49,16 +48,16 @@ describe('published Desktop verification workflow', () => {
     expect(ci).not.toMatch(/verify:installed|prepare:engine|verify-published-desktop\.ps1/)
   })
 
-  it('guards before checkout and routes each acquisition token exclusively', () => {
-    expect(steps[0]?.name).toBe('Require dedicated private release credential')
+  it('prepares before checkout and uses the workflow token for release downloads', () => {
+    expect(steps[0]?.name).toBe('Prepare isolated verification directory')
     expect(steps[1]?.uses).toBe('actions/checkout@v4')
     expect(steps[1]?.with).toEqual({ clean: true, 'persist-credentials': false })
     const backend = steps.find((step) => step.run?.endsWith('-Action DownloadBackend'))!
     const desktop = steps.find((step) => step.run?.endsWith('-Action DownloadDesktop'))!
-    expect(steps[0]?.env).toEqual({ GH_TOKEN: '${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}' })
-    expect(backend.env).toEqual(steps[0]?.env)
+    expect(steps[0]?.env).toBeUndefined()
+    expect(backend.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
     expect(desktop.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
-    expect(steps.filter((step) => step.env?.['GH_TOKEN'])).toEqual([steps[0], backend, desktop])
+    expect(steps.filter((step) => step.env?.['GH_TOKEN'])).toEqual([backend, desktop])
     expect(helper).not.toMatch(/GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|githubtoken|auth login/)
     expect(helper).toContain('Get-ReleaseArtifact $aimdo')
     expect(helper).toContain('Get-ReleaseArtifact $desktop')

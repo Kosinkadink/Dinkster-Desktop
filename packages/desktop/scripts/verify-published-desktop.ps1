@@ -30,10 +30,8 @@ function Assert-Artifact($Pin, [string]$Path) {
 }
 
 function Get-ReleaseArtifact($Pin) {
-    $repo = gh api "repos/$($Pin.repository)" | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or -not $repo.private) { throw 'Release repository must be private' }
     gh release download $Pin.releaseTag --repo $Pin.repository --pattern $Pin.archive --dir $assets
-    if ($LASTEXITCODE -ne 0) { throw 'Pinned private release download failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned release download failed' }
     Assert-Artifact $Pin (Join-Path $assets $Pin.archive)
 }
 

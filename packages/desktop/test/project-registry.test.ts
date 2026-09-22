@@ -4,7 +4,8 @@ import { join, resolve, sep } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   decodeProjectRegistry, emptyProjectRegistry, getProjectBinding, listProjectBindings,
-  readProjectRegistry, removeProjectBinding, upsertProjectBinding, writeProjectRegistry,
+  readProjectRegistry, removeProjectBinding, updateProjectRegistry, upsertProjectBinding,
+  writeProjectRegistry,
 } from '../src/project-registry.js'
 
 const temporaryDirectories: string[] = []
@@ -32,6 +33,17 @@ describe('project registry', () => {
     expect(getProjectBinding(registry, 'missing')).toBeUndefined()
     const raw = JSON.parse(await readFile(join(directory, 'project-bindings.json'), 'utf8'))
     expect(raw.version).toBe(1)
+  })
+
+  it('serializes concurrent updates without losing either project binding', async () => {
+    const directory = await temporaryDirectory()
+
+    await Promise.all([
+      updateProjectRegistry(directory, (registry) => upsertProjectBinding(registry, alpha)),
+      updateProjectRegistry(directory, (registry) => upsertProjectBinding(registry, beta)),
+    ])
+
+    expect(listProjectBindings(await readProjectRegistry(directory))).toEqual([alpha, beta])
   })
 
   it('keeps two projects on distinct roots and channels', () => {

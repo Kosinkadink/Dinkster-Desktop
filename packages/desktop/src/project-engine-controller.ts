@@ -14,8 +14,8 @@ import {
   getProjectBinding,
   readProjectRegistry,
   removeProjectBinding,
+  updateProjectRegistry,
   upsertProjectBinding,
-  writeProjectRegistry,
   type ProjectChannel,
 } from './project-registry.js'
 import {
@@ -224,10 +224,9 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
     await this.supervisor?.stop()
     this.supervisor = undefined
     if (deleteDataRoot) await deleteConfirmedProjectData(dataRoot, confirmedDataRoot!)
-    const registry = await readProjectRegistry(this.options.dataDirectory)
-    await writeProjectRegistry(
+    await updateProjectRegistry(
       this.options.dataDirectory,
-      removeProjectBinding(registry, this.options.projectId),
+      (registry) => removeProjectBinding(registry, this.options.projectId),
     )
     await clearGenerationSwapJournal(this.options.dataDirectory, this.options.projectId)
   }
@@ -304,10 +303,9 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
   }
 
   private async persistBinding(installRoot: string, channel: ProjectChannel): Promise<void> {
-    const registry = await readProjectRegistry(this.options.dataDirectory)
-    await writeProjectRegistry(
+    await updateProjectRegistry(
       this.options.dataDirectory,
-      upsertProjectBinding(registry, { projectId: this.options.projectId, installRoot, channel }),
+      (registry) => upsertProjectBinding(registry, { projectId: this.options.projectId, installRoot, channel }),
     )
   }
 }

@@ -32,6 +32,7 @@ export interface ProjectRegistry {
 }
 
 const registryPath = (dataDirectory: string): string => join(dataDirectory, 'project-bindings.json')
+const registryUpdates = new Map<string, Promise<void>>()
 
 export function emptyProjectRegistry(): ProjectRegistry {
   return { version: PROJECT_REGISTRY_VERSION, projects: [] }
@@ -161,4 +162,22 @@ export async function writeProjectRegistry(dataDirectory: string, registry: Proj
   const validated = decodeProjectRegistry(registry)
   if (!validated) throw new Error('cannot persist an invalid project registry')
   await writeFileAtomic(registryPath(dataDirectory), `${JSON.stringify(validated, null, 2)}\n`)
+}
+
+/** Serialize in-process read-modify-write updates so project operations cannot overwrite each other. */
+export async function updateProjectRegistry(
+  dataDirectory: string,
+  update: (registry: ProjectRegistry) => ProjectRegistry,
+): Promise<void> {
+  const key = resolve(dataDirectory)
+  const previous = registryUpdates.get(key) ?? Promise.resolve()
+  const current = previous.catch(() => {}).then(async () => {
+    await writeProjectRegistry(dataDirectory, update(await readProjectRegistry(dataDirectory)))
+  })
+  registryUpdates.set(key, current)
+  try {
+    await current
+  } finally {
+    if (registryUpdates.get(key) === current) registryUpdates.delete(key)
+  }
 }

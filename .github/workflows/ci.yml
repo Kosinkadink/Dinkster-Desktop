@@ -2,12 +2,6 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches: [main]
-  workflow_call:
-    secrets:
-      DINKSTER_FRONTEND_READ_TOKEN:
-        required: false
 
 permissions:
   contents: read
@@ -22,7 +16,7 @@ env:
 jobs:
   frontend-access:
     name: frontend checkout availability
-    runs-on: ${{ fromJSON(vars.DINKSTER_PR_RUNNER || '["self-hosted", "linux", "x64"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 2
     outputs:
       available: ${{ steps.availability.outputs.available }}
@@ -37,10 +31,10 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
   test:
-    name: types, unit tests and Linux build
+    name: format, types, unit tests and Linux build
     needs: frontend-access
     if: needs.frontend-access.outputs.available == 'true'
-    runs-on: ${{ fromJSON(vars.DINKSTER_PR_RUNNER || '["self-hosted", "linux", "x64"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -73,3 +67,21 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+
+  pr-status:
+    name: pull request validation status
+    if: always()
+    needs: [frontend-access, test]
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 2
+    steps:
+      - name: Require the private input and validation result
+        env:
+          FRONTEND_AVAILABLE: ${{ needs.frontend-access.outputs.available }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          if [ "$FRONTEND_AVAILABLE" != true ]; then
+            echo "Frontend access unavailable; validation did not run." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          test "$TEST_RESULT" = success

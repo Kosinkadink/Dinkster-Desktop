@@ -45,3 +45,36 @@ Desktop pins its application and engine inputs independently:
   `packages/desktop/src/backend-release.json`. Packaging accepts only matching
   artifacts supplied through `DINKSTER_ENGINE_ARCHIVE` and
   `DINKSTER_AIMDO_WHEEL`.
+
+## Continuous integration
+
+Pull requests run formatting, types, unit tests, and the Linux build with a
+10-minute budget. Main adds the pinned frontend browser suite and Windows
+packaging in parallel, with a 20-minute end-to-end budget. The `CI_RUNNERS`
+repository variable is required. A pull request without private frontend
+access reports that validation did not run and fails rather than appearing
+green. The private-repository variable value is:
+
+```json
+{
+  "linux": ["self-hosted", "linux", "x64"],
+  "windows": ["self-hosted", "windows", "x64"],
+  "macos": ["self-hosted", "macos", "arm64"],
+  "forkLinux": ["ubuntu-latest"]
+}
+```
+
+After the repository is public, one variable change moves all eligible jobs to
+GitHub-hosted runners:
+
+```json
+{
+  "linux": ["ubuntu-latest"],
+  "windows": ["windows-latest"],
+  "macos": ["macos-latest"],
+  "forkLinux": ["ubuntu-latest"]
+}
+```
+
+Every main run uploads `main-validation-status` with the Linux, browser, and
+Windows results. The aggregate status fails unless every lane passed.

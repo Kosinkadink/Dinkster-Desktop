@@ -36,12 +36,16 @@ const load = async (name: string): Promise<Workflow> =>
   ) as Workflow
 
 const ci = await load('ci.yml')
+const full = await load('full-validation.yml')
 const release = await load('release-desktop.yml')
 const published = await load('verify-published-desktop.yml')
 
 describe('desktop workflows', () => {
   it('pins pull-request and release builds to the same frontend commit', () => {
     expect(ci.env?.['DINKSTER_FRONTEND_REF']).toMatch(/^[0-9a-f]{40}$/)
+    expect(full.env?.['DINKSTER_FRONTEND_REF']).toBe(
+      ci.env?.['DINKSTER_FRONTEND_REF'],
+    )
     expect(release.env?.['DINKSTER_FRONTEND_REF']).toBe(
       ci.env?.['DINKSTER_FRONTEND_REF'],
     )
@@ -50,12 +54,14 @@ describe('desktop workflows', () => {
   it('runs typecheck, all unit tests, and a Linux build on pull requests', () => {
     expect(ci.on).toMatchObject({ pull_request: null })
     expect(ci.permissions).toEqual({ contents: 'read' })
-    expect(Object.keys(ci.jobs)).toEqual(['frontend-access', 'test'])
+    expect(Object.keys(ci.jobs)).toEqual([
+      'frontend-access',
+      'test',
+      'pr-status',
+    ])
     const access = ci.jobs['frontend-access']!
     expect(access['timeout-minutes']).toBe(2)
-    expect(access['runs-on']).toBe(
-      '${{ fromJSON(vars.DINKSTER_PR_RUNNER || \'["self-hosted", "linux", "x64"]\') }}',
-    )
+    expect(access['runs-on']).toBe('${{ fromJSON(vars.CI_RUNNERS).linux }}')
     expect(access.outputs).toEqual({
       available: '${{ steps.availability.outputs.available }}',
     })
@@ -75,9 +81,7 @@ describe('desktop workflows', () => {
       "needs.frontend-access.outputs.available == 'true'",
     )
     expect(job['timeout-minutes']).toBe(10)
-    expect(job['runs-on']).toBe(
-      '${{ fromJSON(vars.DINKSTER_PR_RUNNER || \'["self-hosted", "linux", "x64"]\') }}',
-    )
+    expect(job['runs-on']).toBe('${{ fromJSON(vars.CI_RUNNERS).linux }}')
     expect(job.steps?.flatMap((step) => step.run ?? [])).toEqual([
       'pnpm --dir .frontend install --frozen-lockfile',
       'pnpm --dir .frontend --filter @dinkster/app build',
@@ -97,10 +101,81 @@ describe('desktop workflows', () => {
       path: '.frontend',
       token: '${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}',
     })
+    const status = ci.jobs['pr-status']!
+    expect(status.if).toBe('always()')
+    expect(status.needs).toEqual(['frontend-access', 'test'])
+    const statusSource = status.steps?.flatMap((step) => step.run ?? []).join('\n')
+    expect(statusSource).toContain('validation did not run')
+    expect(statusSource).toContain('test "$TEST_RESULT" = success')
+  })
+
+  it('runs complete Linux, browser, and Windows lanes on main', () => {
+    expect(full.on).toMatchObject({
+      push: { branches: ['main'] },
+      workflow_dispatch: null,
+      workflow_call: expect.any(Object),
+    })
+    expect(Object.keys(full.jobs)).toEqual([
+      'linux',
+      'frontend-e2e',
+      'windows-package',
+      'main-status',
+    ])
+    expect(full.jobs['linux']!['runs-on']).toBe(
+      '${{ fromJSON(vars.CI_RUNNERS).linux }}',
+    )
+    expect(full.jobs['frontend-e2e']!['runs-on']).toBe(
+      '${{ fromJSON(vars.CI_RUNNERS).linux }}',
+    )
+    expect(full.jobs['windows-package']!['runs-on']).toBe(
+      '${{ fromJSON(vars.CI_RUNNERS).windows }}',
+    )
+    expect(full.jobs['windows-package']!['timeout-minutes']).toBe(20)
+    const windowsCommands = full.jobs['windows-package']!.steps?.flatMap(
+      (step) => step.run ?? [],
+    )
+    expect(windowsCommands).toContain(
+      'pnpm --filter @dinkster/desktop package:win',
+    )
+    expect(windowsCommands).toContain(
+      'pnpm --filter @dinkster/desktop verify:update-feed',
+    )
+    const browserCommands = full.jobs['frontend-e2e']!.steps?.flatMap(
+      (step) => step.run ?? [],
+    )
+    expect(browserCommands).toContain(
+      'pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts',
+    )
+  })
+
+  it('uses one required variable for every hosted-eligible job', () => {
+    for (const workflow of [ci, full, release, published]) {
+      for (const [name, job] of Object.entries(workflow.jobs)) {
+        if (job.uses) continue
+        expect(job['runs-on'], name).toMatch(
+          /^\$\{\{ fromJSON\(vars\.CI_RUNNERS\)\.(linux|windows) \}\}$/,
+        )
+      }
+    }
+  })
+
+  it('publishes one aggregate status that fails for every incomplete lane', () => {
+    const status = full.jobs['main-status']!
+    expect(status.if).toBe('always()')
+    expect(status.needs).toEqual([
+      'linux',
+      'frontend-e2e',
+      'windows-package',
+    ])
+    const source = status.steps?.flatMap((step) => step.run ?? []).join('\n')
+    expect(source).toContain('main-validation-status.json')
+    expect(source).toContain('test "$LINUX_RESULT" = success')
+    expect(source).toContain('test "$E2E_RESULT" = success')
+    expect(source).toContain('test "$WINDOWS_RESULT" = success')
   })
 
   it('uses clean checkouts without persisting credentials', () => {
-    for (const workflow of [ci, release, published]) {
+    for (const workflow of [ci, full, release, published]) {
       for (const job of Object.values(workflow.jobs)) {
         for (const step of (job.steps ?? []).filter(
           (entry) => entry.uses === 'actions/checkout@v4',
@@ -118,7 +193,7 @@ describe('desktop workflows', () => {
   it('validates the exact private Desktop main commit before publication', () => {
     expect(release.jobs['validation']).toEqual({
       if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && github.event.repository.private == true && github.ref == 'refs/heads/main'",
-      uses: './.github/workflows/ci.yml',
+      uses: './.github/workflows/full-validation.yml',
       secrets: 'inherit',
     })
     expect(release.jobs['release']!.needs).toBe('validation')

@@ -1,0 +1,214 @@
+name: Build Desktop installers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DINKSTER_FRONTEND_REF: 0cfe50b6b34e661584c9f4b227846476e70cc709
+  DINKSTER_REF: c4d9e9375bb8ff52cb3480666c208856fea22477
+
+jobs:
+  signing-availability:
+    name: signing availability
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      macos: ${{ steps.macos.outputs.available }}
+    steps:
+      - id: macos
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::macOS packaging is not run because signing and notarization secrets are unavailable"
+          fi
+
+  windows:
+    name: Windows x64 installer
+    runs-on: [self-hosted, windows, x64]
+    timeout-minutes: 90
+    env:
+      DINKSTER_CONTROL_RUNTIME_DESCRIPTOR_SHA256: 41be0dc1ffd778bd18b95bb0d91208b5eec38e04d5957cde56f94107915cb9ce
+      DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256: 77d6875fa3cd5790beb67cd2a36e2f96823274603530ce488294001ebe1deea8
+      DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE: '24812249'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+          token: ${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster
+          ref: ${{ env.DINKSTER_REF }}
+          path: .dinkster
+          token: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v5
+      - name: Build and verify the pinned Windows control runtime
+        run: |
+          uv sync --project .dinkster --frozen
+          $feed = Join-Path $env:RUNNER_TEMP control-runtime-feed
+          Push-Location .dinkster
+          try {
+            $env:PYTHONPATH = (Get-Location).Path
+            uv run --no-sync python scripts/build_engine_feed.py --feed $feed --cells win-cu128 --control-runtime
+          } finally {
+            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+            Pop-Location
+          }
+          $descriptor = Join-Path $feed "control/$env:DINKSTER_REF/windows-amd64.json"
+          if ((Get-FileHash $descriptor -Algorithm SHA256).Hash.ToLower() -cne $env:DINKSTER_CONTROL_RUNTIME_DESCRIPTOR_SHA256) {
+            throw 'Generated control-runtime descriptor does not match the pinned descriptor'
+          }
+          $body = Get-Content $descriptor -Raw | ConvertFrom-Json
+          $archive = Join-Path $feed $body.artifact.path
+          if ($body.commit -cne $env:DINKSTER_REF -or $body.platform -cne 'windows-amd64' -or
+              $body.artifact.sha256 -cne $env:DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256 -or
+              $body.artifact.size -ne [long]$env:DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE -or
+              (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -cne $env:DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256 -or
+              (Get-Item $archive).Length -ne [long]$env:DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE) {
+            throw 'Generated control-runtime archive does not match the pinned artifact'
+          }
+          "DINKSTER_CONTROL_RUNTIME_DESCRIPTOR=$descriptor" >> $env:GITHUB_ENV
+          "DINKSTER_CONTROL_RUNTIME_ARCHIVE=$archive" >> $env:GITHUB_ENV
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @dinkster/desktop package:win
+      - run: pnpm --filter @dinkster/desktop verify:update-feed
+      - name: Install into an isolated directory
+        run: |
+          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $destination = Join-Path $env:RUNNER_TEMP dinkster-installed
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          "DINKSTER_DESKTOP_EXECUTABLE=$(Join-Path $destination 'Dinkster Desktop.exe')" >> $env:GITHUB_ENV
+          "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
+      - run: pnpm --filter @dinkster/desktop verify:installed
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dinkster-desktop-windows-x64
+          path: |
+            packages/desktop/release/*-Setup.exe
+            packages/desktop/release/latest.yml
+            ${{ runner.temp }}/dinkster-first-run/*.png
+            ${{ runner.temp }}/dinkster-first-run/*.json
+          if-no-files-found: error
+
+  linux:
+    name: Linux x64 AppImage
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 90
+    env:
+      DINKSTER_CONTROL_RUNTIME_DESCRIPTOR_SHA256: 024d78b018fd89cec20ef66c9bc05aa4e38de0c4f5e646aaf777133a4ed30ad1
+      DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256: 8b7d087ceea1793cb1699b30e19ac80b0928acba480d9014745e3dc8244ff42e
+      DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE: '37504486'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+          token: ${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster
+          ref: ${{ env.DINKSTER_REF }}
+          path: .dinkster
+          token: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v5
+      - name: Build and verify the pinned Linux control runtime
+        run: |
+          uv sync --project .dinkster --frozen
+          feed="$RUNNER_TEMP/control-runtime-feed"
+          (cd .dinkster && PYTHONPATH="$PWD" uv run --no-sync python scripts/build_engine_feed.py --feed "$feed" --cells linux-cu128 --control-runtime)
+          descriptor="$feed/control/$DINKSTER_REF/linux-x86_64.json"
+          test "$(sha256sum "$descriptor" | cut -d' ' -f1)" = "$DINKSTER_CONTROL_RUNTIME_DESCRIPTOR_SHA256"
+          archive_path="$(node -p "require(process.argv[1]).artifact.path" "$descriptor")"
+          archive="$feed/$archive_path"
+          test "$(node -p "require(process.argv[1]).commit" "$descriptor")" = "$DINKSTER_REF"
+          test "$(node -p "require(process.argv[1]).platform" "$descriptor")" = linux-x86_64
+          test "$(node -p "require(process.argv[1]).artifact.sha256" "$descriptor")" = "$DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256"
+          test "$(node -p "require(process.argv[1]).artifact.size" "$descriptor")" = "$DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE"
+          test "$(sha256sum "$archive" | cut -d' ' -f1)" = "$DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256"
+          test "$(stat -c %s "$archive")" = "$DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE"
+          echo "DINKSTER_CONTROL_RUNTIME_DESCRIPTOR=$descriptor" >> "$GITHUB_ENV"
+          echo "DINKSTER_CONTROL_RUNTIME_ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @dinkster/desktop package:linux
+      - run: pnpm --filter @dinkster/desktop verify:update-feed
+      - name: Verify the packaged AppImage in an isolated directory
+        run: |
+          appimage="$(find packages/desktop/release -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          echo "DINKSTER_DESKTOP_EXECUTABLE=$PWD/$appimage" >> "$GITHUB_ENV"
+          echo "DINKSTER_DESKTOP_VERIFY_ROOT=$RUNNER_TEMP/dinkster-first-run" >> "$GITHUB_ENV"
+      - run: pnpm --filter @dinkster/desktop verify:installed
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dinkster-desktop-linux-x64
+          path: |
+            packages/desktop/release/*.AppImage
+            packages/desktop/release/latest-linux.yml
+            ${{ runner.temp }}/dinkster-first-run/*.png
+            ${{ runner.temp }}/dinkster-first-run/*.json
+          if-no-files-found: error
+
+  macos:
+    name: macOS signing and notarization
+    needs: signing-availability
+    if: needs.signing-availability.outputs.macos == 'true' && false
+    runs-on: macos-latest
+    steps:
+      - run: echo 'macOS packaging remains deferred until its signed target lands'

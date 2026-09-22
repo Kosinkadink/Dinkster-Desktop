@@ -36,6 +36,7 @@ const load = async (name: string): Promise<Workflow> =>
   ) as Workflow
 
 const ci = await load('ci.yml')
+const build = await load('build-desktop.yml')
 const release = await load('release-desktop.yml')
 const published = await load('verify-published-desktop.yml')
 const releaseSource = await readFile(
@@ -128,7 +129,7 @@ describe('desktop workflows', () => {
   })
 
   it('uses clean checkouts without persisting credentials', () => {
-    for (const workflow of [ci, release, published]) {
+    for (const workflow of [ci, build, release, published]) {
       for (const job of Object.values(workflow.jobs)) {
         for (const step of (job.steps ?? []).filter(
           (entry) => entry.uses === 'actions/checkout@v4',
@@ -141,6 +142,32 @@ describe('desktop workflows', () => {
         }
       }
     }
+  })
+
+  it('builds and verifies Windows and Linux installers on main pushes while macOS is guarded', () => {
+    expect(build.on).toEqual({ push: { branches: ['main'] }, workflow_dispatch: null })
+    expect(build.permissions).toEqual({ contents: 'read' })
+    expect(build.env).toEqual({
+      DINKSTER_FRONTEND_REF: ci.env?.['DINKSTER_FRONTEND_REF'],
+      DINKSTER_REF: 'c4d9e9375bb8ff52cb3480666c208856fea22477',
+    })
+    expect(Object.keys(build.jobs)).toEqual(['signing-availability', 'windows', 'linux', 'macos'])
+    const windows = build.jobs['windows']!
+    const linux = build.jobs['linux']!
+    expect(windows['runs-on']).toEqual(['self-hosted', 'windows', 'x64'])
+    expect(linux['runs-on']).toEqual(['self-hosted', 'linux', 'x64'])
+    expect(windows.steps?.some((step) => step.run === 'pnpm --filter @dinkster/desktop package:win')).toBe(true)
+    expect(linux.steps?.some((step) => step.run === 'pnpm --filter @dinkster/desktop package:linux')).toBe(true)
+    for (const job of [windows, linux]) {
+      expect(job.steps?.some((step) => step.run === 'pnpm --filter @dinkster/desktop verify:update-feed')).toBe(true)
+      expect(job.steps?.some((step) => step.run === 'pnpm --filter @dinkster/desktop verify:installed')).toBe(true)
+      const upload = job.steps?.find((step) => step.uses === 'actions/upload-artifact@v4')
+      expect(upload?.with?.['path']).toMatch(/latest(?:-linux)?\.yml/)
+    }
+    const signing = build.jobs['signing-availability']!
+    expect(signing.outputs).toEqual({ macos: '${{ steps.macos.outputs.available }}' })
+    expect(build.jobs['macos']!.needs).toBe('signing-availability')
+    expect(build.jobs['macos']!.if).toBe("needs.signing-availability.outputs.macos == 'true' && false")
   })
 
   it('validates the exact private Desktop main commit before publication', () => {

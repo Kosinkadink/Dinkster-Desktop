@@ -38,6 +38,14 @@ data, and requires the descriptor-named interpreter to resolve to an executable
 file inside that directory. The bootstrap invocation is the descriptor-relative
 interpreter followed by `-I -m dinkster.cli`.
 
+Main-branch packaging builds native Windows x64 and Linux x64 installers from
+the pinned Dinkster and frontend commits. Each job builds and verifies its
+native control-runtime pair, runs the update-feed check, launches the packaged
+application twice with an isolated data root, and uploads the installer,
+`latest.yml` metadata, and bounded screenshots and JSON evidence. macOS remains
+not run while its signing and notarization secrets are unavailable; the
+workflow reports that condition without exposing secret values.
+
 ## Projects
 
 Each Desktop project id, including `default`, binds to one absolute Dinkster

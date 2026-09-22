@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import backend from '../src/backend-release.json'
 
 const root = resolve(import.meta.dirname, '../../..')
 const yaml = createRequire(import.meta.url)('js-yaml') as {
@@ -87,6 +88,7 @@ describe('desktop workflows', () => {
   })
 
   it('runs complete Linux, browser, and Windows lanes on main', () => {
+    expect(full.env?.['DINKSTER_REF']).toBe(backend.commit)
     expect(full.on).toMatchObject({
       push: { branches: ['main'] },
       workflow_dispatch: null,

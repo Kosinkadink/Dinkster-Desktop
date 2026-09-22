@@ -9,7 +9,9 @@ describe('engine release selection', () => {
     expect(backend.sha256).toMatch(/^[a-f0-9]{64}$/)
     expect(backend.archive).toBe(`dinkster-backend-${backend.commit}.zip`)
     expect(backend.releaseTag).toBe(`backend-${backend.commit}`)
-    expect(backend.identityCommit).toMatch(/^[a-f0-9]{40}$/)
+    expect(backend.bootstrap.requiresGit).toBe(false)
+    expect(backend).not.toHaveProperty('identityCommit')
+    expect(backend).not.toHaveProperty('install')
     const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
     expect(aimdo.repository).toBe('Kosinkadink/dinkster-aimdo')
     expect(aimdo.commit).toMatch(/^[a-f0-9]{40}$/)

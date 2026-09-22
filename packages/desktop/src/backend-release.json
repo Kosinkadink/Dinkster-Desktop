@@ -1,18 +1,18 @@
 {
   "repository": "Kosinkadink/Dinkster",
-  "commit": "4258cb557cb684f8723c4dc0cf022b4a65e48baa",
-  "releaseTag": "backend-4258cb557cb684f8723c4dc0cf022b4a65e48baa",
+  "commit": "afe226cd233840d61a0467c186112a431c7c10aa",
+  "releaseTag": "backend-afe226cd233840d61a0467c186112a431c7c10aa",
   "workerProtocol": 9,
   "requiresPython": ">=3.12",
   "desktopWindowsRuntime": {
     "aimdo": {
       "repository": "Kosinkadink/dinkster-aimdo",
-      "commit": "6ae5b951e333a52dba825487587d674bd0be410e",
-      "releaseTag": "v0.5.5.post1",
-      "version": "0.5.5.post1",
-      "archive": "dinkster_aimdo-0.5.5.post1-cp39-abi3-win_amd64.whl",
-      "sha256": "1f240d8b27002bbd9f5b6d30dce0f30591087fc34d12dcfafcb45d838822c993",
-      "size": 281260
+      "commit": "60a8862dde1f278222dad4129e3f0ab171ed7207",
+      "releaseTag": "v0.5.5.post2",
+      "version": "0.5.5.post2",
+      "archive": "dinkster_aimdo-0.5.5.post2-cp39-abi3-win_amd64.whl",
+      "sha256": "22c3ae7dc902ebf67091cd2f4055ac9fbc9eab1713ad2f6b2d5a05072f9fe58f",
+      "size": 281463
     },
     "cudaTorch": {
       "version": "2.13.0+cu130",
@@ -30,9 +30,7 @@
     "requiresInternet": true,
     "requiresGit": false
   },
-  "identityCommit": "67b84c769c7add627c738245553c932772610b34",
-  "archive": "dinkster-backend-4258cb557cb684f8723c4dc0cf022b4a65e48baa.zip",
-  "sha256": "ca31a87a9e56f37a9cfb390b555116633d88121fa53247957b218ab96da0bdf0",
-  "size": 49220200,
-  "install": "uv run --no-project --python 3.12 scripts/install.py"
+  "archive": "dinkster-backend-afe226cd233840d61a0467c186112a431c7c10aa.zip",
+  "sha256": "3002fb359bbbd599fa9c343623270e4b3c121fc1d80855db02f5662492966aad",
+  "size": 38795994
 }

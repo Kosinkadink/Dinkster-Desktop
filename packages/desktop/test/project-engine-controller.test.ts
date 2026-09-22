@@ -73,7 +73,10 @@ function supervisor(number: number): TestSupervisor {
 }
 
 function cli(): EngineCli {
-  return new EngineCli({ run: async () => ({ exitCode: 1, stdout: '', stderr: 'unexpected real call' }) })
+  return new EngineCli({
+    executable: 'dinkster',
+    run: async () => ({ exitCode: 1, stdout: '', stderr: 'unexpected real call' }),
+  })
 }
 
 describe('project engine controller', () => {

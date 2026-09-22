@@ -48,7 +48,7 @@ export interface EngineServeChild {
 export type EngineCliSpawner = (invocation: EngineCliInvocation) => EngineServeChild
 
 export interface EngineCliOptions {
-  readonly executable?: string
+  readonly executable: string
   readonly run?: EngineCliRunner
   readonly spawn?: EngineCliSpawner
 }
@@ -230,8 +230,11 @@ export class EngineCli {
   private readonly run: EngineCliRunner
   private readonly spawnChild: EngineCliSpawner
 
-  constructor(options: EngineCliOptions = {}) {
-    this.executable = options.executable ?? 'dinkster'
+  constructor(options: EngineCliOptions) {
+    if (typeof options.executable !== 'string' || options.executable.trim() === '') {
+      throw new Error('engine bootstrap command is not configured')
+    }
+    this.executable = options.executable
     this.run = options.run ?? defaultRunner
     this.spawnChild = options.spawn ?? defaultSpawner
   }

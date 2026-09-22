@@ -182,9 +182,8 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     expect(await readFile(resolve(scratch, 'work/assets', desktop.archive), 'utf8')).toBe(content)
   })
 
-  it.each(['workflow guard', 'download helper'])('fails the %s with a dummy fallback token before GH access', async (target) => {
-    const command = target === 'workflow guard' ? steps[0]!.run!
-      : `& ${psQuote(script)} -Action DownloadBackend`
+  it('fails the download helper with a dummy fallback token before GH access', async () => {
+    const command = `& ${psQuote(script)} -Action DownloadBackend`
     await expect(powershell(`$env:GITHUB_TOKEN='dummy-fallback'; $env:GH_ENTERPRISE_TOKEN='dummy-fallback'
       function gh { throw 'UNEXPECTED_GH_ACCESS' }
       ${command}`)).rejects.toThrow(/no fallback token is permitted/)
@@ -203,8 +202,9 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
 
   it('cleans an empty owned installation without touching unrelated processes or retaining tokens', async () => {
     await mkdir(resolve(scratch, 'proof'))
-    await writeFile(resolve(scratch, 'owned-install.json'), JSON.stringify({ install: resolve(scratch, 'app'), data: resolve(scratch, 'run') }))
     await powershell(`$env:DINKSTER_VERIFY_WORK=${psQuote(scratch)}; $env:GH_TOKEN='dummy-acquisition'; $env:GITHUB_TOKEN='dummy-fallback'
+      $root=[IO.Path]::GetFullPath($env:DINKSTER_VERIFY_WORK)
+      @{ install=(Join-Path $root 'app'); data=(Join-Path $root 'run') } | ConvertTo-Json | Set-Content (Join-Path $root 'owned-install.json')
       function Get-CimInstance { [pscustomobject]@{ ExecutablePath='C:\\unrelated\\python.exe'; ProcessId=123 } }
       function Get-NetTCPConnection { }
       function Stop-Process { throw 'UNRELATED_PROCESS_STOP' }

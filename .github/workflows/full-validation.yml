@@ -17,6 +17,7 @@ concurrency:
 
 env:
   DINKSTER_FRONTEND_REF: fa99988eb5fcbf645fbcf7ead85a523b650de660
+  DINKSTER_REF: 4258cb557cb684f8723c4dc0cf022b4a65e48baa
 
 jobs:
   linux:
@@ -65,6 +66,13 @@ jobs:
           persist-credentials: false
           repository: Kosinkadink/Dinkster-Frontend
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster
+          ref: ${{ env.DINKSTER_REF }}
+          path: .dinkster
       - uses: pnpm/action-setup@v4
         with:
           version: 10.31.0
@@ -74,11 +82,16 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
       - run: pnpm install --frozen-lockfile
+      - run: uv sync --project .dinkster --locked --package dinkster --no-dev
       - run: pnpm --filter @dinkster/e2e exec playwright install chromium
       - run: pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts
         env:
           DINKSTER_E2E_PORT: '15376'
+          DINKSTER_E2E_DINKSTER_ROOT: ${{ github.workspace }}/.dinkster
 
   windows-package:
     name: Windows package and update feed

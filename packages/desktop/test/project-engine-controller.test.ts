@@ -72,20 +72,28 @@ function supervisor(number: number): TestSupervisor {
   return { generation: number, stop: vi.fn(async () => undefined) }
 }
 
-function cli(): EngineCli {
+function cli(invocations: string[][] = []): EngineCli {
   return new EngineCli({
     interpreter: '/srv/dinkster/bootstrap/control/bin/python',
-    run: async () => ({ exitCode: 1, stdout: '', stderr: 'unexpected real call' }),
+    run: async ({ argv }) => {
+      invocations.push([...argv])
+      if (argv[4] === 'activate') {
+        const root = argv[argv.indexOf('--root') + 1] ?? ''
+        const number = Number(argv[argv.indexOf('--generation') + 1])
+        return { exitCode: 0, stdout: JSON.stringify(generation(number, true, root)), stderr: '' }
+      }
+      return { exitCode: 1, stdout: '', stderr: 'unexpected real call' }
+    },
   })
 }
 
 describe('project engine controller', () => {
   it('stages and starts a first generation before persisting the project binding', async () => {
     const dataDirectory = await temporaryRoot()
-    const engineCli = cli()
+    const invocations: string[][] = []
+    const engineCli = cli(invocations)
     const installRoot = join(dataDirectory, 'engine-projects', 'studio')
     vi.spyOn(engineCli, 'install').mockResolvedValue(generation(1, false, installRoot))
-    const activate = vi.spyOn(engineCli, 'activate').mockResolvedValue(generation(1, true, installRoot))
     const started: TestSupervisor[] = []
     const controller = new ProjectEngineController({
       dataDirectory,
@@ -105,7 +113,11 @@ describe('project engine controller', () => {
 
     await controller.install('stable', 'linux-cpu')
 
-    expect(activate).toHaveBeenCalledWith({ root: installRoot, generation: 1 })
+    expect(invocations).toHaveLength(1)
+    expect(invocations[0]?.[0]).toBe(generation(1, true, installRoot).controlPython)
+    expect(invocations[0]?.slice(4)).toEqual([
+      'activate', '--root', installRoot, '--generation', '1', '--json',
+    ])
     expect(started).toHaveLength(1)
     expect(getProjectBinding(await readProjectRegistry(dataDirectory), 'studio')).toEqual({
       projectId: 'studio', installRoot, channel: 'stable',
@@ -151,11 +163,17 @@ describe('project engine controller', () => {
       await readProjectRegistry(dataDirectory),
       { projectId: 'studio', installRoot, channel: 'stable' },
     ))
-    const engineCli = cli()
-    vi.spyOn(engineCli, 'generations').mockResolvedValue([generation(1, true, installRoot)])
-    vi.spyOn(engineCli, 'install').mockResolvedValue(generation(2, false, installRoot))
-    const activate = vi.spyOn(engineCli, 'activate').mockImplementation(async ({ generation: number }) =>
-      generation(number, true, installRoot))
+    const invocations: string[][] = []
+    const controlledCli = new EngineCli({
+      interpreter: '/srv/dinkster/bootstrap/control/bin/python',
+      run: async ({ argv }) => {
+        invocations.push([...argv])
+        const number = Number(argv[argv.indexOf('--generation') + 1])
+        return { exitCode: 0, stdout: JSON.stringify(generation(number, true, installRoot)), stderr: '' }
+      },
+    })
+    vi.spyOn(controlledCli, 'generations').mockResolvedValue([generation(1, true, installRoot)])
+    vi.spyOn(controlledCli, 'install').mockResolvedValue(generation(2, false, installRoot))
     const previous = supervisor(1)
     let start = 0
     const controller = new ProjectEngineController({
@@ -163,7 +181,7 @@ describe('project engine controller', () => {
       projectId: 'studio',
       port: 4101,
       mirrorUrl: 'https://mirror.example/engine',
-      cli: engineCli,
+      cli: controlledCli,
       currentSupervisor: previous,
       inspectFeed: async () => inspection('github-live'),
       startSupervisor: async (installed) => { start++; return supervisor(installed.generation) },
@@ -176,7 +194,11 @@ describe('project engine controller', () => {
 
     expect(previous.stop).toHaveBeenCalledOnce()
     expect(start).toBe(2)
-    expect(activate.mock.calls.map(([request]) => request.generation)).toEqual([2, 1])
+    expect(invocations.map((argv) => ({ interpreter: argv[0], generation: argv[argv.indexOf('--generation') + 1] })))
+      .toEqual([
+        { interpreter: generation(2, true, installRoot).controlPython, generation: '2' },
+        { interpreter: generation(1, true, installRoot).controlPython, generation: '1' },
+      ])
     expect(await readGenerationSwapJournal(dataDirectory, 'studio')).toMatchObject({
       stage: 'failed', previousGeneration: '1', targetGeneration: '2', error: 'new supervisor never became ready',
     })

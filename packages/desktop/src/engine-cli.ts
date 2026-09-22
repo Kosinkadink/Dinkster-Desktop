@@ -244,6 +244,10 @@ export class EngineCli {
     return [this.interpreter, '-I', '-m', 'dinkster.cli', ...args]
   }
 
+  usingInterpreter(interpreter: string): EngineCli {
+    return new EngineCli({ interpreter, run: this.run, spawn: this.spawnChild })
+  }
+
   async install(request: EngineInstallRequest): Promise<EngineGeneration> {
     const argv = this.command(
       'install',

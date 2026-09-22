@@ -53,6 +53,14 @@ function requireEngine(generation: EngineGeneration): NonNullable<EngineGenerati
   return generation.engine
 }
 
+function generationCli(cli: EngineCli, generation: EngineGeneration): EngineCli {
+  requireEngine(generation)
+  if (!generation.controlPython) {
+    throw new Error(`generation ${generation.generation} has no control interpreter`)
+  }
+  return cli.usingInterpreter(generation.controlPython)
+}
+
 export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
   private supervisor: Supervisor | undefined
 
@@ -156,7 +164,9 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
         ...(this.options.allowLocalHttp ? { allowLocalHttp: true } : {}),
       }),
       snapshot: (generation) => this.snapshot(generation),
-      activate: async (generation) => { await this.options.cli.activate({ root: installRoot, generation: generation.generation }) },
+      activate: async (generation) => {
+        await generationCli(this.options.cli, generation).activate({ root: installRoot, generation: generation.generation })
+      },
       startSupervisor: (generation, start) => this.start(generation, start),
       waitForReady: this.options.waitForReady,
       persistSelection: (generation) => this.persistBinding(
@@ -189,7 +199,12 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
       describeTarget: (generation) => String(generation.generation),
       build: async (generation) => generation,
       snapshot: (generation) => this.snapshot(generation),
-      activate: async (generation) => { await this.options.cli.activate({ root: binding.installRoot, generation: generation.generation }) },
+      activate: async (generation) => {
+        await generationCli(this.options.cli, generation).activate({
+          root: binding.installRoot,
+          generation: generation.generation,
+        })
+      },
       startSupervisor: (generation, start) => this.start(generation, start),
       waitForReady: this.options.waitForReady,
       persistSelection: async () => {},
@@ -247,7 +262,7 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
         targetGeneration,
         stage: 'switching',
       })
-      await this.options.cli.activate({ root: installRoot, generation: generation.generation })
+      await generationCli(this.options.cli, generation).activate({ root: installRoot, generation: generation.generation })
       const instanceId = crypto.randomUUID()
       supervisor = await this.start(generation, { port: this.options.port, instanceId })
       await this.options.waitForReady(supervisor, instanceId)

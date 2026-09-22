@@ -98,6 +98,19 @@ describe('engine CLI adapter', () => {
     expect(generation.current).toBe(true)
   })
 
+  it('moves post-install operations to an installed generation control interpreter', async () => {
+    const { run, invocations } = runner(stagedGeneration({ current: true }))
+    const cli = new EngineCli({ interpreter, run })
+    const installedControl = '/srv/dinkster/roots/project-a/engine-envs/manifest/control/bin/python'
+
+    await cli.usingInterpreter(installedControl).activate({ root, generation: 2 })
+
+    expect(invocations).toEqual([[
+      installedControl, '-I', '-m', 'dinkster.cli',
+      'activate', '--root', root, '--generation', '2', '--json',
+    ]])
+  })
+
   it('lists generations as an array with the exact argv', async () => {
     const { run, invocations } = runner(
       generationsJson(stagedGeneration(), stagedGeneration({ generation: 2, engine: null, controlPython: undefined, executionPython: undefined })),

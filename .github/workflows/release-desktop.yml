@@ -8,6 +8,10 @@ permissions:
 
 env:
   DINKSTER_FRONTEND_REF: 0cfe50b6b34e661584c9f4b227846476e70cc709
+  DINKSTER_REF: c4d9e9375bb8ff52cb3480666c208856fea22477
+  DINKSTER_CONTROL_RUNTIME_DESCRIPTOR_SHA256: 41be0dc1ffd778bd18b95bb0d91208b5eec38e04d5957cde56f94107915cb9ce
+  DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256: 77d6875fa3cd5790beb67cd2a36e2f96823274603530ce488294001ebe1deea8
+  DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE: '24812249'
 
 concurrency:
   group: private-desktop-release
@@ -39,27 +43,42 @@ jobs:
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
           path: .frontend
           token: ${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}
-      - name: Download pinned private backend and Aimdo
-        env:
-          GH_TOKEN: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster
+          ref: ${{ env.DINKSTER_REF }}
+          path: .dinkster
+          token: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
+      - uses: astral-sh/setup-uv@v5
+      - name: Build and verify the pinned Windows control runtime
         run: |
-          if (-not $env:GH_TOKEN) { throw 'Configure DINKSTER_RELEASE_READ_TOKEN with read access to private Kosinkadink/Dinkster and Kosinkadink/dinkster-aimdo releases' }
-          $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
-          if ($pin.repository -ne 'Kosinkadink/Dinkster' -or $pin.commit -notmatch '^[a-f0-9]{40}$') { throw 'Invalid backend pin' }
-          if ($pin.releaseTag -ne "backend-$($pin.commit)") { throw 'Invalid backend release tag' }
-          $repo = gh api repos/Kosinkadink/Dinkster | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not $repo.private) { throw 'Backend release repository must be private' }
-          $destination = Join-Path $env:RUNNER_TEMP backend-artifact
-          gh release download $pin.releaseTag --repo Kosinkadink/Dinkster --pattern $pin.archive --dir $destination
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned backend release download failed' }
-          "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $destination $pin.archive)" >> $env:GITHUB_ENV
-          $aimdo = $pin.desktopWindowsRuntime.aimdo
-          if ($aimdo.repository -ne 'Kosinkadink/dinkster-aimdo' -or $aimdo.releaseTag -ne "v$($aimdo.version)") { throw 'Invalid Aimdo pin' }
-          $repo = gh api repos/Kosinkadink/dinkster-aimdo | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not $repo.private) { throw 'Aimdo release repository must be private' }
-          gh release download $aimdo.releaseTag --repo Kosinkadink/dinkster-aimdo --pattern $aimdo.archive --dir $destination
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned Aimdo wheel download failed' }
-          "DINKSTER_AIMDO_WHEEL=$(Join-Path $destination $aimdo.archive)" >> $env:GITHUB_ENV
+          uv sync --project .dinkster --frozen
+          $feed = Join-Path $env:RUNNER_TEMP control-runtime-feed
+          Push-Location .dinkster
+          try {
+            $env:PYTHONPATH = (Get-Location).Path
+            uv run --no-sync python scripts/build_engine_feed.py --feed $feed --cells win-cu128 --control-runtime
+          } finally {
+            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+            Pop-Location
+          }
+          $descriptor = Join-Path $feed "control/$env:DINKSTER_REF/windows-amd64.json"
+          if ((Get-FileHash $descriptor -Algorithm SHA256).Hash.ToLower() -cne $env:DINKSTER_CONTROL_RUNTIME_DESCRIPTOR_SHA256) {
+            throw 'Generated control-runtime descriptor does not match the pinned descriptor'
+          }
+          $body = Get-Content $descriptor -Raw | ConvertFrom-Json
+          $archive = Join-Path $feed $body.artifact.path
+          if ($body.commit -cne $env:DINKSTER_REF -or $body.platform -cne 'windows-amd64' -or
+              $body.artifact.sha256 -cne $env:DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256 -or
+              $body.artifact.size -ne [long]$env:DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE -or
+              (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -cne $env:DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256 -or
+              (Get-Item $archive).Length -ne [long]$env:DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE) {
+            throw 'Generated control-runtime archive does not match the pinned artifact'
+          }
+          "DINKSTER_CONTROL_RUNTIME_DESCRIPTOR=$descriptor" >> $env:GITHUB_ENV
+          "DINKSTER_CONTROL_RUNTIME_ARCHIVE=$archive" >> $env:GITHUB_ENV
       - uses: pnpm/action-setup@v4
         with:
           version: 10.31.0
@@ -103,10 +122,10 @@ jobs:
       - name: Record source and artifact checksums
         run: |
           $package = Get-Content packages/desktop/package.json -Raw | ConvertFrom-Json
-          $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
           $installer = Get-Item packages/desktop/release/*-Setup.exe
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
-          @{ repository = 'Kosinkadink/Dinkster-Desktop'; commit = $env:GITHUB_SHA; version = $package.version; backend = $pin; archive = $installer.Name; sha256 = $hash; size = $installer.Length } | ConvertTo-Json -Depth 8 | Set-Content packages/desktop/release/desktop-release.json
+          $controlRuntime = Get-Content $env:DINKSTER_CONTROL_RUNTIME_DESCRIPTOR -Raw | ConvertFrom-Json
+          @{ repository = 'Kosinkadink/Dinkster-Desktop'; commit = $env:GITHUB_SHA; version = $package.version; controlRuntime = $controlRuntime; archive = $installer.Name; sha256 = $hash; size = $installer.Length } | ConvertTo-Json -Depth 8 | Set-Content packages/desktop/release/desktop-release.json
           "$hash  $($installer.Name)" | Set-Content packages/desktop/release/SHA256SUMS
           "DESKTOP_TAG=desktop-v$($package.version)" >> $env:GITHUB_ENV
       - name: Create private release

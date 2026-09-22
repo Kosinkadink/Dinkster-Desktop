@@ -38,6 +38,10 @@ const load = async (name: string): Promise<Workflow> =>
 const ci = await load('ci.yml')
 const release = await load('release-desktop.yml')
 const published = await load('verify-published-desktop.yml')
+const releaseSource = await readFile(
+  resolve(root, '.github/workflows/release-desktop.yml'),
+  'utf8',
+)
 
 describe('desktop workflows', () => {
   it('pins pull-request and release builds to the same frontend commit', () => {
@@ -45,6 +49,30 @@ describe('desktop workflows', () => {
     expect(release.env?.['DINKSTER_FRONTEND_REF']).toBe(
       ci.env?.['DINKSTER_FRONTEND_REF'],
     )
+  })
+
+  it('builds the exact native Windows control runtime without legacy engine inputs', () => {
+    expect(release.env).toMatchObject({
+      DINKSTER_REF: 'c4d9e9375bb8ff52cb3480666c208856fea22477',
+      DINKSTER_CONTROL_RUNTIME_DESCRIPTOR_SHA256: '41be0dc1ffd778bd18b95bb0d91208b5eec38e04d5957cde56f94107915cb9ce',
+      DINKSTER_CONTROL_RUNTIME_ARCHIVE_SHA256: '77d6875fa3cd5790beb67cd2a36e2f96823274603530ce488294001ebe1deea8',
+      DINKSTER_CONTROL_RUNTIME_ARCHIVE_SIZE: '24812249',
+    })
+    const checkout = release.jobs['release']!.steps?.find(
+      (step) => step.with?.['repository'] === 'Kosinkadink/Dinkster',
+    )
+    expect(checkout?.with).toMatchObject({
+      ref: '${{ env.DINKSTER_REF }}',
+      path: '.dinkster',
+      token: '${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}',
+      'persist-credentials': false,
+    })
+    const build = release.jobs['release']!.steps?.find((step) =>
+      step.run?.includes('scripts/build_engine_feed.py'))
+    expect(build?.run).toContain('--cells win-cu128 --control-runtime')
+    expect(build?.run).toContain('DINKSTER_CONTROL_RUNTIME_DESCRIPTOR=')
+    expect(build?.run).toContain('DINKSTER_CONTROL_RUNTIME_ARCHIVE=')
+    expect(releaseSource).not.toMatch(/DINKSTER_ENGINE_ARCHIVE|DINKSTER_AIMDO_WHEEL|resources\/engine/)
   })
 
   it('runs typecheck, all unit tests, and a Linux build on pull requests', () => {

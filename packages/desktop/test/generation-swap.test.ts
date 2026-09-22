@@ -17,18 +17,19 @@ function supervisor(name: string, events: string[]): TestSupervisor {
   }
 }
 
-function swapOptions(events: string[], overrides: Partial<GenerationSwapOptions<string, TestSupervisor>> = {}) {
+function swapOptions(events: string[], overrides: Partial<GenerationSwapOptions<string, string, TestSupervisor>> = {}) {
   const journals: GenerationSwapJournal[] = []
   const old = supervisor('old', events)
   let instance = 0
-  const options: GenerationSwapOptions<string, TestSupervisor> = {
+  const options: GenerationSwapOptions<string, string, TestSupervisor> = {
     projectId: 'default',
     port: 4100,
     previous: 'generation-old',
     target: 'generation-new',
     currentSupervisor: old,
     describeGeneration: (generation) => generation,
-    build: async (generation) => { events.push(`build:${generation}`) },
+    describeTarget: (generation) => generation,
+    build: async (generation) => { events.push(`build:${generation}`); return generation },
     snapshot: async (generation) => { events.push(`snapshot:${generation}`) },
     activate: async (generation) => { events.push(`activate:${generation}`) },
     startSupervisor: async (generation, start) => {
@@ -37,6 +38,7 @@ function swapOptions(events: string[], overrides: Partial<GenerationSwapOptions<
     },
     waitForReady: async (_running, expectedInstanceId) => { events.push(`ready:${expectedInstanceId}`) },
     persistSelection: async (generation) => { events.push(`persist:${generation}`) },
+    onSupervisorRestored: (running) => { events.push(`restored:${running.name}`) },
     writeJournal: async (journal) => { journals.push(journal); events.push(`journal:${journal.stage}`) },
     clearJournal: async () => { events.push('journal:clear') },
     operationId: () => 'operation-1',
@@ -92,6 +94,7 @@ describe('project generation swap', () => {
       'activate:generation-old',
       'start:generation-old:4100:instance-2',
       'ready:instance-2',
+      'restored:generation-old',
       'persist:generation-old',
       'journal:failed',
     ])
@@ -131,6 +134,24 @@ describe('project generation swap', () => {
     await expect(swapProjectGeneration(options)).rejects.toThrow('generation swap and recovery both failed')
     expect(journals.at(-1)?.error).toBe(
       'generation swap and recovery both failed: target readiness failed; previous supervisor restart failed',
+    )
+  })
+
+  it('stops a restored supervisor that fails its own readiness check', async () => {
+    const events: string[] = []
+    const { options, journals } = swapOptions(events, {
+      waitForReady: async (_running, expectedInstanceId) => {
+        events.push(`ready:${expectedInstanceId}`)
+        throw new Error(expectedInstanceId === 'instance-1' ? 'target readiness failed' : 'recovery readiness failed')
+      },
+    })
+
+    await expect(swapProjectGeneration(options)).rejects.toThrow('generation swap and recovery both failed')
+    expect(events).toContain('stop:generation-new')
+    expect(events).toContain('stop:generation-old')
+    expect(events).not.toContain('restored:generation-old')
+    expect(journals.at(-1)?.error).toBe(
+      'generation swap and recovery both failed: target readiness failed; recovery readiness failed',
     )
   })
 

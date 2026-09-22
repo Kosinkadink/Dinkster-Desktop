@@ -17,6 +17,12 @@ const bridge: DesktopBridge = {
   status: () => ipcRenderer.invoke('desktop:status') as Promise<LifecycleStatus>,
   retry: () => ipcRenderer.invoke('desktop:retry') as Promise<void>,
   info: () => ipcRenderer.invoke('desktop:info') as Promise<DesktopInfo>,
+  projectEngine: () => ipcRenderer.invoke('desktop:project-engine'),
+  installProjectEngine: (channel, cell) => ipcRenderer.invoke('desktop:install-project-engine', channel, cell) as Promise<void>,
+  activateProjectGeneration: (generation) => ipcRenderer.invoke('desktop:activate-project-generation', generation) as Promise<void>,
+  removeProject: (deleteDataRoot, confirmedDataRoot) => ipcRenderer.invoke(
+    'desktop:remove-project', deleteDataRoot, confirmedDataRoot,
+  ) as Promise<void>,
   selectEngine: (commit, variant) => ipcRenderer.invoke('desktop:select-engine', commit, variant) as Promise<void>,
   checkForUpdates: () => ipcRenderer.invoke('desktop:check-for-updates') as Promise<void>,
   installUpdate: () => ipcRenderer.invoke('desktop:install-update') as Promise<void>,

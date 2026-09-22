@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, delimiter, dirname, join } from 'node:path'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import extract from 'extract-zip'
 import * as tar from 'tar'
 import { download, verifyFile } from './io.js'
-import { ENGINE_RELEASE, supportedPlatform, syncArguments, torchBackend } from './release.js'
+import { ENGINE_RELEASE, sourceSyncArguments, supportedPlatform, torchBackend, wheelInstallArguments } from './release.js'
 import {
   decodeEngineAccelerator,
   detectEngineAccelerator,
@@ -22,7 +22,7 @@ import type { LifecycleStatus } from './types.js'
 
 export interface EngineRuntimeOptions {
   readonly dataDirectory: string
-  readonly sourceArchive?: string
+  readonly wheelBundle?: string
   readonly sourceDirectory?: string
   readonly aimdoWheel?: string
   readonly uvExecutable?: string
@@ -274,7 +274,11 @@ export class EngineRuntime extends EventEmitter {
     this.assertStarting(signal)
     if ((this.options.releaseCommit ?? ENGINE_RELEASE.commit) === ENGINE_RELEASE.commit) {
       this.update({ phase: 'installing', detail: 'Preparing the default node catalogs', variant })
-      await run(uv, ['run', '--no-sync', 'dinkster-pack', 'prepare-catalogs', '--defaults', '--library-root', library], source, (detail) => {
+      const packaged = this.options.wheelBundle !== undefined && !this.options.sourceDirectory
+      await run(packaged ? executable(source, 'dinkster-pack') : uv, [
+        ...(packaged ? [] : ['run', '--no-sync', 'dinkster-pack']),
+        'prepare-catalogs', '--defaults', '--library-root', library,
+      ], source, (detail) => {
         this.update({ phase: 'installing', detail, variant })
       }, (child) => this.track(child), signal, env)
     }
@@ -330,7 +334,7 @@ export class EngineRuntime extends EventEmitter {
 
   private async ensureSource(variant: EngineAccelerator, signal: AbortSignal): Promise<string> {
     if (this.options.sourceDirectory) {
-      await this.sync(this.options.sourceDirectory, variant, signal)
+      await this.syncSource(this.options.sourceDirectory, variant, signal)
       return this.options.sourceDirectory
     }
 
@@ -361,38 +365,73 @@ export class EngineRuntime extends EventEmitter {
     if (commit !== ENGINE_RELEASE.commit) {
       throw new Error(`the selected Dinkster release ${commit.slice(0, 12)} is no longer installed`)
     }
-    const marker = join(destination, '.dinkster-desktop-release.json')
-    if (!this.options.sourceArchive) throw new Error('no packaged Dinkster engine source was found')
+    const markerName = '.dinkster-desktop-release.json'
+    if (!this.options.wheelBundle) throw new Error('no packaged Dinkster wheel bundle was found')
     this.update({ phase: 'installing', detail: 'Preparing the locked Dinkster release', variant })
-    await verifyFile(this.options.sourceArchive, ENGINE_RELEASE.sourceSha256)
     const staging = `${destination}.installing`
     await rm(staging, { recursive: true, force: true })
     await mkdir(staging, { recursive: true })
-    await extract(this.options.sourceArchive, { dir: staging })
-    await mkdir(dirname(destination), { recursive: true })
-    await rm(destination, { recursive: true, force: true })
-    await rename(join(staging, `dinkster-backend-${commit}`), destination)
-    await rm(staging, { recursive: true, force: true })
     try {
       this.assertStarting(signal)
-      await this.sync(destination, variant, signal)
-      await writeFile(marker, JSON.stringify({
+      await this.installWheels(staging, this.options.wheelBundle, variant, signal)
+      await writeFile(join(staging, markerName), JSON.stringify({
         commit,
         variant,
         ...nativePins,
       }, null, 2))
-    } catch (error) {
+      await mkdir(dirname(destination), { recursive: true })
       await rm(destination, { recursive: true, force: true })
+      await rename(staging, destination)
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true })
       throw error
     }
     return destination
   }
 
-  private async sync(source: string, variant: EngineAccelerator, signal: AbortSignal): Promise<void> {
+  private async syncSource(source: string, variant: EngineAccelerator, signal: AbortSignal): Promise<void> {
     const uv = this.options.uvExecutable ?? await this.ensureUv(signal)
     this.assertStarting(signal)
     this.update({ phase: 'installing', detail: `Installing the locked ${variant.toUpperCase()} environment`, variant })
-    await run(uv, syncArguments(variant), source, (detail) => {
+    await run(uv, sourceSyncArguments(variant), source, (detail) => {
+      this.update({ phase: 'installing', detail, variant })
+    }, (child) => this.track(child), signal, this.environment(source, uv, variant))
+    await this.installNative(source, uv, variant, signal)
+  }
+
+  private async installWheels(source: string, bundle: string, variant: EngineAccelerator, signal: AbortSignal): Promise<void> {
+    const uv = this.options.uvExecutable ?? await this.ensureUv(signal)
+    this.assertStarting(signal)
+    const manifestPath = join(bundle, ENGINE_RELEASE.manifest.archive)
+    await verifyFile(manifestPath, ENGINE_RELEASE.manifest.sha256)
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      repository?: string
+      tag?: string
+      version?: string
+      artifacts?: { name?: string; sha256?: string }[]
+    }
+    if (manifest.repository !== 'Kosinkadink/Dinkster' || manifest.tag !== ENGINE_RELEASE.tag ||
+      manifest.version !== ENGINE_RELEASE.version || !Array.isArray(manifest.artifacts)) {
+      throw new Error('packaged Dinkster release manifest does not match the pinned release')
+    }
+    const artifacts = manifest.artifacts.filter(({ name }) => name === 'constraints.txt' || name?.endsWith('.whl'))
+    if (!artifacts.some(({ name }) => name?.startsWith(`dinkster-${ENGINE_RELEASE.version}-`)) ||
+      !artifacts.some(({ name }) => name?.startsWith(`dinkster_frontend-${ENGINE_RELEASE.version}-`))) {
+      throw new Error('packaged Dinkster release manifest is missing required wheels')
+    }
+    for (const artifact of artifacts) {
+      if (!artifact.name || basename(artifact.name) !== artifact.name || !artifact.sha256?.match(/^[a-f0-9]{64}$/)) {
+        throw new Error('packaged Dinkster release manifest contains an invalid artifact')
+      }
+      const path = resolve(bundle, artifact.name)
+      await verifyFile(path, artifact.sha256)
+    }
+    this.update({ phase: 'installing', detail: `Installing the locked ${variant.toUpperCase()} environment`, variant })
+    await run(uv, ['venv', '--python', '3.12', join(source, '.venv')], source, (detail) => {
+      this.update({ phase: 'installing', detail, variant })
+    }, (child) => this.track(child), signal, this.environment(source, uv, variant))
+    this.assertStarting(signal)
+    await run(uv, wheelInstallArguments(executable(source, 'python'), bundle), source, (detail) => {
       this.update({ phase: 'installing', detail, variant })
     }, (child) => this.track(child), signal, this.environment(source, uv, variant))
     await this.installNative(source, uv, variant, signal)
@@ -438,7 +477,9 @@ export class EngineRuntime extends EventEmitter {
       this.update({ phase: 'installing', detail, variant })
     }, (child) => this.track(child), signal, this.environment(source, uv, variant))
     if (this.nativePins(variant).cudaTorchSha256) {
-      await run(uv, ['run', '--no-sync', 'python', '-c',
+      const packaged = this.options.wheelBundle !== undefined && !this.options.sourceDirectory
+      await run(packaged ? executable(source, 'python') : uv, [
+        ...(packaged ? [] : ['run', '--no-sync', 'python']), '-c',
         `import torch; assert torch.__version__ == ${JSON.stringify(ENGINE_RELEASE.cudaTorch.version)}, torch.__version__; assert torch.version.cuda == ${JSON.stringify(ENGINE_RELEASE.cudaTorch.cudaVersion)}, torch.version.cuda`,
       ], source, (detail) => {
         this.update({ phase: 'installing', detail, variant })

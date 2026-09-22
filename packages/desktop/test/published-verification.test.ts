@@ -40,6 +40,9 @@ describe('published Desktop verification workflow', () => {
     expect(helper.match(/\bgh .*/g)).toEqual([
       'gh api "repos/$($Pin.repository)" | ConvertFrom-Json',
       'gh release download $Pin.releaseTag --repo $Pin.repository --pattern $Pin.archive --dir $assets',
+      'gh api "repos/$($backend.repository)" | ConvertFrom-Json',
+      'gh api "repos/$($backend.repository)/commits/$($backend.releaseTag)" --jq .sha',
+      "gh release download $backend.releaseTag --repo $backend.repository --pattern $backend.releaseManifest.archive --pattern constraints.txt --pattern '*.whl' --dir $assets",
     ])
   })
 
@@ -85,8 +88,8 @@ describe('published Desktop verification workflow', () => {
     expect(desktop).toEqual({ repository: 'Kosinkadink/Dinkster-Desktop', published: false })
     expect(workflow.jobs.verify.if).toContain('&& false')
     expect(helper).toContain("throw 'No Dinkster Desktop release has been published'")
-    expect(helper).toContain('Assert-Artifact $Pin (Join-Path $assets $Pin.archive)')
-    expect(helper).toContain('Assert-Artifact $pin (Join-Path $install "resources/engine/$($pin.archive)")')
+    expect(helper).toContain('Assert-Artifact $backend.releaseManifest (Join-Path $assets $backend.releaseManifest.archive)')
+    expect(helper).toContain('foreach ($pin in @($backend.releaseManifest, $aimdo))')
   })
 
   it('keeps the proof code ready but does not select an unpublished source commit', async () => {
@@ -165,19 +168,28 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     await powershell(`$env:DINKSTER_VERIFY_WORK=${psQuote(resolve(scratch, 'work'))}; $env:GITHUB_ENV=${psQuote(envFile)}
       function gh {
         $global:LASTEXITCODE=0
-        if ($args[0] -eq 'api') { $repo=$args[1].Substring(6) }
+        if ($args[0] -eq 'api') { $repo=($args[1].Substring(6) -split '/commits/')[0] }
         elseif ($args[0] -eq 'release' -and $args[1] -eq 'download') { $repo=$args[4] }
         else { throw 'UNEXPECTED_GH_OPERATION' }
         $allowed = if ($env:GH_TOKEN -eq 'backend-only') { @('Kosinkadink/Dinkster','Kosinkadink/dinkster-aimdo') }
           elseif ($env:GH_TOKEN -eq 'desktop-only') { @('Kosinkadink/Dinkster-Desktop') } else { @() }
         if ($repo -notin $allowed) { throw 'WRONG_TOKEN_ROUTE' }
-        if ($args[0] -eq 'api') { '{"private":true}' }
-        else { [IO.File]::WriteAllText((Join-Path $args[8] $args[6]), 'fixture') }
+        if ($args[0] -eq 'api' -and $args[1] -match '/commits/') { 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
+        elseif ($args[0] -eq 'api') { '{"private":true}' }
+        else {
+          $destination=$args[[Array]::IndexOf($args, '--dir') + 1]
+          for ($index=0; $index -lt $args.Count; $index++) {
+            if ($args[$index] -ne '--pattern') { continue }
+            $name=$args[$index + 1]
+            if ($name -eq '*.whl') { $name='fixture.whl' }
+            [IO.File]::WriteAllText((Join-Path $destination $name), 'fixture')
+          }
+        }
       }
       $env:GH_TOKEN='backend-only'; & ${psQuote(fixtureScript)} -Action DownloadBackend
       $env:GH_TOKEN='desktop-only'; & ${psQuote(fixtureScript)} -Action DownloadDesktop`)
     const exported = await readFile(envFile, 'utf8')
-    expect(exported).toContain('DINKSTER_ENGINE_ARCHIVE=')
+    expect(exported).toContain('DINKSTER_ENGINE_RELEASE=')
     expect(exported).toContain('DINKSTER_AIMDO_WHEEL=')
     expect(exported).not.toMatch(/TOKEN|backend-only|desktop-only/)
     expect(await readFile(resolve(scratch, 'work/assets', desktop.archive), 'utf8')).toBe(content)

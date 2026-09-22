@@ -39,20 +39,22 @@ jobs:
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
           path: .frontend
           token: ${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}
-      - name: Download pinned private backend and Aimdo
+      - name: Download pinned private backend wheels and Aimdo
         env:
           GH_TOKEN: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
         run: |
           if (-not $env:GH_TOKEN) { throw 'Configure DINKSTER_RELEASE_READ_TOKEN with read access to private Kosinkadink/Dinkster and Kosinkadink/dinkster-aimdo releases' }
           $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
           if ($pin.repository -ne 'Kosinkadink/Dinkster' -or $pin.commit -notmatch '^[a-f0-9]{40}$') { throw 'Invalid backend pin' }
-          if ($pin.releaseTag -ne "backend-$($pin.commit)") { throw 'Invalid backend release tag' }
+          if ($pin.releaseTag -ne "v$($pin.version)") { throw 'Invalid backend release tag' }
           $repo = gh api repos/Kosinkadink/Dinkster | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or -not $repo.private) { throw 'Backend release repository must be private' }
+          $releaseCommit = gh api "repos/Kosinkadink/Dinkster/commits/$($pin.releaseTag)" --jq .sha
+          if ($LASTEXITCODE -ne 0 -or $releaseCommit -cne $pin.commit) { throw 'Backend release tag does not resolve to its pinned commit' }
           $destination = Join-Path $env:RUNNER_TEMP backend-artifact
-          gh release download $pin.releaseTag --repo Kosinkadink/Dinkster --pattern $pin.archive --dir $destination
+          gh release download $pin.releaseTag --repo Kosinkadink/Dinkster --pattern $pin.releaseManifest.archive --pattern constraints.txt --pattern '*.whl' --dir $destination
           if ($LASTEXITCODE -ne 0) { throw 'Pinned backend release download failed' }
-          "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $destination $pin.archive)" >> $env:GITHUB_ENV
+          "DINKSTER_ENGINE_RELEASE=$destination" >> $env:GITHUB_ENV
           $aimdo = $pin.desktopWindowsRuntime.aimdo
           if ($aimdo.repository -ne 'Kosinkadink/dinkster-aimdo' -or $aimdo.releaseTag -ne "v$($aimdo.version)") { throw 'Invalid Aimdo pin' }
           $repo = gh api repos/Kosinkadink/dinkster-aimdo | ConvertFrom-Json
@@ -100,7 +102,7 @@ jobs:
             ${{ runner.temp }}/dinkster-first-run/*.png
             ${{ runner.temp }}/dinkster-first-run/*.json
           if-no-files-found: ignore
-      - name: Record source and artifact checksums
+      - name: Record release inputs and artifact checksums
         run: |
           $package = Get-Content packages/desktop/package.json -Raw | ConvertFrom-Json
           $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json

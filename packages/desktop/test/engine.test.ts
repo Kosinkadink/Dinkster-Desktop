@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createServer, type Server } from 'node:http'
@@ -91,6 +91,72 @@ function waitForPhase(runtime: EngineRuntime, phase: string): Promise<void> {
 }
 
 describe('EngineRuntime lifecycle', () => {
+  it('creates a managed environment from the verified packaged wheel contract', async () => {
+    const { data, source: bundle } = await fixture('')
+    const manifest = {
+      repository: 'Kosinkadink/Dinkster', tag: ENGINE_RELEASE.tag, version: ENGINE_RELEASE.version,
+      artifacts: [
+        { name: 'constraints.txt', sha256: 'a'.repeat(64) },
+        { name: `dinkster-${ENGINE_RELEASE.version}-py3-none-any.whl`, sha256: 'b'.repeat(64) },
+        { name: `dinkster_frontend-${ENGINE_RELEASE.version}-py3-none-any.whl`, sha256: 'c'.repeat(64) },
+      ],
+    }
+    await writeFile(join(bundle, ENGINE_RELEASE.manifest.archive), JSON.stringify(manifest))
+    for (const artifact of manifest.artifacts) await writeFile(join(bundle, artifact.name), artifact.name)
+    const uv = join(bundle, 'uv-fixture')
+    await writeFile(uv, `#!/usr/bin/env node
+      const assert = require('node:assert/strict'); const fs = require('node:fs'); const path = require('node:path')
+      const command = process.argv[2]; const args = process.argv.slice(3)
+      if (command === 'venv') {
+        const root = args.at(-1); const bin = path.join(root, process.platform === 'win32' ? 'Scripts' : 'bin')
+        fs.mkdirSync(bin, { recursive: true })
+        for (const name of ['python', 'dinkster-supervisor', 'dinkster-serve']) fs.writeFileSync(path.join(bin, process.platform === 'win32' ? name + '.exe' : name), 'fixture')
+        const pack = path.join(bin, process.platform === 'win32' ? 'dinkster-pack.exe' : 'dinkster-pack')
+        fs.writeFileSync(pack, '#!/usr/bin/env node\\nconsole.error("catalog fixture"); process.exit(1)')
+        fs.chmodSync(pack, 0o755)
+      } else if (command === 'pip') {
+        assert.ok(args.includes('--no-deps')); assert.ok(args.includes('--require-hashes'))
+        assert.ok(args.includes('--find-links')); assert.ok(args.includes('--requirement'))
+        fs.writeFileSync('wheel-install', JSON.stringify(args))
+      } else { throw new Error('unexpected uv command: ' + command) }
+    `)
+    await chmod(uv, 0o755)
+    const verify = vi.spyOn(io, 'verifyFile').mockResolvedValue(undefined)
+    const runtime = createRuntime({
+      dataDirectory: data, wheelBundle: bundle, uvExecutable: uv, variant: 'cpu',
+    })
+    await expect(runtime.start()).rejects.toThrow('catalog fixture')
+    const installed = join(data, 'engine', 'releases', `${ENGINE_RELEASE.commit}-cpu`)
+    const args = JSON.parse(await readFile(join(installed, 'wheel-install'), 'utf8')) as string[]
+    expect(args).not.toContain('sync')
+    expect(verify).toHaveBeenCalledWith(join(bundle, ENGINE_RELEASE.manifest.archive), ENGINE_RELEASE.manifest.sha256)
+    for (const artifact of manifest.artifacts) {
+      expect(verify).toHaveBeenCalledWith(join(bundle, artifact.name), artifact.sha256)
+    }
+  })
+
+  it('removes staging when a packaged wheel is missing or corrupted', async () => {
+    const { data, source: bundle } = await fixture('')
+    const wheel = `dinkster-${ENGINE_RELEASE.version}-py3-none-any.whl`
+    await writeFile(join(bundle, ENGINE_RELEASE.manifest.archive), JSON.stringify({
+      repository: 'Kosinkadink/Dinkster', tag: ENGINE_RELEASE.tag, version: ENGINE_RELEASE.version,
+      artifacts: [
+        { name: 'constraints.txt', sha256: 'a'.repeat(64) },
+        { name: wheel, sha256: 'b'.repeat(64) },
+        { name: `dinkster_frontend-${ENGINE_RELEASE.version}-py3-none-any.whl`, sha256: 'c'.repeat(64) },
+      ],
+    }))
+    vi.spyOn(io, 'verifyFile').mockImplementation(async (path) => {
+      if (path === join(bundle, wheel)) throw new Error('checksum mismatch for packaged wheel')
+    })
+    const runtime = createRuntime({
+      dataDirectory: data, wheelBundle: bundle, uvExecutable: process.execPath, variant: 'cpu',
+    })
+    await expect(runtime.start()).rejects.toThrow('checksum mismatch for packaged wheel')
+    expect(existsSync(join(data, 'engine', 'releases', `${ENGINE_RELEASE.commit}-cpu.installing`))).toBe(false)
+    expect(existsSync(join(data, 'engine', 'releases', `${ENGINE_RELEASE.commit}-cpu`))).toBe(false)
+  })
+
   it('installs the verified bundled wheel after sync and before catalog preparation', async () => {
     const { data, source } = await fixture(
       `const assert = require('node:assert/strict')

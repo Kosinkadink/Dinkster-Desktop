@@ -34,7 +34,7 @@ jobs:
           ref: main
           path: published-source
           persist-credentials: false
-      - name: Download pinned backend and Aimdo
+      - name: Download pinned backend wheels and Aimdo
         env:
           GH_TOKEN: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
         run: ./packages/desktop/scripts/verify-published-desktop.ps1 -Action DownloadBackend
@@ -51,7 +51,7 @@ jobs:
           node-version: 22
       - run: pnpm install --frozen-lockfile
         working-directory: published-source
-      - name: Verify backend source-bound native profile
+      - name: Verify backend wheel contract
         run: pnpm --filter @dinkster/desktop prepare:engine
         working-directory: published-source
       - name: Install verified published executable without credentials

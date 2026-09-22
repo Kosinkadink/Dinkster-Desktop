@@ -18,7 +18,7 @@ $aimdo = $backend.desktopWindowsRuntime.aimdo
 if ($desktop.published -ne $true -and $Action -ne 'Cleanup') {
     throw 'No Dinkster Desktop release has been published'
 }
-if ($desktop.published -eq $true -and ($backend.commit -cne $desktop.backendCommit -or $backend.releaseTag -cne "backend-$($desktop.backendCommit)")) {
+if ($desktop.published -eq $true -and $backend.commit -cne $desktop.backendCommit) {
     throw 'The published Desktop verifier requires its original backend pin'
 }
 
@@ -40,9 +40,14 @@ function Get-ReleaseArtifact($Pin) {
 if ($Action -eq 'DownloadBackend') {
     if (Test-Path -LiteralPath $root) { throw 'Verification directory must be fresh' }
     New-Item -ItemType Directory -Path $assets, $proof | Out-Null
-    Get-ReleaseArtifact $backend
+    $repo = gh api "repos/$($backend.repository)" | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $repo.private) { throw 'Release repository must be private' }
+    $releaseCommit = gh api "repos/$($backend.repository)/commits/$($backend.releaseTag)" --jq .sha
+    if ($LASTEXITCODE -ne 0 -or $releaseCommit -cne $backend.commit) { throw 'Backend release tag does not resolve to its pinned commit' }
+    gh release download $backend.releaseTag --repo $backend.repository --pattern $backend.releaseManifest.archive --pattern constraints.txt --pattern '*.whl' --dir $assets
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned private wheel release download failed' }
     Get-ReleaseArtifact $aimdo
-    "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $assets $backend.archive)" >> $env:GITHUB_ENV
+    "DINKSTER_ENGINE_RELEASE=$assets" >> $env:GITHUB_ENV
     "DINKSTER_AIMDO_WHEEL=$(Join-Path $assets $aimdo.archive)" >> $env:GITHUB_ENV
     return
 }
@@ -57,7 +62,8 @@ Get-ChildItem Env: | Where-Object { $_.Name -match 'TOKEN|SECRET|PASSWORD|CREDEN
 $protocol = 'Registry::HKEY_CURRENT_USER\Software\Classes\dinkster'
 $executable = Join-Path $install 'Dinkster Desktop.exe'
 if ($Action -eq 'Install') {
-    foreach ($pin in @($desktop, $backend, $aimdo)) { Assert-Artifact $pin (Join-Path $assets $pin.archive) }
+    foreach ($pin in @($desktop, $aimdo)) { Assert-Artifact $pin (Join-Path $assets $pin.archive) }
+    Assert-Artifact $backend.releaseManifest (Join-Path $assets $backend.releaseManifest.archive)
     if ((Test-Path $install) -or (Test-Path $data) -or (Test-Path $owner) -or (Test-Path $protocol)) {
         throw 'Refusing to overwrite an existing installation, protocol, or verification environment'
     }
@@ -67,7 +73,7 @@ if ($Action -eq 'Install') {
     @{ install = $install; data = $data } | ConvertTo-Json | Set-Content $owner
     $process = Start-Process -FilePath (Join-Path $assets $desktop.archive) -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$install") -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
-    foreach ($pin in @($backend, $aimdo)) { Assert-Artifact $pin (Join-Path $install "resources/engine/$($pin.archive)") }
+    foreach ($pin in @($backend.releaseManifest, $aimdo)) { Assert-Artifact $pin (Join-Path $install "resources/engine/$($pin.archive)") }
     @{ desktop = $desktop; backend = $backend; embeddedInputsVerified = $true; accelerator = 'cpu' } |
         ConvertTo-Json -Depth 8 | Set-Content (Join-Path $proof 'artifacts.json')
     "DINKSTER_DESKTOP_EXECUTABLE=$executable" >> $env:GITHUB_ENV

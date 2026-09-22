@@ -44,6 +44,36 @@ export interface DesktopSystemCheck {
   readonly gpu: { readonly available: boolean; readonly name?: string; readonly driver?: string; readonly memoryMiB?: number }
 }
 
+export type DesktopProjectChannel = 'stable' | 'github-live'
+
+export interface DesktopProjectGeneration {
+  readonly generation: number
+  readonly current: boolean
+  readonly baseId: string
+  readonly engineCommit: string
+  readonly cell: string
+  readonly status: 'active' | 'installed' | 'failed'
+}
+
+export interface DesktopProjectEngineInfo {
+  readonly projectId: string
+  readonly configured: boolean
+  readonly mirrorConfigured: boolean
+  readonly dataRoot: string
+  readonly generations: readonly DesktopProjectGeneration[]
+  readonly channel?: DesktopProjectChannel
+  readonly installRoot?: string
+  readonly port?: number
+  readonly cell?: string
+  readonly availableEngineCommit?: string
+  readonly journal?: {
+    readonly stage: 'building' | 'switching' | 'failed'
+    readonly previousGeneration: number
+    readonly targetGeneration: number
+    readonly error?: string
+  }
+}
+
 export type DesktopPanelPlacement = 'dock' | 'rail' | 'bottom'
 
 export type DesktopWindowContext =
@@ -107,6 +137,10 @@ export interface DesktopBridge {
   status(): Promise<LifecycleStatus>
   retry(): Promise<void>
   info(): Promise<DesktopInfo>
+  projectEngine(): Promise<DesktopProjectEngineInfo>
+  installProjectEngine(channel: DesktopProjectChannel, cell: string): Promise<void>
+  activateProjectGeneration(generation: number): Promise<void>
+  removeProject(deleteDataRoot: boolean, confirmedDataRoot?: string): Promise<void>
   selectEngine(commit: string, variant: EngineAccelerator): Promise<void>
   checkForUpdates(): Promise<void>
   installUpdate(): Promise<void>

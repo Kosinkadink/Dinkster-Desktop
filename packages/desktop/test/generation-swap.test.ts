@@ -17,18 +17,19 @@ function supervisor(name: string, events: string[]): TestSupervisor {
   }
 }
 
-function swapOptions(events: string[], overrides: Partial<GenerationSwapOptions<string, TestSupervisor>> = {}) {
+function swapOptions(events: string[], overrides: Partial<GenerationSwapOptions<string, string, TestSupervisor>> = {}) {
   const journals: GenerationSwapJournal[] = []
   const old = supervisor('old', events)
   let instance = 0
-  const options: GenerationSwapOptions<string, TestSupervisor> = {
+  const options: GenerationSwapOptions<string, string, TestSupervisor> = {
     projectId: 'default',
     port: 4100,
     previous: 'generation-old',
     target: 'generation-new',
     currentSupervisor: old,
     describeGeneration: (generation) => generation,
-    build: async (generation) => { events.push(`build:${generation}`) },
+    describeTarget: (generation) => generation,
+    build: async (generation) => { events.push(`build:${generation}`); return generation },
     snapshot: async (generation) => { events.push(`snapshot:${generation}`) },
     activate: async (generation) => { events.push(`activate:${generation}`) },
     startSupervisor: async (generation, start) => {

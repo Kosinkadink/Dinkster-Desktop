@@ -30,7 +30,6 @@ export interface ProjectEngineControllerOptions<Supervisor extends GenerationSup
   readonly dataDirectory: string
   readonly projectId: string
   readonly port: number
-  readonly shellVersion: string
   readonly mirrorUrl?: string
   readonly allowLocalHttp?: boolean
   readonly cli: EngineCli

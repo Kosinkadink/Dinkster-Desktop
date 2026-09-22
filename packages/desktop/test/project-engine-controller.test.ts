@@ -88,7 +88,6 @@ describe('project engine controller', () => {
       dataDirectory,
       projectId: 'studio',
       port: 4101,
-      shellVersion: '0.2.0',
       mirrorUrl: 'https://mirror.example/engine',
       cli: engineCli,
       inspectFeed: async () => inspection(),
@@ -129,7 +128,6 @@ describe('project engine controller', () => {
       dataDirectory,
       projectId: 'studio',
       port: 4101,
-      shellVersion: '0.2.0',
       mirrorUrl: 'https://mirror.example/engine',
       cli: engineCli,
       currentSupervisor: previous,
@@ -162,7 +160,7 @@ describe('project engine controller', () => {
     await mkdir(dataRoot, { recursive: true })
     await writeFile(join(dataRoot, 'model.bin'), 'user data')
     const preserve = new ProjectEngineController({
-      dataDirectory, projectId: 'studio', port: 4101, shellVersion: '0.2.0', cli: cli(),
+      dataDirectory, projectId: 'studio', port: 4101, cli: cli(),
       inspectFeed: async () => inspection(), startSupervisor: async () => supervisor(1), waitForReady: async () => undefined,
     })
     await preserve.remove(false)

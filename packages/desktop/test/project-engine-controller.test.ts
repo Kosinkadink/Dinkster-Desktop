@@ -88,6 +88,54 @@ function cli(invocations: string[][] = []): EngineCli {
 }
 
 describe('project engine controller', () => {
+  it('starts one current generation supervisor and stops it without changing the binding', async () => {
+    const dataDirectory = await temporaryRoot()
+    const installRoot = join(dataDirectory, 'engine-projects', 'studio')
+    await writeProjectRegistry(dataDirectory, upsertProjectBinding(
+      await readProjectRegistry(dataDirectory),
+      { projectId: 'studio', installRoot, channel: 'stable' },
+    ))
+    const engineCli = cli()
+    vi.spyOn(engineCli, 'generations').mockResolvedValue([generation(3, true, installRoot)])
+    const running = supervisor(3)
+    const starts = vi.fn(async () => running)
+    const controller = new ProjectEngineController({
+      dataDirectory, projectId: 'studio', port: 4101, cli: engineCli,
+      inspectFeed: async () => inspection(), startSupervisor: starts, waitForReady: async () => undefined,
+    })
+
+    await Promise.all([controller.startCurrent(), controller.startCurrent()])
+    await controller.stop()
+
+    expect(starts).toHaveBeenCalledOnce()
+    expect(starts.mock.calls[0]?.[1]).toMatchObject({ port: 4101, dataRoot: defaultProjectDataRoot(dataDirectory, 'studio') })
+    expect(running.stop).toHaveBeenCalledOnce()
+    expect(getProjectBinding(await readProjectRegistry(dataDirectory), 'studio')).toMatchObject({
+      installRoot, channel: 'stable',
+    })
+  })
+
+  it('cleans up a current supervisor that does not become ready', async () => {
+    const dataDirectory = await temporaryRoot()
+    const installRoot = join(dataDirectory, 'engine-projects', 'studio')
+    await writeProjectRegistry(dataDirectory, upsertProjectBinding(
+      await readProjectRegistry(dataDirectory),
+      { projectId: 'studio', installRoot, channel: 'stable' },
+    ))
+    const engineCli = cli()
+    vi.spyOn(engineCli, 'generations').mockResolvedValue([generation(3, true, installRoot)])
+    const candidate = supervisor(3)
+    const controller = new ProjectEngineController({
+      dataDirectory, projectId: 'studio', port: 4101, cli: engineCli,
+      inspectFeed: async () => inspection(), startSupervisor: async () => candidate,
+      waitForReady: async () => { throw new Error('current supervisor did not become ready') },
+    })
+
+    await expect(controller.startCurrent()).rejects.toThrow('did not become ready')
+
+    expect(candidate.stop).toHaveBeenCalledOnce()
+  })
+
   it('stages and starts a first generation before persisting the project binding', async () => {
     const dataDirectory = await temporaryRoot()
     const invocations: string[][] = []

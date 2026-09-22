@@ -63,9 +63,49 @@ function generationCli(cli: EngineCli, generation: EngineGeneration): EngineCli 
 
 export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
   private supervisor: Supervisor | undefined
+  private startPromise: Promise<void> | undefined
 
   constructor(private readonly options: ProjectEngineControllerOptions<Supervisor>) {
     this.supervisor = options.currentSupervisor
+  }
+
+  async startCurrent(): Promise<void> {
+    if (this.supervisor) return
+    if (this.startPromise) return this.startPromise
+    this.startPromise = this.startCurrentInner().finally(() => {
+      this.startPromise = undefined
+    })
+    return this.startPromise
+  }
+
+  private async startCurrentInner(): Promise<void> {
+    const binding = getProjectBinding(
+      await readProjectRegistry(this.options.dataDirectory),
+      this.options.projectId,
+    )
+    if (!binding) return
+    const current = (await this.options.cli.generations(binding.installRoot))
+      .find((generation) => generation.current)
+    if (!current) throw new Error(`project ${this.options.projectId} has no active generation`)
+    const instanceId = crypto.randomUUID()
+    const supervisor = await this.start(current, { port: this.options.port, instanceId })
+    try {
+      await this.options.waitForReady(supervisor, instanceId)
+      this.supervisor = supervisor
+    } catch (error) {
+      try {
+        await supervisor.stop()
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'current supervisor startup and cleanup both failed')
+      }
+      throw error
+    }
+  }
+
+  async stop(): Promise<void> {
+    await this.startPromise?.catch(() => {})
+    await this.supervisor?.stop()
+    this.supervisor = undefined
   }
 
   async info(): Promise<DesktopProjectEngineInfo> {

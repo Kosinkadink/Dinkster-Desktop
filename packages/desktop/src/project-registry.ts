@@ -131,6 +131,14 @@ export function getProjectBinding(
   return registry.projects.find((existing) => existing.projectId === projectId)
 }
 
+export function removeProjectBinding(registry: ProjectRegistry, projectId: string): ProjectRegistry {
+  if (!validProjectId(projectId)) throw new Error(`invalid project id: ${JSON.stringify(projectId)}`)
+  return {
+    version: PROJECT_REGISTRY_VERSION,
+    projects: registry.projects.filter((existing) => existing.projectId !== projectId),
+  }
+}
+
 export function listProjectBindings(registry: ProjectRegistry): readonly DesktopProjectBinding[] {
   return registry.projects
 }

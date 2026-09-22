@@ -4,7 +4,7 @@ import { join, resolve, sep } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   decodeProjectRegistry, emptyProjectRegistry, getProjectBinding, listProjectBindings,
-  readProjectRegistry, upsertProjectBinding, writeProjectRegistry,
+  readProjectRegistry, removeProjectBinding, upsertProjectBinding, writeProjectRegistry,
 } from '../src/project-registry.js'
 
 const temporaryDirectories: string[] = []
@@ -53,6 +53,13 @@ describe('project registry', () => {
       { ...alpha, channel: 'github-live' })
     expect(listProjectBindings(registry)).toHaveLength(1)
     expect(getProjectBinding(registry, 'p-alpha')?.channel).toBe('github-live')
+  })
+
+  it('removes only the selected binding without touching other projects', () => {
+    const registry = upsertProjectBinding(upsertProjectBinding(emptyProjectRegistry(), alpha), beta)
+    expect(removeProjectBinding(registry, 'p-alpha')).toEqual({ version: 1, projects: [beta] })
+    expect(removeProjectBinding(registry, 'missing')).toEqual(registry)
+    expect(() => removeProjectBinding(registry, 'not valid')).toThrow('invalid project id')
   })
 
   it('rejects a root already bound to a different project', () => {

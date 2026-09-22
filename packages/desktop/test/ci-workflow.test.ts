@@ -90,7 +90,7 @@ describe('desktop workflows', () => {
     expect(full.on).toMatchObject({
       push: { branches: ['main'] },
       workflow_dispatch: null,
-      workflow_call: expect.any(Object),
+      workflow_call: null,
     })
     expect(Object.keys(full.jobs)).toEqual([
       'linux',
@@ -168,11 +168,30 @@ describe('desktop workflows', () => {
     }
   })
 
-  it('validates the exact private Desktop main commit before publication', () => {
+  it('downloads public release inputs with the workflow token', () => {
+    for (const workflow of [full, release, published]) {
+      const downloadSteps = Object.values(workflow.jobs).flatMap((job) =>
+        (job.steps ?? []).filter(
+          (step) =>
+            step.run?.includes('DownloadBackend') ||
+            step.run?.includes('gh release download'),
+        ),
+      )
+      expect(downloadSteps.length).toBeGreaterThan(0)
+      for (const step of downloadSteps) {
+        expect(step.env?.['GH_TOKEN']).toBe('${{ github.token }}')
+        expect(step.run).not.toContain('DINKSTER_RELEASE_READ_TOKEN')
+      }
+    }
+    expect(JSON.stringify([full, release, published])).not.toContain(
+      'DINKSTER_RELEASE_READ_TOKEN',
+    )
+  })
+
+  it('validates the exact Desktop main commit before publication', () => {
     expect(release.jobs['validation']).toEqual({
-      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && github.event.repository.private == true && github.ref == 'refs/heads/main'",
+      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && github.ref == 'refs/heads/main'",
       uses: './.github/workflows/full-validation.yml',
-      secrets: 'inherit',
     })
     expect(release.jobs['release']!.needs).toBe('validation')
     expect(release.jobs['release']!.if).toBe(release.jobs['validation']!.if)

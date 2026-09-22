@@ -7,9 +7,6 @@ on:
     - cron: '31 11 * * *'
   workflow_dispatch:
   workflow_call:
-    secrets:
-      DINKSTER_RELEASE_READ_TOKEN:
-        required: true
 
 permissions:
   contents: read
@@ -102,11 +99,10 @@ jobs:
           repository: Kosinkadink/Dinkster-Frontend
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
           path: .frontend
-      - name: Download pinned private backend and Aimdo
+      - name: Download pinned backend and Aimdo
         env:
-          GH_TOKEN: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if (-not $env:GH_TOKEN) { throw 'Configure DINKSTER_RELEASE_READ_TOKEN with read access to private release inputs' }
           $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
           if ($pin.repository -ne 'Kosinkadink/Dinkster' -or $pin.commit -notmatch '^[a-f0-9]{40}$') { throw 'Invalid backend pin' }
           if ($pin.releaseTag -ne "backend-$($pin.commit)") { throw 'Invalid backend release tag' }

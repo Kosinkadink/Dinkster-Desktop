@@ -74,7 +74,7 @@ function supervisor(number: number): TestSupervisor {
 
 function cli(): EngineCli {
   return new EngineCli({
-    executable: 'dinkster',
+    interpreter: '/srv/dinkster/bootstrap/control/bin/python',
     run: async () => ({ exitCode: 1, stdout: '', stderr: 'unexpected real call' }),
   })
 }

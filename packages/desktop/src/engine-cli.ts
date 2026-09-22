@@ -48,7 +48,7 @@ export interface EngineServeChild {
 export type EngineCliSpawner = (invocation: EngineCliInvocation) => EngineServeChild
 
 export interface EngineCliOptions {
-  readonly executable: string
+  readonly interpreter: string
   readonly run?: EngineCliRunner
   readonly spawn?: EngineCliSpawner
 }
@@ -77,6 +77,7 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/
 const CELL_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)+$/
 const ERROR_EXCERPT_LIMIT = 2000
+const CLI_COMMAND_INDEX = 4
 
 const defaultRunner: EngineCliRunner = async ({ argv }) => {
   const executable = argv[0] ?? ''
@@ -226,22 +227,25 @@ function parseGenerations(value: unknown, requestedRoot: string): EngineGenerati
 }
 
 export class EngineCli {
-  private readonly executable: string
+  private readonly interpreter: string
   private readonly run: EngineCliRunner
   private readonly spawnChild: EngineCliSpawner
 
   constructor(options: EngineCliOptions) {
-    if (typeof options.executable !== 'string' || options.executable.trim() === '') {
-      throw new Error('engine bootstrap command is not configured')
+    if (typeof options.interpreter !== 'string' || options.interpreter.trim() === '') {
+      throw new Error('engine bootstrap interpreter is not configured')
     }
-    this.executable = options.executable
+    this.interpreter = options.interpreter
     this.run = options.run ?? defaultRunner
     this.spawnChild = options.spawn ?? defaultSpawner
   }
 
+  private command(...args: string[]): string[] {
+    return [this.interpreter, '-I', '-m', 'dinkster.cli', ...args]
+  }
+
   async install(request: EngineInstallRequest): Promise<EngineGeneration> {
-    const argv = [
-      this.executable,
+    const argv = this.command(
       'install',
       '--root',
       request.root,
@@ -253,37 +257,35 @@ export class EngineCli {
       request.cell,
       '--stage-only',
       '--json',
-    ]
+    )
     if (request.allowLocalHttp === true) argv.push('--allow-local-http')
     return this.generationCommand(argv, request.root)
   }
 
   async activate(request: EngineActivateRequest): Promise<EngineGeneration> {
-    const argv = [
-      this.executable,
+    const argv = this.command(
       'activate',
       '--root',
       request.root,
       '--generation',
       String(request.generation),
       '--json',
-    ]
+    )
     return this.generationCommand(argv, request.root)
   }
 
   async generations(root: string): Promise<EngineGeneration[]> {
-    const result = await this.runCli([
-      this.executable,
+    const result = await this.runCli(this.command(
       'generations',
       '--root',
       root,
       '--json',
-    ])
+    ))
     return parseGenerations(parseCliJson(result.stdout, 'dinkster generations'), root)
   }
 
   async rollback(root: string): Promise<EngineGeneration> {
-    const argv = [this.executable, 'rollback', '--root', root, '--json']
+    const argv = this.command('rollback', '--root', root, '--json')
     return this.generationCommand(argv, root)
   }
 
@@ -293,8 +295,7 @@ export class EngineCli {
     }
     if (request.instance.trim() === '') throw new Error('serve instance must not be empty')
     return this.spawnChild({
-      argv: [
-        this.executable,
+      argv: this.command(
         'serve',
         '--root',
         request.root,
@@ -306,13 +307,13 @@ export class EngineCli {
         String(request.port),
         '--instance',
         request.instance,
-      ],
+      ),
     })
   }
 
   private async generationCommand(argv: readonly string[], root: string): Promise<EngineGeneration> {
     const result = await this.runCli(argv)
-    return parseGeneration(parseCliJson(result.stdout, `dinkster ${String(argv[1])}`), root)
+    return parseGeneration(parseCliJson(result.stdout, `dinkster ${String(argv[CLI_COMMAND_INDEX])}`), root)
   }
 
   private async runCli(argv: readonly string[]): Promise<EngineCliResult> {
@@ -320,7 +321,7 @@ export class EngineCli {
     if (result.exitCode !== 0) {
       const excerpt = errorExcerpt(result.stderr || result.stdout)
       throw new Error(
-        `${String(argv[1])} failed with exit code ${String(result.exitCode)}${excerpt ? `: ${excerpt}` : ''}`,
+        `${String(argv[CLI_COMMAND_INDEX])} failed with exit code ${String(result.exitCode)}${excerpt ? `: ${excerpt}` : ''}`,
       )
     }
     return result

@@ -8,6 +8,8 @@ import {
 } from '../src/engine-cli.js'
 
 const root = '/srv/dinkster/roots/project-a'
+const interpreter = '/srv/dinkster/bootstrap/control/bin/python'
+const cliPrefix = [interpreter, '-I', '-m', 'dinkster.cli']
 const okEngine = {
   baseId: 'a'.repeat(64),
   manifestSha256: 'b'.repeat(64),
@@ -55,16 +57,16 @@ function fakeChild(): EngineServeChild {
 
 describe('engine CLI adapter', () => {
   it('fails closed without a configured bootstrap command', () => {
-    expect(() => new EngineCli({} as EngineCliOptions)).toThrow('bootstrap command is not configured')
-    expect(() => new EngineCli({ executable: '  ' })).toThrow('bootstrap command is not configured')
+    expect(() => new EngineCli({} as EngineCliOptions)).toThrow('bootstrap interpreter is not configured')
+    expect(() => new EngineCli({ interpreter: '  ' })).toThrow('bootstrap interpreter is not configured')
   })
 
   it('installs stage-only with the exact contract argv and never activates', async () => {
     const { run, invocations } = runner(stagedGeneration())
-    const cli = new EngineCli({ executable: 'dinkster', run })
+    const cli = new EngineCli({ interpreter, run })
     const generation = await cli.install({ root, mirror: 'https://mirror.example/r2', channel: 'stable', cell: 'linux-cu128' })
     expect(invocations).toEqual([[
-      'dinkster', 'install', '--root', root, '--mirror', 'https://mirror.example/r2',
+      ...cliPrefix, 'install', '--root', root, '--mirror', 'https://mirror.example/r2',
       '--channel', 'stable', '--cell', 'linux-cu128', '--stage-only', '--json',
     ]])
     expect(generation.generation).toBe(1)
@@ -76,13 +78,13 @@ describe('engine CLI adapter', () => {
 
   it('adds --allow-local-http only when explicitly requested and forwards the channel', async () => {
     const { run, invocations } = runner(stagedGeneration())
-    const cli = new EngineCli({ executable: 'dinkster', run })
+    const cli = new EngineCli({ interpreter, run })
     await cli.install({
       root, mirror: 'http://127.0.0.1:9000', channel: 'github-live',
       cell: 'linux-cu128', allowLocalHttp: true,
     })
     expect(invocations[0]).toEqual([
-      'dinkster', 'install', '--root', root, '--mirror', 'http://127.0.0.1:9000',
+      ...cliPrefix, 'install', '--root', root, '--mirror', 'http://127.0.0.1:9000',
       '--channel', 'github-live', '--cell', 'linux-cu128', '--stage-only', '--json',
       '--allow-local-http',
     ])
@@ -90,9 +92,9 @@ describe('engine CLI adapter', () => {
 
   it('activates a generation by number with the exact argv', async () => {
     const { run, invocations } = runner(stagedGeneration({ current: true }))
-    const cli = new EngineCli({ executable: 'dinkster', run })
+    const cli = new EngineCli({ interpreter, run })
     const generation = await cli.activate({ root, generation: 2 })
-    expect(invocations).toEqual([['dinkster', 'activate', '--root', root, '--generation', '2', '--json']])
+    expect(invocations).toEqual([[...cliPrefix, 'activate', '--root', root, '--generation', '2', '--json']])
     expect(generation.current).toBe(true)
   })
 
@@ -100,25 +102,25 @@ describe('engine CLI adapter', () => {
     const { run, invocations } = runner(
       generationsJson(stagedGeneration(), stagedGeneration({ generation: 2, engine: null, controlPython: undefined, executionPython: undefined })),
     )
-    const cli = new EngineCli({ executable: 'dinkster', run })
+    const cli = new EngineCli({ interpreter, run })
     const generations = await cli.generations(root)
-    expect(invocations).toEqual([['dinkster', 'generations', '--root', root, '--json']])
+    expect(invocations).toEqual([[...cliPrefix, 'generations', '--root', root, '--json']])
     expect(generations).toHaveLength(2)
     expect(generations[1]).toEqual({ generation: 2, current: false, root, engine: null })
   })
 
   it('rolls back with the exact argv', async () => {
     const { run, invocations } = runner(stagedGeneration({ generation: 3, current: true }))
-    const cli = new EngineCli({ executable: 'dinkster', run })
+    const cli = new EngineCli({ interpreter, run })
     const generation = await cli.rollback(root)
-    expect(invocations).toEqual([['dinkster', 'rollback', '--root', root, '--json']])
+    expect(invocations).toEqual([[...cliPrefix, 'rollback', '--root', root, '--json']])
     expect(generation.generation).toBe(3)
   })
 
   it('serves the exact long-lived child argv with a loopback host and instance id', () => {
     const spawns: string[][] = []
     const cli = new EngineCli({
-      executable: 'dinkster',
+      interpreter,
       spawn: (invocation) => {
         spawns.push([...invocation.argv])
         return fakeChild()
@@ -126,27 +128,27 @@ describe('engine CLI adapter', () => {
     })
     const child = cli.serve({ root, dataRoot: '/srv/dinkster/data/project-a', port: 3639, instance: 'instance-7' })
     expect(spawns).toEqual([[
-      'dinkster', 'serve', '--root', root, '--data-root', '/srv/dinkster/data/project-a',
+      ...cliPrefix, 'serve', '--root', root, '--data-root', '/srv/dinkster/data/project-a',
       '--host', '127.0.0.1', '--port', '3639', '--instance', 'instance-7',
     ]])
     expect(child.pid).toBe(4242)
   })
 
   it('rejects serve requests with ports outside 1..65535', () => {
-    const cli = new EngineCli({ executable: 'dinkster', spawn: (invocation) => fakeChild() })
+    const cli = new EngineCli({ interpreter, spawn: (invocation) => fakeChild() })
     expect(() => cli.serve({ root, dataRoot: '/srv/dinkster/data', port: 0, instance: 'i' })).toThrow('1..65535')
     expect(() => cli.serve({ root, dataRoot: '/srv/dinkster/data', port: 65536, instance: 'i' })).toThrow('1..65535')
   })
 
   it('rejects a generation whose returned root does not match the requested root', async () => {
     const { run } = runner(generationsJson(stagedGeneration({ root: '/srv/dinkster/roots/other' })))
-    const cli = new EngineCli({ executable: 'dinkster', run })
+    const cli = new EngineCli({ interpreter, run })
     await expect(cli.generations(root)).rejects.toThrow('does not match the requested root')
   })
 
   it('rejects malformed CLI JSON', async () => {
     const { run } = runner('dinkster: traceback spilling into stdout')
-    const cli = new EngineCli({ executable: 'dinkster', run })
+    const cli = new EngineCli({ interpreter, run })
     await expect(cli.rollback(root)).rejects.toThrow('malformed JSON')
   })
 
@@ -167,7 +169,7 @@ describe('engine CLI adapter', () => {
     ]
     for (const stdout of cases) {
       const { run } = runner(stdout)
-      const cli = new EngineCli({ executable: 'dinkster', run })
+      const cli = new EngineCli({ interpreter, run })
       await expect(cli.generations(root)).rejects.toThrow()
     }
   })
@@ -175,7 +177,7 @@ describe('engine CLI adapter', () => {
   it('reports unexpected failures with a bounded stderr excerpt', async () => {
     const stderr = `dinkster: install failed\n${'x'.repeat(100_000)}\n\x1b[31mboom\x1b[0m`
     const { run } = runner('', { exitCode: 1, stderr })
-    const cli = new EngineCli({ executable: 'dinkster', run })
+    const cli = new EngineCli({ interpreter, run })
     const failure = await cli.install({ root, mirror: 'https://mirror.example/r2', channel: 'stable', cell: 'linux-cu128' }).catch((error: Error) => error)
     expect(failure.message).toContain('install failed with exit code 1')
     expect(failure.message).toContain('boom')

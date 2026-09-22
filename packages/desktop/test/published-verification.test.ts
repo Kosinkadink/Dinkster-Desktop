@@ -38,7 +38,6 @@ describe('published Desktop verification workflow', () => {
     expect(workflow.jobs.verify.permissions).toBeUndefined()
     expect(source).not.toMatch(/contents: write|package:win|release-desktop\.yml|gh release (create|upload|edit)|git push/)
     expect(helper.match(/\bgh .*/g)).toEqual([
-      'gh api "repos/$($Pin.repository)" | ConvertFrom-Json',
       'gh release download $Pin.releaseTag --repo $Pin.repository --pattern $Pin.archive --dir $assets',
     ])
   })
@@ -49,16 +48,16 @@ describe('published Desktop verification workflow', () => {
     expect(ci).not.toMatch(/verify:installed|prepare:engine|verify-published-desktop\.ps1/)
   })
 
-  it('guards before checkout and routes each acquisition token exclusively', () => {
-    expect(steps[0]?.name).toBe('Require dedicated private release credential')
+  it('prepares before checkout and uses the workflow token for release downloads', () => {
+    expect(steps[0]?.name).toBe('Prepare isolated verification directory')
     expect(steps[1]?.uses).toBe('actions/checkout@v4')
     expect(steps[1]?.with).toEqual({ clean: true, 'persist-credentials': false })
     const backend = steps.find((step) => step.run?.endsWith('-Action DownloadBackend'))!
     const desktop = steps.find((step) => step.run?.endsWith('-Action DownloadDesktop'))!
-    expect(steps[0]?.env).toEqual({ GH_TOKEN: '${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}' })
-    expect(backend.env).toEqual(steps[0]?.env)
+    expect(steps[0]?.env).toBeUndefined()
+    expect(backend.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
     expect(desktop.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
-    expect(steps.filter((step) => step.env?.['GH_TOKEN'])).toEqual([steps[0], backend, desktop])
+    expect(steps.filter((step) => step.env?.['GH_TOKEN'])).toEqual([backend, desktop])
     expect(helper).not.toMatch(/GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|githubtoken|auth login/)
     expect(helper).toContain('Get-ReleaseArtifact $aimdo')
     expect(helper).toContain('Get-ReleaseArtifact $desktop')
@@ -183,9 +182,8 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     expect(await readFile(resolve(scratch, 'work/assets', desktop.archive), 'utf8')).toBe(content)
   })
 
-  it.each(['workflow guard', 'download helper'])('fails the %s with a dummy fallback token before GH access', async (target) => {
-    const command = target === 'workflow guard' ? steps[0]!.run!
-      : `& ${psQuote(script)} -Action DownloadBackend`
+  it('fails the download helper with a dummy fallback token before GH access', async () => {
+    const command = `& ${psQuote(script)} -Action DownloadBackend`
     await expect(powershell(`$env:GITHUB_TOKEN='dummy-fallback'; $env:GH_ENTERPRISE_TOKEN='dummy-fallback'
       function gh { throw 'UNEXPECTED_GH_ACCESS' }
       ${command}`)).rejects.toThrow(/no fallback token is permitted/)
@@ -204,8 +202,9 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
 
   it('cleans an empty owned installation without touching unrelated processes or retaining tokens', async () => {
     await mkdir(resolve(scratch, 'proof'))
-    await writeFile(resolve(scratch, 'owned-install.json'), JSON.stringify({ install: resolve(scratch, 'app'), data: resolve(scratch, 'run') }))
     await powershell(`$env:DINKSTER_VERIFY_WORK=${psQuote(scratch)}; $env:GH_TOKEN='dummy-acquisition'; $env:GITHUB_TOKEN='dummy-fallback'
+      $root=[IO.Path]::GetFullPath($env:DINKSTER_VERIFY_WORK)
+      @{ install=(Join-Path $root 'app'); data=(Join-Path $root 'run') } | ConvertTo-Json | Set-Content (Join-Path $root 'owned-install.json')
       function Get-CimInstance { [pscustomobject]@{ ExecutablePath='C:\\unrelated\\python.exe'; ProcessId=123 } }
       function Get-NetTCPConnection { }
       function Stop-Process { throw 'UNRELATED_PROCESS_STOP' }

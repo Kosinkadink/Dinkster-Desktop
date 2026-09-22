@@ -2,12 +2,6 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches: [main]
-  workflow_call:
-    secrets:
-      DINKSTER_FRONTEND_READ_TOKEN:
-        required: false
 
 permissions:
   contents: read
@@ -20,27 +14,9 @@ env:
   DINKSTER_FRONTEND_REF: fa99988eb5fcbf645fbcf7ead85a523b650de660
 
 jobs:
-  frontend-access:
-    name: frontend checkout availability
-    runs-on: ${{ fromJSON(vars.DINKSTER_PR_RUNNER || '["self-hosted", "linux", "x64"]') }}
-    timeout-minutes: 2
-    outputs:
-      available: ${{ steps.availability.outputs.available }}
-    steps:
-      - id: availability
-        env:
-          FRONTEND_READ_TOKEN: ${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}
-        run: |
-          if [ -n "$FRONTEND_READ_TOKEN" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
   test:
-    name: types, unit tests and Linux build
-    needs: frontend-access
-    if: needs.frontend-access.outputs.available == 'true'
-    runs-on: ${{ fromJSON(vars.DINKSTER_PR_RUNNER || '["self-hosted", "linux", "x64"]') }}
+    name: format, types, unit tests and Linux build
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +30,6 @@ jobs:
           repository: Kosinkadink/Dinkster-Frontend
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
           path: .frontend
-          token: ${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}
       - uses: pnpm/action-setup@v4
         with:
           version: 10.31.0
@@ -73,3 +48,15 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+
+  pr-status:
+    name: pull request validation status
+    if: always()
+    needs: [test]
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 2
+    steps:
+      - name: Require the validation result
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+        run: test "$TEST_RESULT" = success

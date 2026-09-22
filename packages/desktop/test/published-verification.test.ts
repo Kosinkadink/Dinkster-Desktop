@@ -131,6 +131,7 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     }))
     const fixtureScript = resolve(scratch, 'verify.ps1')
     await writeFile(fixtureScript, helper)
+    await writeFile(resolve(scratch, 'published-desktop.json'), JSON.stringify({ published: false }))
     await powershell(`$env:DINKSTER_VERIFY_WORK=${psQuote(scratch)}; $env:GH_TOKEN='dummy-acquisition'; $env:GITHUB_TOKEN='dummy-fallback'
       function Get-CimInstance { [pscustomobject]@{ ExecutablePath='C:\\unrelated\\python.exe'; ProcessId=123 } }
       function Get-NetTCPConnection { }

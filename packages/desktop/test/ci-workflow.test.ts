@@ -162,10 +162,7 @@ describe('desktop workflows', () => {
             'persist-credentials': false,
           })
           expect(step.with).not.toHaveProperty('ssh-key')
-          if (
-            step.with?.['repository'] === 'Kosinkadink/Dinkster-Frontend'
-          )
-            expect(step.with).not.toHaveProperty('token')
+          expect(step.with).not.toHaveProperty('token')
         }
       }
     }

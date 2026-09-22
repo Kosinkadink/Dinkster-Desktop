@@ -2,9 +2,6 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches: [main]
-  workflow_call:
 
 permissions:
   contents: read
@@ -18,7 +15,7 @@ env:
 
 jobs:
   test:
-    name: types, unit tests and Linux build
+    name: format, types, unit tests and Linux build
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 10
     steps:
@@ -51,3 +48,15 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+
+  pr-status:
+    name: pull request validation status
+    if: always()
+    needs: [test]
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 2
+    steps:
+      - name: Require the validation result
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+        run: test "$TEST_RESULT" = success

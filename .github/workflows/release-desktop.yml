@@ -16,13 +16,13 @@ concurrency:
 jobs:
   validation:
     if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.event.repository.private == true && github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/full-validation.yml
     secrets: inherit
 
   release:
     needs: validation
     if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.event.repository.private == true && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, windows, x64]
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
     timeout-minutes: 90
     permissions:
       contents: write

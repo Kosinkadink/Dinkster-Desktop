@@ -1,47 +1,42 @@
 # Dinkster Desktop
 
-Dinkster Desktop is the Windows host for the Dinkster local workflow engine and
-browser editor. Its Electron shell installs and supervises a pinned engine,
-serves the bundled editor on loopback, and keeps application updates separate
-from user projects, models, and generated files.
-
-Status: in progress. There is no public installer or stable release yet.
-
-The current implementation targets Windows x64. The
-[Desktop engine boundaries](docs/desktop.md) document release inputs,
-installation roots, process supervision, updates, and platform limits.
-
-## Develop from source
-
-Install Node.js 22 and pnpm 10.31.0. Build Dinkster-Frontend in a sibling
-checkout, point Desktop at that bundle, then install and validate the workspace:
-
-```powershell
-cd ..\Dinkster-Frontend
-pnpm install --frozen-lockfile
-pnpm --filter @dinkster/app build
-
-cd ..\Dinkster-Desktop
-$env:DINKSTER_FRONTEND_DIST = '..\Dinkster-Frontend\packages\app\dist'
-pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm test
-pnpm build
-```
-
-Packaging an installer additionally requires the backend engine archive and
-Aimdo wheel named by `packages/desktop/src/backend-release.json`. Ordinary
-development, type checking, and unit tests do not publish or dispatch a release.
+Electron host for the Dinkster application and its local engine lifecycle.
+The [Desktop engine boundaries](docs/desktop.md) document the release mirror,
+project install-root bindings, and supervisor-per-generation swap contract.
 
 ## Inputs
 
-Desktop pins its application and engine inputs independently:
+The desktop shell and its two external inputs are pinned independently:
 
-- Dinkster-Frontend is checked out at the immutable
-  `DINKSTER_FRONTEND_REF` in `.github/workflows/ci.yml`. Desktop copies only
-  its built `packages/app/dist` bundle and does not compile against frontend
-  workspace source.
-- The backend release, native profile, and checksums are pinned in
-  `packages/desktop/src/backend-release.json`. Packaging accepts only matching
-  artifacts supplied through `DINKSTER_ENGINE_ARCHIVE` and
-  `DINKSTER_AIMDO_WHEEL`.
+- Dinkster-Frontend is checked out at the 40-character `DINKSTER_FRONTEND_REF` in `.github/workflows/ci.yml`. The frontend checkout builds `@dinkster/app`; Desktop copies only the resulting `packages/app/dist` bundle into its package input. Desktop does not compile against frontend workspace source.
+- The backend release, native profile, and checksums are pinned in `packages/desktop/src/backend-release.json`. Packaging accepts only the matching backend archive and Aimdo wheel supplied through `DINKSTER_ENGINE_ARCHIVE` and `DINKSTER_AIMDO_WHEEL`.
+
+For a local build, build the pinned Dinkster-Frontend checkout first and point `DINKSTER_FRONTEND_DIST` at its `packages/app/dist` directory:
+
+```powershell
+$env:DINKSTER_FRONTEND_DIST = '..\Dinkster-Frontend\packages\app\dist'
+pnpm install --frozen-lockfile
+pnpm build
+pnpm typecheck
+pnpm test
+```
+
+`pnpm --filter @dinkster/desktop package:win` additionally requires the two verified backend release artifacts. The private release workflows remain manual; local validation must not dispatch them or publish a release.
+
+Pull requests run formatting, types, unit tests, and the Linux build with a
+10-minute budget. Main adds the pinned frontend browser suite and Windows
+packaging in parallel, with a 20-minute end-to-end budget. The `CI_RUNNERS`
+repository variable is required and selects GitHub-hosted images for every
+job:
+
+```json
+{
+  "linux": ["ubuntu-latest"],
+  "windows": ["windows-latest"],
+  "macos": ["macos-latest"],
+  "forkLinux": ["ubuntu-latest"]
+}
+```
+
+Every main run uploads `main-validation-status` with the Linux, browser, and
+Windows results. The aggregate status fails unless every lane passed.

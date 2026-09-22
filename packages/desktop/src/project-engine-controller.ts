@@ -43,8 +43,9 @@ export interface ProjectEngineControllerOptions<Supervisor extends GenerationSup
 }
 
 function generationNumber(value: string): number | undefined {
+  if (!/^[1-9]\d*$/.test(value)) return undefined
   const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed >= 1 ? parsed : undefined
+  return Number.isSafeInteger(parsed) ? parsed : undefined
 }
 
 function requireEngine(generation: EngineGeneration): NonNullable<EngineGeneration['engine']> {

@@ -126,6 +126,9 @@ describe('desktop workflows', () => {
       'uv sync --project .dinkster --locked --package dinkster --no-dev',
     )
     expect(browserCommands).toContain(
+      '.dinkster/.venv/bin/dinkster-pack --accelerator cpu prepare-catalogs --defaults --library-root .ci/native-library',
+    )
+    expect(browserCommands).toContain(
       'pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts',
     )
     const browserRun = full.jobs['frontend-e2e']!.steps?.find((step) =>

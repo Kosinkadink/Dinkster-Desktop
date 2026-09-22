@@ -6,7 +6,9 @@ Desktop treats the configured release mirror as a security boundary. Production
 mirror URLs use HTTPS, contain no credentials, and have no query string or
 fragment. Loopback HTTP is accepted only for local tests. Release requests use
 paths relative to that base URL; redirects are followed only while they remain
-on the same origin and under the same base path.
+on the same origin and under the same base path. The shell reads the mirror
+base from `DINKSTER_ENGINE_MIRROR_URL`; without it, project installation is
+disabled while installed generations remain manageable.
 
 The mirror client parses JSON without defining the engine document schema and
 verifies downloaded bytes against a caller-supplied SHA-256 digest. The engine
@@ -29,7 +31,12 @@ directory into the installed application as `resources/control-runtime`.
 Verification runs before anything in the staging directory changes, and failed
 verification preserves both the inputs and any existing staged content. The
 script never fetches anything from the network and never extracts the archive;
-Desktop discovers the bundled runtime only through those staged files.
+Desktop discovers the bundled runtime only through `process.resourcesPath`.
+At startup Desktop re-verifies the compressed archive, rejects unsafe tar
+entries and links, extracts it atomically into content-addressed application
+data, and requires the descriptor-named interpreter to resolve to an executable
+file inside that directory. The bootstrap invocation is the descriptor-relative
+interpreter followed by `-I -m dinkster.cli`.
 
 ## Projects
 
@@ -41,6 +48,11 @@ relative roots, unsupported channels, and roots assigned more than once.
 
 The registry does not own models, outputs, history, settings, generation files,
 or install commands. Those remain outside this Desktop metadata boundary.
+
+Each project gets its own loopback port and supervisor. Desktop invokes install
+through the bundled control runtime, then uses the generation-reported control
+interpreter for activation and serving. Renderer requests are bound to the
+calling window's project; they cannot select another project's controller.
 
 ## Generation swap
 

@@ -41,7 +41,9 @@ export interface EngineServeChild {
   readonly exitCode: number | null
   readonly stdout: Readable | null
   readonly stderr: Readable | null
-  once(event: string, listener: (...args: never[]) => void): unknown
+  once(event: 'spawn', listener: () => void): unknown
+  once(event: 'error', listener: (error: Error) => void): unknown
+  once(event: 'exit', listener: (code: number | null) => void): unknown
   kill(): boolean | undefined
 }
 
@@ -107,6 +109,7 @@ const defaultRunner: EngineCliRunner = async ({ argv }) => {
 const defaultSpawner: EngineCliSpawner = ({ argv }) =>
   spawn(argv[0] ?? '', argv.slice(1), {
     windowsHide: true,
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 

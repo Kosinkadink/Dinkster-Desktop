@@ -23,6 +23,13 @@ import {
   type SystemCheck,
 } from './desktop-manager.js'
 import { availableLoopbackPort, EngineRuntime, defaultDataDirectory } from './engine.js'
+import { EngineCli } from './engine-cli.js'
+import { inspectEngineFeed } from './engine-feed.js'
+import { materializeBundledControlRuntime } from './control-runtime.js'
+import { ProjectEngineController } from './project-engine-controller.js'
+import { ProjectEngineManager } from './project-engine-manager.js'
+import { ProjectEngineSupervisor, startProjectEngineSupervisor } from './project-engine-supervisor.js'
+import { createMirrorFetcher, validateMirrorBaseUrl } from './r2-mirror.js'
 import { configuredEngineAccelerator, isEngineAccelerator } from './accelerator.js'
 import { changeEngineTransaction } from './engine-transaction.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
@@ -74,6 +81,7 @@ let layoutWriteTimer: ReturnType<typeof setTimeout> | undefined
 let tray: Tray | undefined
 let webHost: WebHost | undefined
 let credentialStore: CredentialStore | undefined
+let projectEngineManager: ProjectEngineManager<ProjectEngineController<ProjectEngineSupervisor>> | undefined
 const pendingDeepLinks = new Map<string, DesktopDeepLink[]>()
 const remoteWorkerFileGrants = new RemoteWorkerFileGrants()
 let lifecycleLease: LifecycleLease | undefined
@@ -329,6 +337,7 @@ async function shutdown(): Promise<void> {
   await windowQueue.run(async () => {})
   await Promise.allSettled([
     runtime.stop(),
+    projectEngineManager?.stop(),
     Promise.resolve().then(() => webHost?.close()),
   ])
   try {
@@ -502,6 +511,15 @@ function senderWindowId(event: Electron.IpcMainInvokeEvent): string {
   return entry[0]
 }
 
+function senderProjectId(event: Electron.IpcMainInvokeEvent): string {
+  return windowProject(senderWindowId(event)) ?? 'default'
+}
+
+function requireProjectEngineManager(): ProjectEngineManager<ProjectEngineController<ProjectEngineSupervisor>> {
+  if (!projectEngineManager) throw new Error('project engine manager is not ready')
+  return projectEngineManager
+}
+
 function validAssignmentId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 512
 }
@@ -640,6 +658,37 @@ ipcMain.handle('desktop:locale', (event) => { trustedIpc(event); return app.getL
 ipcMain.handle('desktop:status', (event) => { trustedIpc(event); return runtime.status })
 ipcMain.handle('desktop:retry', (event) => { trustedIpc(event); return serializeLifecycle(async () => runtime.start()) })
 ipcMain.handle('desktop:info', (event) => { trustedIpc(event); return desktopInfo() })
+ipcMain.handle('desktop:project-engine', (event) => {
+  trustedIpc(event)
+  return requireProjectEngineManager().info(senderProjectId(event))
+})
+ipcMain.handle('desktop:install-project-engine', (event, channel: unknown, cell: unknown) => {
+  trustedIpc(event)
+  if (channel !== 'stable' && channel !== 'github-live') throw new Error('invalid project engine channel')
+  if (typeof cell !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(cell)) {
+    throw new Error('invalid project engine cell')
+  }
+  return requireProjectEngineManager().install(senderProjectId(event), channel, cell)
+})
+ipcMain.handle('desktop:activate-project-generation', (event, generation: unknown) => {
+  trustedIpc(event)
+  if (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 1) {
+    throw new Error('invalid project engine generation')
+  }
+  return requireProjectEngineManager().activate(senderProjectId(event), generation)
+})
+ipcMain.handle('desktop:remove-project', (event, deleteDataRoot: unknown, confirmedDataRoot: unknown) => {
+  trustedIpc(event)
+  if (typeof deleteDataRoot !== 'boolean') throw new Error('invalid project removal request')
+  if (confirmedDataRoot !== undefined && typeof confirmedDataRoot !== 'string') {
+    throw new Error('invalid project data-root confirmation')
+  }
+  return requireProjectEngineManager().remove(
+    senderProjectId(event),
+    deleteDataRoot,
+    confirmedDataRoot,
+  )
+})
 ipcMain.handle('desktop:window-context', (event) => {
   trustedIpc(event)
   return windowContext(senderWindowId(event))
@@ -1007,6 +1056,32 @@ app.on('open-url', (event, url) => {
 
 if (primaryInstance) app.whenReady().then(async () => {
   lifecycleLease = await acquireLifecycleLease(dataDirectory)
+  const controlRuntime = await materializeBundledControlRuntime(process.resourcesPath, dataDirectory)
+  const projectCli = new EngineCli({ interpreter: controlRuntime.interpreter })
+  const configuredMirror = process.env['DINKSTER_ENGINE_MIRROR_URL']
+  const mirrorUrl = configuredMirror ? validateMirrorBaseUrl(configuredMirror) : undefined
+  const mirrorFetcher = mirrorUrl ? createMirrorFetcher(mirrorUrl) : undefined
+  projectEngineManager = new ProjectEngineManager({
+    allocatePort: availableLoopbackPort,
+    create: (projectId, port) => new ProjectEngineController({
+      dataDirectory,
+      projectId,
+      port,
+      cli: projectCli,
+      ...(mirrorUrl ? { mirrorUrl, allowLocalHttp: new URL(mirrorUrl).protocol === 'http:' } : {}),
+      inspectFeed: async (channel, cell) => {
+        if (!mirrorFetcher) throw new Error('the engine mirror is not configured')
+        return inspectEngineFeed(mirrorFetcher, { channel, cell, shellVersion: app.getVersion() })
+      },
+      startSupervisor: (generation, request) => startProjectEngineSupervisor(
+        projectCli,
+        generation,
+        request,
+        (line) => { void engineLog.append(redactDiagnosticText(`[${projectId}] ${line}`)) },
+      ),
+      waitForReady: (supervisor, instanceId) => supervisor.waitForReady(instanceId),
+    }),
+  })
   backendPort = await availableLoopbackPort()
   const persistedDiagnostic = (message: string): void => { void shellLog.append(message) }
   const interrupted = await readEngineOperation(dataDirectory, persistedDiagnostic)

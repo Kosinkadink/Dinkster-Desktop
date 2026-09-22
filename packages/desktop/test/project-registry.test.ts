@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   decodeProjectRegistry, emptyProjectRegistry, getProjectBinding, listProjectBindings,
@@ -16,8 +16,9 @@ async function temporaryDirectory(): Promise<string> {
   return path
 }
 
-const alpha = { projectId: 'p-alpha', installRoot: '/opt/dinkster/installs/main', channel: 'stable' } as const
-const beta = { projectId: 'p-beta', installRoot: '/opt/dinkster/installs/second', channel: 'github-live' } as const
+const installs = resolve(tmpdir(), 'dinkster', 'installs')
+const alpha = { projectId: 'p-alpha', installRoot: join(installs, 'main'), channel: 'stable' } as const
+const beta = { projectId: 'p-beta', installRoot: join(installs, 'second'), channel: 'github-live' } as const
 
 describe('project registry', () => {
   it('round-trips bindings through the persisted file', async () => {
@@ -26,11 +27,8 @@ describe('project registry', () => {
     await writeProjectRegistry(directory, upsertProjectBinding(await readProjectRegistry(directory), beta))
 
     const registry = await readProjectRegistry(directory)
-    expect(listProjectBindings(registry)).toEqual([
-      { ...alpha, installRoot: '/opt/dinkster/installs/main' },
-      { ...beta, installRoot: '/opt/dinkster/installs/second' },
-    ])
-    expect(getProjectBinding(registry, 'p-beta')).toEqual({ ...beta, installRoot: '/opt/dinkster/installs/second' })
+    expect(listProjectBindings(registry)).toEqual([alpha, beta])
+    expect(getProjectBinding(registry, 'p-beta')).toEqual(beta)
     expect(getProjectBinding(registry, 'missing')).toBeUndefined()
     const raw = JSON.parse(await readFile(join(directory, 'project-bindings.json'), 'utf8'))
     expect(raw.version).toBe(1)
@@ -65,10 +63,11 @@ describe('project registry', () => {
 
   it('accepts equivalent root spellings for the same project but not across projects', () => {
     const registry = upsertProjectBinding(emptyProjectRegistry(), alpha)
-    expect(() => upsertProjectBinding(registry, { ...beta, installRoot: '/opt/dinkster/installs/./main' }))
+    const equivalentRoot = `${installs}${sep}.${sep}main`
+    expect(() => upsertProjectBinding(registry, { ...beta, installRoot: equivalentRoot }))
       .toThrow('already bound')
-    const rebound = upsertProjectBinding(registry, { ...alpha, installRoot: '/opt/dinkster/installs/./main' })
-    expect(getProjectBinding(rebound, 'p-alpha')?.installRoot).toBe('/opt/dinkster/installs/main')
+    const rebound = upsertProjectBinding(registry, { ...alpha, installRoot: equivalentRoot })
+    expect(getProjectBinding(rebound, 'p-alpha')?.installRoot).toBe(alpha.installRoot)
   })
 
   it('rejects invalid project ids', () => {

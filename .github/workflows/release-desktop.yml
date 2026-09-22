@@ -38,7 +38,6 @@ jobs:
           repository: Kosinkadink/Dinkster-Frontend
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
           path: .frontend
-          token: ${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}
       - name: Download pinned private backend and Aimdo
         env:
           GH_TOKEN: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}

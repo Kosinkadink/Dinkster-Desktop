@@ -50,33 +50,13 @@ describe('desktop workflows', () => {
   it('runs typecheck, all unit tests, and a Linux build on pull requests', () => {
     expect(ci.on).toMatchObject({ pull_request: null })
     expect(ci.permissions).toEqual({ contents: 'read' })
-    expect(Object.keys(ci.jobs)).toEqual(['frontend-access', 'test'])
-    const access = ci.jobs['frontend-access']!
-    expect(access['timeout-minutes']).toBe(2)
-    expect(access['runs-on']).toBe(
-      '${{ fromJSON(vars.DINKSTER_PR_RUNNER || \'["self-hosted", "linux", "x64"]\') }}',
-    )
-    expect(access.outputs).toEqual({
-      available: '${{ steps.availability.outputs.available }}',
-    })
-    expect(access.steps).toEqual([
-      {
-        id: 'availability',
-        env: {
-          FRONTEND_READ_TOKEN:
-            '${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}',
-        },
-        run: 'if [ -n "$FRONTEND_READ_TOKEN" ]; then\n  echo "available=true" >> "$GITHUB_OUTPUT"\nelse\n  echo "available=false" >> "$GITHUB_OUTPUT"\nfi\n',
-      },
-    ])
+    expect(Object.keys(ci.jobs)).toEqual(['test'])
     const job = ci.jobs['test']!
-    expect(job.needs).toBe('frontend-access')
-    expect(job.if).toBe(
-      "needs.frontend-access.outputs.available == 'true'",
-    )
+    expect(job.needs).toBeUndefined()
+    expect(job.if).toBeUndefined()
     expect(job['timeout-minutes']).toBe(10)
     expect(job['runs-on']).toBe(
-      '${{ fromJSON(vars.DINKSTER_PR_RUNNER || \'["self-hosted", "linux", "x64"]\') }}',
+      '${{ fromJSON(vars.CI_RUNNERS).linux }}',
     )
     expect(job.steps?.flatMap((step) => step.run ?? [])).toEqual([
       'pnpm --dir .frontend install --frozen-lockfile',
@@ -95,8 +75,8 @@ describe('desktop workflows', () => {
       'persist-credentials': false,
       ref: '${{ env.DINKSTER_FRONTEND_REF }}',
       path: '.frontend',
-      token: '${{ secrets.DINKSTER_FRONTEND_READ_TOKEN }}',
     })
+    expect(frontend?.with).not.toHaveProperty('token')
   })
 
   it('uses clean checkouts without persisting credentials', () => {
@@ -110,6 +90,7 @@ describe('desktop workflows', () => {
             'persist-credentials': false,
           })
           expect(step.with).not.toHaveProperty('ssh-key')
+          expect(step.with).not.toHaveProperty('token')
         }
       }
     }

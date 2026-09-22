@@ -1,6 +1,8 @@
 # Dinkster Desktop
 
 Electron host for the Dinkster application and its local engine lifecycle.
+The [Desktop engine boundaries](docs/desktop.md) document the release mirror,
+project install-root bindings, and supervisor-per-generation swap contract.
 
 ## Inputs
 

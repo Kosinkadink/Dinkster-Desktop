@@ -175,15 +175,27 @@ describe('engine CLI adapter', () => {
       stagedGeneration({ engine: { ...okEngine, cell: 'linux' } }),
       stagedGeneration({ engine: { ...okEngine, objects: ['zz'] } }),
       stagedGeneration({ engine: { ...okEngine, objects: [okEngine.manifestSha256, okEngine.manifestSha256] } }),
+      stagedGeneration({ engine: { ...okEngine, unexpected: true } }),
       stagedGeneration({ engine: null, controlPython: okControl }),
       stagedGeneration({ controlPython: 'relative/python' }),
       stagedGeneration({ executionPython: 'relative/python' }),
+      stagedGeneration({ unexpected: true }),
       'not-an-object',
     ]
     for (const stdout of cases) {
       const { run } = runner(stdout)
       const cli = new EngineCli({ interpreter, run })
       await expect(cli.generations(root)).rejects.toThrow()
+    }
+  })
+
+  it('rejects ambiguous generation lists', async () => {
+    for (const stdout of [
+      generationsJson(stagedGeneration(), stagedGeneration()),
+      generationsJson(stagedGeneration({ current: true }), stagedGeneration({ generation: 2, current: true })),
+    ]) {
+      const { run } = runner(stdout)
+      await expect(new EngineCli({ interpreter, run }).generations(root)).rejects.toThrow()
     }
   })
 

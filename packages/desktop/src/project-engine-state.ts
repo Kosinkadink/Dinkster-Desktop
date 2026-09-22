@@ -36,12 +36,23 @@ function stage(value: unknown): value is GenerationSwapStage {
 export function decodeGenerationSwapJournal(value: unknown): GenerationSwapJournal | undefined {
   const body = record(value)
   if (!body || body['format'] !== 1 || !stage(body['stage'])) return undefined
+  const baseFields = [
+    'format', 'operationId', 'projectId', 'previousGeneration', 'targetGeneration', 'stage', 'startedAt',
+  ]
+  const expectedFields = body['stage'] === 'failed'
+    ? [...baseFields, 'failedAt', 'error']
+    : baseFields
+  const actualFields = Object.keys(body).sort()
+  expectedFields.sort()
+  if (actualFields.length !== expectedFields.length
+    || actualFields.some((field, index) => field !== expectedFields[index])) return undefined
   for (const field of ['operationId', 'projectId', 'previousGeneration', 'targetGeneration', 'startedAt']) {
     if (typeof body[field] !== 'string' || body[field].length === 0) return undefined
   }
   if (!validProjectId(body['projectId'])) return undefined
-  if (body['failedAt'] !== undefined && typeof body['failedAt'] !== 'string') return undefined
-  if (body['error'] !== undefined && typeof body['error'] !== 'string') return undefined
+  if (body['stage'] === 'failed'
+    && (typeof body['failedAt'] !== 'string' || body['failedAt'].length === 0
+      || typeof body['error'] !== 'string' || body['error'].length === 0)) return undefined
   return body as unknown as GenerationSwapJournal
 }
 

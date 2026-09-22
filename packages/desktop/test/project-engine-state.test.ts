@@ -55,8 +55,23 @@ describe('project engine state', () => {
 
   it('rejects malformed or cross-project journal contents', async () => {
     const root = await temporaryRoot()
+    const { failedAt: _failedAt, error: _error, ...buildingJournal } = journal
     expect(decodeGenerationSwapJournal({ ...journal, stage: 'done' })).toBeUndefined()
     expect(decodeGenerationSwapJournal({ ...journal, projectId: 'not valid' })).toBeUndefined()
+    expect(decodeGenerationSwapJournal({ ...journal, unexpected: true })).toBeUndefined()
+    expect(decodeGenerationSwapJournal({ ...buildingJournal, stage: 'failed' })).toBeUndefined()
+    expect(decodeGenerationSwapJournal({
+      ...journal,
+      stage: 'failed',
+      failedAt: '2026-09-22T00:01:00.000Z',
+      error: 'readiness failed',
+    })).toBeDefined()
+    expect(decodeGenerationSwapJournal({
+      ...buildingJournal,
+      stage: 'building',
+      failedAt: '2026-09-22T00:01:00.000Z',
+      error: 'stale failure',
+    })).toBeUndefined()
     await mkdir(join(root, 'engine-operations'), { recursive: true })
     await writeFile(join(root, 'engine-operations', 'studio.json'), JSON.stringify({ ...journal, projectId: 'other' }))
     expect(await readGenerationSwapJournal(root, 'studio')).toBeUndefined()

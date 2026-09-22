@@ -151,11 +151,20 @@ function expectDigest(value: unknown, description: string): string {
   return digest
 }
 
+function expectExactFields(record: Record<string, unknown>, fields: readonly string[], description: string): void {
+  const actual = Object.keys(record).sort()
+  const expected = [...fields].sort()
+  if (actual.length !== expected.length || actual.some((field, index) => field !== expected[index])) {
+    throw new Error(`${description} fields must be exactly ${expected.join(', ')}`)
+  }
+}
+
 function parseEngineEnvironment(value: unknown): EngineEnvironmentRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('generation engine must be an object')
   }
   const record = value as Record<string, unknown>
+  expectExactFields(record, ['baseId', 'manifestSha256', 'commit', 'cell', 'objects'], 'generation engine')
   const baseId = expectDigest(record['baseId'], 'generation engine baseId')
   const manifestSha256 = expectDigest(record['manifestSha256'], 'generation engine manifestSha256')
   const commit = expectString(record['commit'], 'generation engine commit')
@@ -206,11 +215,14 @@ function parseGeneration(value: unknown, requestedRoot: string): EngineGeneratio
   }
   const engine = engineValue === null ? null : parseEngineEnvironment(engineValue)
   if (engine === null) {
-    if ('controlPython' in record || 'executionPython' in record) {
-      throw new Error('generation interpreters require an engine environment')
-    }
+    expectExactFields(record, ['generation', 'current', 'root', 'engine'], 'generation')
     return { generation, current, root, engine }
   }
+  expectExactFields(
+    record,
+    ['generation', 'current', 'root', 'engine', 'controlPython', 'executionPython'],
+    'generation',
+  )
   return {
     generation,
     current,
@@ -223,7 +235,14 @@ function parseGeneration(value: unknown, requestedRoot: string): EngineGeneratio
 
 function parseGenerations(value: unknown, requestedRoot: string): EngineGeneration[] {
   if (Array.isArray(value) === false) throw new Error('dinkster generations must be an array')
-  return (value as readonly unknown[]).map((item) => parseGeneration(item, requestedRoot))
+  const generations = (value as readonly unknown[]).map((item) => parseGeneration(item, requestedRoot))
+  if (new Set(generations.map((generation) => generation.generation)).size !== generations.length) {
+    throw new Error('dinkster generations must have unique generation numbers')
+  }
+  if (generations.filter((generation) => generation.current).length > 1) {
+    throw new Error('dinkster generations must have at most one current generation')
+  }
+  return generations
 }
 
 export class EngineCli {

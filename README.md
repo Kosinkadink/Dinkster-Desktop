@@ -9,7 +9,7 @@ project install-root bindings, and supervisor-per-generation swap contract.
 The desktop shell and its two external inputs are pinned independently:
 
 - Dinkster-Frontend is checked out at the 40-character `DINKSTER_FRONTEND_REF` in `.github/workflows/ci.yml`. The frontend checkout builds `@dinkster/app`; Desktop copies only the resulting `packages/app/dist` bundle into its package input. Desktop does not compile against frontend workspace source.
-- The backend release, native profile, and checksums are pinned in `packages/desktop/src/backend-release.json`. Packaging accepts only the matching backend archive and Aimdo wheel supplied through `DINKSTER_ENGINE_ARCHIVE` and `DINKSTER_AIMDO_WHEEL`.
+- The bundled control-runtime descriptor and matching archive are explicit packaging inputs, supplied through `DINKSTER_CONTROL_RUNTIME_DESCRIPTOR` and `DINKSTER_CONTROL_RUNTIME_ARCHIVE`; the installer embeds no engine. See [docs/desktop.md](docs/desktop.md).
 
 While Dinkster-Frontend is private, Actions requires a `DINKSTER_FRONTEND_READ_TOKEN` secret with read-only Contents access to that repository. The token is used only by the pinned frontend checkout and is not persisted by the checkout action.
 

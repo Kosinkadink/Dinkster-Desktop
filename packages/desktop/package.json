@@ -10,8 +10,8 @@
   "scripts": {
     "build": "node scripts/clean-output.mjs dist && tsc -p tsconfig.json && esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
     "build:all": "pnpm --dir ../.. prepare:frontend && pnpm build",
-    "prepare:engine": "node scripts/prepare-engine-source.mjs",
-    "package:win": "pnpm prepare:engine && pnpm build:all && node scripts/clean-output.mjs release && electron-builder --win nsis --publish never",
+    "prepare:control-runtime": "node scripts/prepare-control-runtime.mjs",
+    "package:win": "pnpm prepare:control-runtime && pnpm build:all && node scripts/clean-output.mjs release && electron-builder --win nsis --publish never",
     "verify:update-feed": "node scripts/verify-update-feed.mjs",
     "verify:installed": "pnpm --filter @dinkster/e2e exec node --import tsx scripts/verify-desktop-install.mjs",
     "start": "pnpm build:all && electron .",
@@ -32,7 +32,6 @@
     "electron": "^37.2.6",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.25.12",
-    "fflate": "0.8.3",
     "js-yaml": "^4.3.1",
     "tsx": "^4.20.3",
     "typescript": "^5.7.2",
@@ -53,9 +52,8 @@
         "to": "app"
       },
       {
-        "from": "resources/engine",
-        "to": "engine",
-        "filter": ["*.zip", "*.whl"]
+        "from": "resources/control-runtime",
+        "to": "control-runtime"
       }
     ],
     "directories": {

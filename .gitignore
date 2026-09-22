@@ -3,9 +3,7 @@ node_modules/
 packages/app/
 packages/desktop/dist/
 packages/desktop/release/
-packages/desktop/resources/engine/*.tar.gz
-packages/desktop/resources/engine/*.zip
-packages/desktop/resources/engine/*.whl
+packages/desktop/resources/control-runtime/
 coverage/
 *.tsbuildinfo
 .DS_Store

@@ -17,12 +17,6 @@ jobs:
     env:
       DINKSTER_PUBLISHED_SOURCE: published-source
     steps:
-      - name: Require dedicated private release credential
-        env:
-          GH_TOKEN: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
-        run: |
-          if (-not $env:GH_TOKEN) { throw 'Configure DINKSTER_RELEASE_READ_TOKEN for Contents read-only on Kosinkadink/Dinkster and Kosinkadink/dinkster-aimdo; no fallback token is permitted' }
-          "DINKSTER_VERIFY_WORK=$(Join-Path $env:RUNNER_TEMP "dv-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT")" >> $env:GITHUB_ENV
       - uses: actions/checkout@v4
         with:
           clean: true
@@ -34,14 +28,12 @@ jobs:
           ref: main
           path: published-source
           persist-credentials: false
-      - name: Download pinned backend and Aimdo
-        env:
-          GH_TOKEN: ${{ secrets.DINKSTER_RELEASE_READ_TOKEN }}
-        run: ./packages/desktop/scripts/verify-published-desktop.ps1 -Action DownloadBackend
       - name: Download published Desktop with repository token
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./packages/desktop/scripts/verify-published-desktop.ps1 -Action DownloadDesktop
+        run: |
+          "DINKSTER_VERIFY_WORK=$(Join-Path $env:RUNNER_TEMP "dv-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT")" >> $env:GITHUB_ENV
+          ./packages/desktop/scripts/verify-published-desktop.ps1 -Action DownloadDesktop
       - uses: pnpm/action-setup@v4
         with:
           version: 10.31.0
@@ -51,15 +43,10 @@ jobs:
           node-version: 22
       - run: pnpm install --frozen-lockfile
         working-directory: published-source
-      - name: Verify backend source-bound native profile
-        run: pnpm --filter @dinkster/desktop prepare:engine
-        working-directory: published-source
       - name: Install verified published executable without credentials
         id: install
         run: ./packages/desktop/scripts/verify-published-desktop.ps1 -Action Install
-      - name: Verify isolated CPU first start restart and refusal
-        env:
-          DINKSTER_ACCELERATOR: cpu
+      - name: Verify isolated first start restart and bundled control runtime
         run: pnpm --filter @dinkster/desktop verify:installed
         working-directory: published-source
       - name: Clean up only the owned installation
@@ -76,7 +63,6 @@ jobs:
             ${{ env.DINKSTER_VERIFY_WORK }}/proof/*.json
             ${{ env.DINKSTER_VERIFY_WORK }}/run/first-run.json
             ${{ env.DINKSTER_VERIFY_WORK }}/run/restart.json
-            ${{ env.DINKSTER_VERIFY_WORK }}/run/mismatched-profile.json
+            ${{ env.DINKSTER_VERIFY_WORK }}/run/control-runtime.json
             ${{ env.DINKSTER_VERIFY_WORK }}/run/first-run.png
             ${{ env.DINKSTER_VERIFY_WORK }}/run/restart.png
-            ${{ env.DINKSTER_VERIFY_WORK }}/run/mismatched-profile.png

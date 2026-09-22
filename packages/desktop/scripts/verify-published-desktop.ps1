@@ -1,8 +1,8 @@
-param([Parameter(Mandatory)][ValidateSet('DownloadBackend', 'DownloadDesktop', 'Install', 'Cleanup')][string]$Action)
+param([Parameter(Mandatory)][ValidateSet('DownloadDesktop', 'Install', 'Cleanup')][string]$Action)
 
 $ErrorActionPreference = 'Stop'
-if ($Action.StartsWith('Download') -and -not $env:GH_TOKEN) {
-    throw 'Missing dedicated acquisition token; no fallback token is permitted'
+if ($Action -eq 'DownloadDesktop' -and -not $env:GH_TOKEN) {
+    throw 'Missing Desktop release acquisition token; no fallback token is permitted'
 }
 if (-not $env:DINKSTER_VERIFY_WORK) { throw 'Set DINKSTER_VERIFY_WORK to a new isolated verification directory' }
 $root = [IO.Path]::GetFullPath($env:DINKSTER_VERIFY_WORK)
@@ -12,14 +12,8 @@ $install = Join-Path $root 'app'
 $data = Join-Path $root 'run'
 $owner = Join-Path $root 'owned-install.json'
 $desktop = Get-Content (Join-Path $PSScriptRoot 'published-desktop.json') -Raw | ConvertFrom-Json
-if (-not $env:DINKSTER_PUBLISHED_SOURCE) { throw 'Set DINKSTER_PUBLISHED_SOURCE to the published Desktop checkout' }
-$backend = Get-Content (Join-Path $env:DINKSTER_PUBLISHED_SOURCE 'packages/desktop/src/backend-release.json') -Raw | ConvertFrom-Json
-$aimdo = $backend.desktopWindowsRuntime.aimdo
 if ($desktop.published -ne $true -and $Action -ne 'Cleanup') {
     throw 'No Dinkster Desktop release has been published'
-}
-if ($desktop.published -eq $true -and ($backend.commit -cne $desktop.backendCommit -or $backend.releaseTag -cne "backend-$($desktop.backendCommit)")) {
-    throw 'The published Desktop verifier requires its original backend pin'
 }
 
 function Assert-Artifact($Pin, [string]$Path) {
@@ -37,16 +31,9 @@ function Get-ReleaseArtifact($Pin) {
     Assert-Artifact $Pin (Join-Path $assets $Pin.archive)
 }
 
-if ($Action -eq 'DownloadBackend') {
+if ($Action -eq 'DownloadDesktop') {
     if (Test-Path -LiteralPath $root) { throw 'Verification directory must be fresh' }
     New-Item -ItemType Directory -Path $assets, $proof | Out-Null
-    Get-ReleaseArtifact $backend
-    Get-ReleaseArtifact $aimdo
-    "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $assets $backend.archive)" >> $env:GITHUB_ENV
-    "DINKSTER_AIMDO_WHEEL=$(Join-Path $assets $aimdo.archive)" >> $env:GITHUB_ENV
-    return
-}
-if ($Action -eq 'DownloadDesktop') {
     Get-ReleaseArtifact $desktop
     return
 }
@@ -57,7 +44,7 @@ Get-ChildItem Env: | Where-Object { $_.Name -match 'TOKEN|SECRET|PASSWORD|CREDEN
 $protocol = 'Registry::HKEY_CURRENT_USER\Software\Classes\dinkster'
 $executable = Join-Path $install 'Dinkster Desktop.exe'
 if ($Action -eq 'Install') {
-    foreach ($pin in @($desktop, $backend, $aimdo)) { Assert-Artifact $pin (Join-Path $assets $pin.archive) }
+    Assert-Artifact $desktop (Join-Path $assets $desktop.archive)
     if ((Test-Path $install) -or (Test-Path $data) -or (Test-Path $owner) -or (Test-Path $protocol)) {
         throw 'Refusing to overwrite an existing installation, protocol, or verification environment'
     }
@@ -67,8 +54,22 @@ if ($Action -eq 'Install') {
     @{ install = $install; data = $data } | ConvertTo-Json | Set-Content $owner
     $process = Start-Process -FilePath (Join-Path $assets $desktop.archive) -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$install") -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
-    foreach ($pin in @($backend, $aimdo)) { Assert-Artifact $pin (Join-Path $install "resources/engine/$($pin.archive)") }
-    @{ desktop = $desktop; backend = $backend; embeddedInputsVerified = $true; accelerator = 'cpu' } |
+
+    $descriptorPath = Join-Path $install 'resources/control-runtime/descriptor.json'
+    $descriptor = Get-Content $descriptorPath -Raw | ConvertFrom-Json
+    $expected = $desktop.controlRuntime
+    if (-not $expected -or $descriptor.format -cne 'dinkster.control-runtime/1' -or
+        $descriptor.commit -cne $expected.commit -or $descriptor.platform -cne $expected.platform -or
+        $descriptor.python -cne $expected.python -or
+        ($descriptor.invocation -join "`n") -cne ($expected.invocation -join "`n") -or
+        $descriptor.artifact.path -cne $expected.artifact.path -or
+        $descriptor.artifact.sha256 -cne $expected.artifact.sha256 -or
+        $descriptor.artifact.size -ne $expected.artifact.size) {
+        throw 'Installed control-runtime descriptor does not match the published release metadata'
+    }
+    $archive = Join-Path (Split-Path $descriptorPath) (Split-Path $descriptor.artifact.path -Leaf)
+    Assert-Artifact @{ archive = (Split-Path $archive -Leaf); size = $descriptor.artifact.size; sha256 = $descriptor.artifact.sha256 } $archive
+    @{ desktop = $desktop; controlRuntime = $descriptor; embeddedInputsVerified = $true } |
         ConvertTo-Json -Depth 8 | Set-Content (Join-Path $proof 'artifacts.json')
     "DINKSTER_DESKTOP_EXECUTABLE=$executable" >> $env:GITHUB_ENV
     "DINKSTER_DESKTOP_VERIFY_ROOT=$data" >> $env:GITHUB_ENV

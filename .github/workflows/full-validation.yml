@@ -87,6 +87,7 @@ jobs:
           python-version: '3.12'
       - run: pnpm install --frozen-lockfile
       - run: uv sync --project .dinkster --locked --package dinkster --no-dev
+      - run: .dinkster/.venv/bin/dinkster-pack --accelerator cpu prepare-catalogs --defaults --library-root .ci/native-library
       - run: pnpm --filter @dinkster/e2e exec playwright install chromium
       - run: pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts
         env:

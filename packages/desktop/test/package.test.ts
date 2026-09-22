@@ -263,12 +263,25 @@ describe('desktop package inputs', () => {
         extraResources: { from: string; to: string; filter?: string[] }[]
         publish: { provider: string; owner: string; repo: string }[]
         win: { forceCodeSigning: boolean }
+        linux: {
+          category: string
+          executableName: string
+          synopsis: string
+          description: string
+          maintainer: string
+          vendor: string
+          syncDesktopName: boolean
+          target: { target: string; arch: string[] }[]
+          artifactName: string
+        }
       }
     }
     expect(manifest.scripts['build']).toContain('clean-output.mjs dist')
     expect(manifest.scripts['prepare:control-runtime']).toBe('node scripts/prepare-control-runtime.mjs')
     expect(manifest.scripts['package:win']).toContain('prepare:control-runtime')
     expect(manifest.scripts['package:win']).not.toContain('prepare:engine')
+    expect(manifest.scripts['package:linux']).toContain('prepare:control-runtime')
+    expect(manifest.scripts['package:linux']).not.toContain('prepare:engine')
     expect(manifest.scripts['package:win']).toContain('clean-output.mjs release')
     expect(Object.keys(manifest.scripts)).not.toContain('prepare:engine')
     expect(manifest.build.extraResources).toEqual([
@@ -277,6 +290,17 @@ describe('desktop package inputs', () => {
     ])
     expect(manifest.build.publish).toEqual([{ provider: 'generic', url: 'https://updates.dinkster.invalid/desktop' }])
     expect(manifest.build.win.forceCodeSigning).toBe(false)
+    expect(manifest.build.linux).toEqual({
+      category: 'Utility',
+      executableName: 'dinkster-desktop',
+      synopsis: 'Dinkster Desktop',
+      description: 'Dinkster Desktop local engine and project manager',
+      maintainer: 'Dinkster contributors',
+      vendor: 'Dinkster contributors',
+      syncDesktopName: true,
+      target: [{ target: 'AppImage', arch: ['x64'] }],
+      artifactName: 'Dinkster-Desktop-${version}-${arch}.${ext}',
+    })
     const embedded = JSON.stringify(manifest)
     expect(embedded).not.toMatch(/prepare-engine-source|resources\/engine|"engine"|\.whl/i)
     expect(embedded).not.toMatch(/aimdo/i)

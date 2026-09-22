@@ -22,7 +22,9 @@ env.DINKSTER_DESKTOP_DATA = dataDirectory
 env.GIT_CONFIG_GLOBAL = join(root, 'no-git-config')
 env.GIT_CONFIG_NOSYSTEM = '1'
 env.GIT_TERMINAL_PROMPT = '0'
-env.PATH = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+env.PATH = process.platform === 'win32'
+  ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+  : '/usr/bin:/bin'
 
 async function verifyLaunch(name) {
   const app = await electron.launch({

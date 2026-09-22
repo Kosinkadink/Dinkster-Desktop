@@ -29,3 +29,8 @@ from `.github/workflows/ci.yml`, point `DINKSTER_FRONTEND_DIST` at its
 
 GitHub may hold workflows from fork pull requests until a maintainer approves
 the run. That approval is the repository's fork CI security gate.
+
+## License
+
+Outside contributions are accepted under GPL-3.0-or-later with a grant to
+relicense under AGPL-3.0.

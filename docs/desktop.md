@@ -14,6 +14,23 @@ release layer owns the channel and manifest schemas and supplies the expected
 digests. Desktop also compares the running shell version with a numeric minimum
 version before an update can proceed.
 
+## Packaging inputs
+
+The installer bundles no engine. Packaging accepts two explicit file inputs
+through environment variables: `DINKSTER_CONTROL_RUNTIME_DESCRIPTOR` (the
+bundled control-runtime descriptor JSON) and `DINKSTER_CONTROL_RUNTIME_ARCHIVE`
+(the `.tar.gz` archive named by that descriptor).
+`scripts/prepare-control-runtime.mjs` verifies the descriptor's strict shape,
+its value and path invariants, and that the archive bytes match the digest and
+size the descriptor declares, then stages exactly two files:
+`resources/control-runtime/descriptor.json` and
+`resources/control-runtime/<archive basename>`. electron-builder copies that
+directory into the installed application as `resources/control-runtime`.
+Verification runs before anything in the staging directory changes, and failed
+verification preserves both the inputs and any existing staged content. The
+script never fetches anything from the network and never extracts the archive;
+Desktop discovers the bundled runtime only through those staged files.
+
 ## Projects
 
 Each Desktop project id, including `default`, binds to one absolute Dinkster

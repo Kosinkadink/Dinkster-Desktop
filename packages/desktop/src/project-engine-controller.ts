@@ -60,7 +60,10 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
   }
 
   async info(): Promise<DesktopProjectEngineInfo> {
-    const registry = await readProjectRegistry(this.options.dataDirectory)
+    const [registry, journal] = await Promise.all([
+      readProjectRegistry(this.options.dataDirectory),
+      readGenerationSwapJournal(this.options.dataDirectory, this.options.projectId),
+    ])
     const binding = getProjectBinding(registry, this.options.projectId)
     const dataRoot = defaultProjectDataRoot(this.options.dataDirectory, this.options.projectId)
     if (!binding) {
@@ -70,12 +73,15 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
         mirrorConfigured: this.options.mirrorUrl !== undefined,
         dataRoot,
         generations: [],
+        ...(journal ? { journal: {
+          stage: journal.stage,
+          previousGeneration: journal.previousGeneration,
+          targetGeneration: journal.targetGeneration,
+          ...(journal.error ? { error: journal.error } : {}),
+        } } : {}),
       }
     }
-    const [generations, journal] = await Promise.all([
-      this.options.cli.generations(binding.installRoot),
-      readGenerationSwapJournal(this.options.dataDirectory, this.options.projectId),
-    ])
+    const generations = await this.options.cli.generations(binding.installRoot)
     const failed = journal?.stage === 'failed' ? generationNumber(journal.targetGeneration) : undefined
     const presented = generations.flatMap((generation): DesktopProjectGeneration[] => {
       if (!generation.engine) return []
@@ -97,8 +103,6 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
         // Installed generations remain manageable while the mirror is unavailable.
       }
     }
-    const previousGeneration = journal ? generationNumber(journal.previousGeneration) : undefined
-    const targetGeneration = journal ? generationNumber(journal.targetGeneration) : undefined
     return {
       projectId: this.options.projectId,
       configured: true,
@@ -110,11 +114,11 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
       port: this.options.port,
       ...(current?.engine ? { cell: current.engine.cell } : {}),
       ...(availableEngineCommit ? { availableEngineCommit } : {}),
-      ...(journal && previousGeneration && targetGeneration
+      ...(journal
         ? { journal: {
             stage: journal.stage,
-            previousGeneration,
-            targetGeneration,
+            previousGeneration: journal.previousGeneration,
+            targetGeneration: journal.targetGeneration,
             ...(journal.error ? { error: journal.error } : {}),
           } }
         : {}),

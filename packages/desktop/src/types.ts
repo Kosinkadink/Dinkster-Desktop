@@ -68,8 +68,8 @@ export interface DesktopProjectEngineInfo {
   readonly availableEngineCommit?: string
   readonly journal?: {
     readonly stage: 'building' | 'switching' | 'failed'
-    readonly previousGeneration: number
-    readonly targetGeneration: number
+    readonly previousGeneration: string
+    readonly targetGeneration: string
     readonly error?: string
   }
 }

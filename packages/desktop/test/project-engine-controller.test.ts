@@ -135,6 +135,10 @@ describe('project engine controller', () => {
       stage: 'failed', previousGeneration: 'none', targetGeneration: '7',
     })
     expect(getProjectBinding(await readProjectRegistry(dataDirectory), 'studio')).toBeUndefined()
+    await expect(controller.info()).resolves.toMatchObject({
+      configured: false,
+      journal: { stage: 'failed', previousGeneration: 'none', targetGeneration: '7' },
+    })
   })
 
   it('restores the serving generation and retains the failed target after readiness failure', async () => {

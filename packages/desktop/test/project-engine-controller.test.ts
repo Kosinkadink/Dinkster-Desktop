@@ -110,6 +110,33 @@ describe('project engine controller', () => {
     expect(await readGenerationSwapJournal(dataDirectory, 'studio')).toBeUndefined()
   })
 
+  it('retains the staged generation number when a first install fails readiness', async () => {
+    const dataDirectory = await temporaryRoot()
+    const engineCli = cli()
+    const installRoot = join(dataDirectory, 'engine-projects', 'studio')
+    vi.spyOn(engineCli, 'install').mockResolvedValue(generation(7, false, installRoot))
+    vi.spyOn(engineCli, 'activate').mockResolvedValue(generation(7, true, installRoot))
+    const candidate = supervisor(7)
+    const controller = new ProjectEngineController({
+      dataDirectory,
+      projectId: 'studio',
+      port: 4101,
+      mirrorUrl: 'https://mirror.example/engine',
+      cli: engineCli,
+      inspectFeed: async () => inspection(),
+      startSupervisor: async () => candidate,
+      waitForReady: async () => { throw new Error('new supervisor never became ready') },
+    })
+
+    await expect(controller.install('stable', 'linux-cpu')).rejects.toThrow('never became ready')
+
+    expect(candidate.stop).toHaveBeenCalledOnce()
+    expect(await readGenerationSwapJournal(dataDirectory, 'studio')).toMatchObject({
+      stage: 'failed', previousGeneration: 'none', targetGeneration: '7',
+    })
+    expect(getProjectBinding(await readProjectRegistry(dataDirectory), 'studio')).toBeUndefined()
+  })
+
   it('restores the serving generation and retains the failed target after readiness failure', async () => {
     const dataDirectory = await temporaryRoot()
     const installRoot = join(dataDirectory, 'engine-projects', 'studio')

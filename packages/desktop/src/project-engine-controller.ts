@@ -225,6 +225,7 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
       targetGeneration: target.engineCommit,
       startedAt,
     }
+    let targetGeneration = baseJournal.targetGeneration
     await writeGenerationSwapJournal(this.options.dataDirectory, { ...baseJournal, stage: 'building' })
     let supervisor: Supervisor | undefined
     try {
@@ -235,9 +236,10 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
         cell,
         ...(this.options.allowLocalHttp ? { allowLocalHttp: true } : {}),
       })
+      targetGeneration = String(generation.generation)
       await writeGenerationSwapJournal(this.options.dataDirectory, {
         ...baseJournal,
-        targetGeneration: String(generation.generation),
+        targetGeneration,
         stage: 'switching',
       })
       await this.options.cli.activate({ root: installRoot, generation: generation.generation })
@@ -251,6 +253,7 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
       await supervisor?.stop()
       await writeGenerationSwapJournal(this.options.dataDirectory, {
         ...baseJournal,
+        targetGeneration,
         stage: 'failed',
         failedAt: new Date().toISOString(),
         error: error instanceof Error ? error.message : String(error),

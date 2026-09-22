@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { writeFileAtomic } from './atomic-file.js'
 import type { EngineCli, EngineGeneration } from './engine-cli.js'
 import type { EngineFeedDisplay, EngineFeedInspection } from './engine-feed.js'
@@ -197,17 +197,18 @@ export class ProjectEngineController<Supervisor extends GenerationSupervisor> {
 
   async remove(deleteDataRoot: boolean, confirmedDataRoot?: string): Promise<void> {
     const dataRoot = defaultProjectDataRoot(this.options.dataDirectory, this.options.projectId)
-    if (deleteDataRoot) {
-      if (!confirmedDataRoot) throw new Error(`data deletion requires exact path confirmation: ${dataRoot}`)
-      await deleteConfirmedProjectData(dataRoot, confirmedDataRoot)
+    if (deleteDataRoot && confirmedDataRoot !== resolve(dataRoot)) {
+      throw new Error(`data deletion requires exact path confirmation: ${resolve(dataRoot)}`)
     }
     await this.supervisor?.stop()
     this.supervisor = undefined
+    if (deleteDataRoot) await deleteConfirmedProjectData(dataRoot, confirmedDataRoot!)
     const registry = await readProjectRegistry(this.options.dataDirectory)
     await writeProjectRegistry(
       this.options.dataDirectory,
       removeProjectBinding(registry, this.options.projectId),
     )
+    await clearGenerationSwapJournal(this.options.dataDirectory, this.options.projectId)
   }
 
   private async firstInstall(

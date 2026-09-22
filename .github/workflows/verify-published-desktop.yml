@@ -9,7 +9,7 @@ permissions:
 jobs:
   verify:
     if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.event.repository.private == true && github.ref == 'refs/heads/main' && false
-    runs-on: [self-hosted, windows, x64]
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
     timeout-minutes: 60
     defaults:
       run:

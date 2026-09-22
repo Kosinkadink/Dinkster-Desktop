@@ -24,3 +24,30 @@ pnpm test
 ```
 
 `pnpm --filter @dinkster/desktop package:win` additionally requires the two verified backend release artifacts. The private release workflows remain manual; local validation must not dispatch them or publish a release.
+
+Pull requests run formatting, types, unit tests, and the Linux build with a
+10-minute budget. Main adds the pinned frontend browser suite and Windows
+packaging in parallel, with a 20-minute end-to-end budget. The `CI_RUNNERS`
+repository variable is required. Its private-repository value is:
+
+```json
+{
+  "linux": ["self-hosted", "linux", "x64"],
+  "windows": ["self-hosted", "windows", "x64"],
+  "macos": ["self-hosted", "macos", "arm64"]
+}
+```
+
+After the repository is public, one variable change moves all eligible jobs to
+GitHub-hosted runners:
+
+```json
+{
+  "linux": ["ubuntu-latest"],
+  "windows": ["windows-latest"],
+  "macos": ["macos-latest"]
+}
+```
+
+Every main run uploads `main-validation-status` with the Linux, browser, and
+Windows results. The aggregate status fails unless every lane passed.

@@ -137,7 +137,7 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     }`)).resolves.toBeDefined()
   })
 
-  it('downloads each fixture only with its repository-specific token and exports no token', async () => {
+  it('scopes release tokens to their repositories and downloads the public wheel without credentials', async () => {
     const scripts = resolve(scratch, 'scripts')
     await mkdir(scripts)
     await mkdir(resolve(scratch, 'src'))
@@ -167,11 +167,16 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
         if ($args[0] -eq 'api') { $repo=$args[1].Substring(6) }
         elseif ($args[0] -eq 'release' -and $args[1] -eq 'download') { $repo=$args[4] }
         else { throw 'UNEXPECTED_GH_OPERATION' }
-        $allowed = if ($env:GH_TOKEN -eq 'backend-only') { @('Kosinkadink/Dinkster','Kosinkadink/dinkster-aimdo') }
+        $allowed = if ($env:GH_TOKEN -eq 'backend-only') { @('Kosinkadink/Dinkster') }
           elseif ($env:GH_TOKEN -eq 'desktop-only') { @('Kosinkadink/Dinkster-Desktop') } else { @() }
         if ($repo -notin $allowed) { throw 'WRONG_TOKEN_ROUTE' }
         if ($args[0] -eq 'api') { '{"private":true}' }
         else { [IO.File]::WriteAllText((Join-Path $args[8] $args[6]), 'fixture') }
+      }
+      function Invoke-WebRequest {
+        param($Uri, $OutFile)
+        if ($Uri -notlike 'https://files.pythonhosted.org/packages/*' -or $args.Count) { throw 'UNEXPECTED_WHEEL_REQUEST' }
+        [IO.File]::WriteAllText($OutFile, 'fixture')
       }
       $env:GH_TOKEN='backend-only'; & ${psQuote(fixtureScript)} -Action DownloadBackend
       $env:GH_TOKEN='desktop-only'; & ${psQuote(fixtureScript)} -Action DownloadDesktop`)

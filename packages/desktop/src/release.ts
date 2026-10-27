@@ -43,7 +43,7 @@ export function supportedPlatform(platform = process.platform, arch = process.ar
 }
 
 export function syncArguments(_accelerator: EngineAccelerator): readonly string[] {
-  return ['sync', '--python', '3.12', '--locked', '--no-dev', '--all-packages', '--extra', 'torch']
+  return ['sync', '--python', '3.12', '--locked', '--no-dev', '--all-packages']
 }
 
 export function torchBackend(accelerator: EngineAccelerator, platform = process.platform, arch = process.arch): string | undefined {

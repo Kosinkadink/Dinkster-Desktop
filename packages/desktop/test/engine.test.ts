@@ -336,7 +336,7 @@ describe('EngineRuntime lifecycle', () => {
       assert.deepEqual(args.slice(0, -1), ['--no-sync', 'dinkster-pack', 'prepare-catalogs', '--defaults', '--library-root'])
       assert.equal(canonicalPath(args.at(-1)), canonicalPath(library))
       assert.equal(canonicalPath(process.env.UV_PROJECT_ENVIRONMENT), canonicalPath(join(process.cwd(), '.venv')))
-      assert.equal(canonicalPath(process.env.DINKSTER_COMFYUI_PYTHON), canonicalPath(process.platform === 'win32' ? join(process.cwd(), '.venv', 'Scripts', 'python.exe') : join(process.cwd(), '.venv', 'bin', 'python')))
+      assert.equal(canonicalPath(process.env.DINKSTER_EXECUTION_PYTHON), canonicalPath(process.platform === 'win32' ? join(process.cwd(), '.venv', 'Scripts', 'python.exe') : join(process.cwd(), '.venv', 'bin', 'python')))
       assert.equal(process.env.DINKSTER_ACCELERATOR, 'cpu')
       assert.equal(canonicalPath(process.env.PATH.split(delimiter)[0]), canonicalPath(dirname(process.execPath)))
       require('node:fs').writeFileSync(join(library, 'catalog-completed'), 'ready')

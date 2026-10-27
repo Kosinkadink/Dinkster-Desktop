@@ -2,7 +2,6 @@ import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import backend from '../src/backend-release.json'
 
 const root = resolve(import.meta.dirname, '../../..')
 const yaml = createRequire(import.meta.url)('js-yaml') as {
@@ -62,8 +61,8 @@ describe('desktop workflows', () => {
     expect(job['timeout-minutes']).toBe(10)
     expect(job['runs-on']).toBe('${{ fromJSON(vars.CI_RUNNERS).linux }}')
     expect(job.steps?.flatMap((step) => step.run ?? [])).toEqual([
-      'pnpm --dir .frontend install --frozen-lockfile',
-      'pnpm --dir .frontend --filter @dinkster/app build',
+      'npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend install --frozen-lockfile',
+      'npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend --filter @dinkster/app build',
       'pnpm install --frozen-lockfile',
       'pnpm lint',
       'pnpm typecheck',
@@ -87,8 +86,8 @@ describe('desktop workflows', () => {
     expect(statusSource).toContain('test "$TEST_RESULT" = success')
   })
 
-  it('runs complete Linux, browser, and Windows lanes on main', () => {
-    expect(full.env?.['DINKSTER_REF']).toBe(backend.commit)
+  it('runs Linux build, packaged Desktop startup, and Windows package lanes on main', () => {
+    expect(full.env?.['DINKSTER_REF']).toMatch(/^[0-9a-f]{40}$/)
     expect(full.on).toMatchObject({
       push: { branches: ['main'] },
       workflow_dispatch: null,
@@ -96,14 +95,14 @@ describe('desktop workflows', () => {
     })
     expect(Object.keys(full.jobs)).toEqual([
       'linux',
-      'frontend-e2e',
+      'desktop-smoke',
       'windows-package',
       'main-status',
     ])
     expect(full.jobs['linux']!['runs-on']).toBe(
       '${{ fromJSON(vars.CI_RUNNERS).linux }}',
     )
-    expect(full.jobs['frontend-e2e']!['runs-on']).toBe(
+    expect(full.jobs['desktop-smoke']!['runs-on']).toBe(
       '${{ fromJSON(vars.CI_RUNNERS).linux }}',
     )
     expect(full.jobs['windows-package']!['runs-on']).toBe(
@@ -119,24 +118,13 @@ describe('desktop workflows', () => {
     expect(windowsCommands).toContain(
       'pnpm --filter @dinkster/desktop verify:update-feed',
     )
-    const browserCommands = full.jobs['frontend-e2e']!.steps?.flatMap(
+    const smokeCommands = full.jobs['desktop-smoke']!.steps?.flatMap(
       (step) => step.run ?? [],
     )
-    expect(browserCommands).toContain(
-      'uv sync --project .dinkster --locked --package dinkster --no-dev',
-    )
-    expect(browserCommands).toContain(
-      '.dinkster/.venv/bin/dinkster-pack --accelerator cpu prepare-catalogs --defaults --library-root .ci/native-library',
-    )
-    expect(browserCommands).toContain(
-      'pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts',
-    )
-    const browserRun = full.jobs['frontend-e2e']!.steps?.find((step) =>
-      step.run?.includes('playwright.audit-assets.config.ts'),
-    )
-    expect(browserRun?.env?.['DINKSTER_E2E_DINKSTER_ROOT']).toBe(
-      '${{ github.workspace }}/.dinkster',
-    )
+    expect(smokeCommands).toContain('node scripts/prepare-smoke-backend.mjs')
+    expect(smokeCommands).toContain('pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never')
+    expect(smokeCommands).toContain('xvfb-run --auto-servernum node scripts/smoke-desktop.mjs')
+    expect(JSON.stringify(full)).not.toContain('playwright.audit-assets.config.ts')
   })
 
   it('uses one required variable for every hosted-eligible job', () => {
@@ -155,13 +143,13 @@ describe('desktop workflows', () => {
     expect(status.if).toBe('always()')
     expect(status.needs).toEqual([
       'linux',
-      'frontend-e2e',
+      'desktop-smoke',
       'windows-package',
     ])
     const source = status.steps?.flatMap((step) => step.run ?? []).join('\n')
     expect(source).toContain('main-validation-status.json')
     expect(source).toContain('test "$LINUX_RESULT" = success')
-    expect(source).toContain('test "$E2E_RESULT" = success')
+    expect(source).toContain('test "$SMOKE_RESULT" = success')
     expect(source).toContain('test "$WINDOWS_RESULT" = success')
   })
 

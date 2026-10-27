@@ -69,7 +69,11 @@ print(json.dumps(result))
 `], { env, cwd: source, windowsHide: true, timeout: 120_000 })
     const versions = JSON.parse(stdout.trim())
     if (entry.name === 'host') {
-      assert.ok(versions.torch, 'Host Torch must import')
+      if (variant === 'cuda') assert.ok(versions.torch, 'CUDA host Torch must import')
+      else {
+        assert.equal(versions.torch, undefined, 'CPU host must remain Torch-free')
+        assert.equal(versions.torchvision, undefined, 'CPU host must remain torchvision-free')
+      }
       assert.equal(versions.aimdo, aimdo.version)
     }
     if (versions.torch) {

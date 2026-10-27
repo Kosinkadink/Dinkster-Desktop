@@ -1,7 +1,7 @@
 {
   "repository": "Kosinkadink/Dinkster",
-  "commit": "dfb4d7f451a5fbaba7b317a2a6e9facc1cd15ebd",
-  "releaseTag": "backend-dfb4d7f451a5fbaba7b317a2a6e9facc1cd15ebd",
+  "commit": "5b98f9e7e5f3d0dfa094791de48e1059fe74133b",
+  "releaseTag": "backend-5b98f9e7e5f3d0dfa094791de48e1059fe74133b",
   "workerProtocol": 10,
   "requiresPython": ">=3.12",
   "desktopWindowsRuntime": {
@@ -30,7 +30,7 @@
     "requiresInternet": true,
     "requiresGit": false
   },
-  "archive": "dinkster-backend-dfb4d7f451a5fbaba7b317a2a6e9facc1cd15ebd.zip",
-  "sha256": "a4ed3212be1309404ad86ed5e65bcd7e8020c80eec2e3ccb6cbc07adfe04fa84",
-  "size": 13956686
+  "archive": "dinkster-backend-5b98f9e7e5f3d0dfa094791de48e1059fe74133b.zip",
+  "sha256": "65e0a08ded852e6c92cc3ca5fc516adff2f05539afc284adcf614f200ada7db9",
+  "size": 14052608
 }

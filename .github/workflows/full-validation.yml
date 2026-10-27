@@ -17,7 +17,7 @@ concurrency:
 
 env:
   DINKSTER_FRONTEND_REF: 08deab9ce537bc8d567cd96ad4a11e014a33d2ff
-  DINKSTER_REF: dfb4d7f451a5fbaba7b317a2a6e9facc1cd15ebd
+  DINKSTER_REF: 5b98f9e7e5f3d0dfa094791de48e1059fe74133b
 
 jobs:
   linux:

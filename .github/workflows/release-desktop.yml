@@ -73,8 +73,30 @@ jobs:
       - run: pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts
         env:
           DINKSTER_E2E_PORT: "15376"
-      - run: pnpm --filter @dinkster/desktop package:win
+      - name: Package and sign with Artifact Signing
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: pnpm --filter @dinkster/desktop package:win:signed
       - run: pnpm --filter @dinkster/desktop verify:update-feed
+      - name: Verify publisher signatures
+        run: |
+          $expected = (node --input-type=module -e "import('./packages/desktop/electron-builder.signed.mjs').then((m) => process.stdout.write(m.currentPublisher))")
+          if ($LASTEXITCODE -ne 0 -or !$expected) { throw 'Could not read the expected publisher' }
+          $files = @(
+            Get-ChildItem packages/desktop/release -Filter '*-Setup.exe'
+            Get-Item 'packages/desktop/release/win-unpacked/Dinkster Desktop.exe'
+          )
+          if ($files.Count -ne 2) { throw 'Expected one installer and one application executable' }
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            $subject = $signature.SignerCertificate.Subject
+            if ($signature.Status -ne 'Valid') { throw "$($file.Name): signature status $($signature.Status)" }
+            if (!$signature.TimeStamperCertificate) { throw "$($file.Name): signature is not timestamped" }
+            if ($subject -notlike "CN=$expected,*") { throw "$($file.Name): unexpected publisher $subject" }
+            Write-Host "$($file.Name): valid signature from $subject"
+          }
       - name: Install into an isolated directory
         run: |
           $installer = Get-Item packages/desktop/release/*-Setup.exe
@@ -109,5 +131,5 @@ jobs:
           $tags = gh api "repos/Kosinkadink/Dinkster-Desktop/git/matching-refs/tags/$env:DESKTOP_TAG" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Could not verify release tag availability' }
           if (@($tags | Where-Object { $_.ref -ceq "refs/tags/$env:DESKTOP_TAG" }).Count -ne 0) { throw 'Desktop version tag already exists; bump the package version' }
-          gh release create $env:DESKTOP_TAG packages/desktop/release/*-Setup.exe packages/desktop/release/desktop-release.json packages/desktop/release/SHA256SUMS --repo Kosinkadink/Dinkster-Desktop --target $env:GITHUB_SHA --title "Dinkster Desktop $env:DESKTOP_TAG" --notes 'Unsigned Windows x64 installer. Source commits and SHA256 are in desktop-release.json. Requires internet for locked first-run dependencies. See README.md at the release commit.'
+          gh release create $env:DESKTOP_TAG packages/desktop/release/*-Setup.exe packages/desktop/release/desktop-release.json packages/desktop/release/SHA256SUMS --repo Kosinkadink/Dinkster-Desktop --target $env:GITHUB_SHA --title "Dinkster Desktop $env:DESKTOP_TAG" --notes 'Windows x64 installer signed through Artifact Signing. Source commits and SHA256 are in desktop-release.json. Requires internet for locked first-run dependencies. See README.md at the release commit.'
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; existing versions are never overwritten' }

@@ -69,10 +69,6 @@ jobs:
         env:
           NODE_OPTIONS: --max-semi-space-size=64
           npm_config_workspace_concurrency: '1'
-      - run: pnpm --filter @dinkster/e2e exec playwright install chromium
-      - run: pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts
-        env:
-          DINKSTER_E2E_PORT: "15376"
       - name: Package and sign with Artifact Signing
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -95,7 +91,9 @@ jobs:
             if ($signature.Status -ne 'Valid') { throw "$($file.Name): signature status $($signature.Status)" }
             if (!$signature.TimeStamperCertificate) { throw "$($file.Name): signature is not timestamped" }
             if ($subject -notlike "CN=$expected,*") { throw "$($file.Name): unexpected publisher $subject" }
-            Write-Host "$($file.Name): valid signature from $subject"
+            $line = "$($file.Name): valid signature from $subject, timestamped by $($signature.TimeStamperCertificate.Subject)"
+            Write-Host $line
+            "- $line" >> $env:GITHUB_STEP_SUMMARY
           }
       - name: Install into an isolated directory
         run: |

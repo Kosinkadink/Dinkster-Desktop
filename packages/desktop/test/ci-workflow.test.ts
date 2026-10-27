@@ -9,6 +9,7 @@ const yaml = createRequire(import.meta.url)('js-yaml') as {
 }
 interface Step {
   id?: string
+  name?: string
   uses?: string
   run?: string
   with?: Record<string, unknown>
@@ -38,6 +39,7 @@ const load = async (name: string): Promise<Workflow> =>
 const ci = await load('ci.yml')
 const full = await load('full-validation.yml')
 const release = await load('release-desktop.yml')
+const signed = await load('signed-package.yml')
 const published = await load('verify-published-desktop.yml')
 
 describe('desktop workflows', () => {
@@ -49,6 +51,34 @@ describe('desktop workflows', () => {
     expect(release.env?.['DINKSTER_FRONTEND_REF']).toBe(
       ci.env?.['DINKSTER_FRONTEND_REF'],
     )
+    expect(signed.env?.['DINKSTER_FRONTEND_REF']).toBe(
+      ci.env?.['DINKSTER_FRONTEND_REF'],
+    )
+  })
+
+  it('signs a branch build on demand without publishing it', () => {
+    expect(signed.on).toEqual({ workflow_dispatch: null })
+    expect(signed.permissions).toEqual({ contents: 'read' })
+    expect(Object.keys(signed.jobs)).toEqual(['package'])
+    const job = signed.jobs['package']!
+    expect(job.if).toBe("github.repository == 'Kosinkadink/Dinkster-Desktop'")
+    expect(job.needs).toBeUndefined()
+    const names = (steps: Step[] | undefined) =>
+      steps?.map((step) => step.name ?? step.run ?? step.uses) ?? []
+    const releaseSteps = release.jobs['release']!.steps!
+    const signing = 'Package and sign with Artifact Signing'
+    const verify = 'Verify publisher signatures'
+    const install = 'Install into an isolated directory'
+    for (const name of [signing, verify, install]) {
+      const ours = job.steps?.find((step) => step.name === name)
+      const theirs = releaseSteps.find((step) => step.name === name)
+      expect(ours?.run, name).toBe(theirs?.run)
+      expect(ours?.env, name).toEqual(theirs?.env)
+    }
+    expect(names(job.steps)).toContain('pnpm --filter @dinkster/desktop verify:installed')
+    expect(names(job.steps)).toContain('Keep the signed installer')
+    const source = JSON.stringify(signed)
+    expect(source).not.toMatch(/gh release create|contents: write|DESKTOP_TAG/)
   })
 
   it('runs typecheck, all unit tests, and a Linux build on pull requests', () => {
@@ -128,7 +158,7 @@ describe('desktop workflows', () => {
   })
 
   it('uses one required variable for every hosted-eligible job', () => {
-    for (const workflow of [ci, full, release, published]) {
+    for (const workflow of [ci, full, release, signed, published]) {
       for (const [name, job] of Object.entries(workflow.jobs)) {
         if (job.uses) continue
         expect(job['runs-on'], name).toMatch(
@@ -154,7 +184,7 @@ describe('desktop workflows', () => {
   })
 
   it('uses clean checkouts without persisting credentials', () => {
-    for (const workflow of [ci, full, release, published]) {
+    for (const workflow of [ci, full, release, signed, published]) {
       for (const job of Object.values(workflow.jobs)) {
         for (const step of (job.steps ?? []).filter(
           (entry) => entry.uses === 'actions/checkout@v4',
@@ -171,7 +201,7 @@ describe('desktop workflows', () => {
   })
 
   it('downloads public release inputs with the workflow token', () => {
-    for (const workflow of [full, release, published]) {
+    for (const workflow of [full, release, signed, published]) {
       const downloadSteps = Object.values(workflow.jobs).flatMap((job) =>
         (job.steps ?? []).filter(
           (step) =>
@@ -185,7 +215,7 @@ describe('desktop workflows', () => {
         expect(step.run).not.toContain('DINKSTER_RELEASE_READ_TOKEN')
       }
     }
-    expect(JSON.stringify([full, release, published])).not.toContain(
+    expect(JSON.stringify([full, release, signed, published])).not.toContain(
       'DINKSTER_RELEASE_READ_TOKEN',
     )
   })

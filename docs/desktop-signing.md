@@ -78,8 +78,29 @@ Follow Microsoft's [role assignment tutorial](https://learn.microsoft.com/en-us/
    subscription does not grant signing. Allow a few minutes to propagate.
 4. In the GitHub repository settings add Actions secrets `AZURE_TENANT_ID`,
    `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. The
-   [release workflow](../.github/workflows/release-desktop.yml) passes them
-   only to its packaging step.
+   [release workflow](../.github/workflows/release-desktop.yml) and the
+   [signed package workflow](../.github/workflows/signed-package.yml) pass
+   them only to their packaging step.
+
+### Sign in GitHub Actions without releasing
+
+The **Windows signed package** workflow (`signed-package.yml`) is manual and
+runs from any branch of this repository. It builds the pinned frontend,
+packages with `package:win:signed`, verifies both signatures, installs into a
+scratch directory, exercises first launch, and keeps the installer plus its
+SHA256 as the `desktop-signed-installer` artifact for 14 days. It never
+creates a tag or release and does not run the main validation gate, so it is
+the fastest way to prove the signing setup or to hand testers a signed build.
+Actions -> Windows signed package -> Run workflow -> pick the branch.
+
+The **Windows Desktop release** workflow adds the gate and the publication:
+it runs the full main validation first, then the same signing and
+verification steps, then creates the GitHub release. The version is not an
+input: it is `version` in
+[packages/desktop/package.json](../packages/desktop/package.json), and the
+tag is `desktop-v<version>`. The workflow refuses to publish when that tag
+already exists, so every release starts with a commit on main that bumps the
+version.
 
 ### Sign locally
 
@@ -273,7 +294,8 @@ website on a company domain, and a mailbox on that domain.
 
 Record redacted results, never credentials or documents:
 
-- Windows: a release workflow run whose `Verify publisher signatures` step
-  passed, followed by a successful install and first launch of that installer.
+- Windows: a signed package or release workflow run whose `Verify publisher
+signatures` step passed, followed by a successful install and first launch
+  of that installer.
 - macOS: Developer Support confirms the enrollment is active; later, a
   notarized, stapled build passes Gatekeeper on a clean Mac.

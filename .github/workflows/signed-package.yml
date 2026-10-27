@@ -1,0 +1,124 @@
+name: Windows signed package
+
+# Builds, signs, and verifies the Windows installer from any branch and keeps
+# it as a workflow artifact. Nothing is published, so this proves the Artifact
+# Signing setup and gives testers a signed build without cutting a release.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DINKSTER_FRONTEND_REF: fa99988eb5fcbf645fbcf7ead85a523b650de660
+
+jobs:
+  package:
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop'
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+      - name: Download pinned backend and Aimdo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
+          if ($pin.repository -ne 'Kosinkadink/Dinkster' -or $pin.commit -notmatch '^[a-f0-9]{40}$') { throw 'Invalid backend pin' }
+          if ($pin.releaseTag -ne "backend-$($pin.commit)") { throw 'Invalid backend release tag' }
+          $destination = Join-Path $env:RUNNER_TEMP backend-artifact
+          gh release download $pin.releaseTag --repo Kosinkadink/Dinkster --pattern $pin.archive --dir $destination
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned backend release download failed' }
+          "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $destination $pin.archive)" >> $env:GITHUB_ENV
+          $aimdo = $pin.desktopWindowsRuntime.aimdo
+          if ($aimdo.repository -ne 'Kosinkadink/dinkster-aimdo' -or $aimdo.releaseTag -ne "v$($aimdo.version)") { throw 'Invalid Aimdo pin' }
+          gh release download $aimdo.releaseTag --repo Kosinkadink/dinkster-aimdo --pattern $aimdo.archive --dir $destination
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Aimdo wheel download failed' }
+          "DINKSTER_AIMDO_WHEEL=$(Join-Path $destination $aimdo.archive)" >> $env:GITHUB_ENV
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            .frontend/pnpm-lock.yaml
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm install --frozen-lockfile
+      - name: Package and sign with Artifact Signing
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: pnpm --filter @dinkster/desktop package:win:signed
+      - run: pnpm --filter @dinkster/desktop verify:update-feed
+      - name: Verify publisher signatures
+        run: |
+          $expected = (node --input-type=module -e "import('./packages/desktop/electron-builder.signed.mjs').then((m) => process.stdout.write(m.currentPublisher))")
+          if ($LASTEXITCODE -ne 0 -or !$expected) { throw 'Could not read the expected publisher' }
+          $files = @(
+            Get-ChildItem packages/desktop/release -Filter '*-Setup.exe'
+            Get-Item 'packages/desktop/release/win-unpacked/Dinkster Desktop.exe'
+          )
+          if ($files.Count -ne 2) { throw 'Expected one installer and one application executable' }
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            $subject = $signature.SignerCertificate.Subject
+            if ($signature.Status -ne 'Valid') { throw "$($file.Name): signature status $($signature.Status)" }
+            if (!$signature.TimeStamperCertificate) { throw "$($file.Name): signature is not timestamped" }
+            if ($subject -notlike "CN=$expected,*") { throw "$($file.Name): unexpected publisher $subject" }
+            $line = "$($file.Name): valid signature from $subject, timestamped by $($signature.TimeStamperCertificate.Subject)"
+            Write-Host $line
+            "- $line" >> $env:GITHUB_STEP_SUMMARY
+          }
+      - name: Install into an isolated directory
+        run: |
+          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $destination = Join-Path $env:RUNNER_TEMP dinkster-installed
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          "DINKSTER_DESKTOP_EXECUTABLE=$(Join-Path $destination 'Dinkster Desktop.exe')" >> $env:GITHUB_ENV
+          "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
+      - run: pnpm --filter @dinkster/desktop verify:installed
+      - name: Preserve verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-install-verification
+          path: |
+            ${{ runner.temp }}/dinkster-first-run/*.png
+            ${{ runner.temp }}/dinkster-first-run/*.json
+          if-no-files-found: ignore
+      - name: Record artifact checksum
+        run: |
+          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($installer.Name)" | Set-Content packages/desktop/release/SHA256SUMS
+          "- SHA256 $hash $($installer.Name) ($($installer.Length) bytes) from $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
+      - name: Keep the signed installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-signed-installer
+          path: |
+            packages/desktop/release/*-Setup.exe
+            packages/desktop/release/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error

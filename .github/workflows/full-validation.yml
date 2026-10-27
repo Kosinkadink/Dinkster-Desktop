@@ -92,6 +92,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: '3.12'
+          enable-cache: false
       - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend install --frozen-lockfile
       - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile

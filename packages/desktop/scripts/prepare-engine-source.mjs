@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { copyFile, mkdir, readFile, realpath, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import extract from 'extract-zip'
+import { unzipSync } from 'fflate'
 import backend from '../src/backend-release.json' with { type: 'json' }
 
 if (backend.repository !== 'Kosinkadink/Dinkster' || !/^[a-f0-9]{40}$/.test(backend.commit) ||
@@ -58,21 +57,17 @@ for (const payload of payloads) {
   if (actual !== pin.sha256) throw new Error(`${pin.archive} checksum mismatch: expected ${pin.sha256}, got ${actual}`)
   if (size !== pin.size) throw new Error(`${pin.archive} size mismatch: expected ${pin.size}, got ${size}`)
 }
-const inspection = await mkdtemp(resolve(tmpdir(), 'dinkster-package-profile-'))
+// Only the native profile is needed; do not extract unrelated source assets.
+const profile = `dinkster-backend-${backend.commit}/scripts/desktop_windows_runtime.json`
+let declared
 try {
-  await extract(payloads[0].source, { dir: inspection })
-  const profile = resolve(inspection, `dinkster-backend-${backend.commit}`, 'scripts/desktop_windows_runtime.json')
-  let declared
-  try {
-    declared = JSON.parse(await readFile(profile, 'utf8'))
-  } catch (cause) {
-    throw new Error('Backend ZIP must contain valid scripts/desktop_windows_runtime.json at its pinned source prefix', { cause })
-  }
-  if (!isDeepStrictEqual(declared, { aimdo, cudaTorch })) {
-    throw new Error('Backend ZIP Windows native profile does not match the frontend release pin')
-  }
-} finally {
-  await rm(inspection, { recursive: true, force: true })
+  const files = unzipSync(await readFile(payloads[0].source), { filter: (entry) => entry.name === profile })
+  declared = JSON.parse(Buffer.from(files[profile] ?? []).toString('utf8'))
+} catch (cause) {
+  throw new Error('Backend ZIP must contain valid scripts/desktop_windows_runtime.json at its pinned source prefix', { cause })
+}
+if (!isDeepStrictEqual(declared, { aimdo, cudaTorch })) {
+  throw new Error('Backend ZIP Windows native profile does not match the frontend release pin')
 }
 await rm(directory, { recursive: true, force: true })
 await mkdir(directory, { recursive: true })

@@ -92,8 +92,8 @@ describe('desktop workflows', () => {
     expect(job['timeout-minutes']).toBe(10)
     expect(job['runs-on']).toBe('${{ fromJSON(vars.CI_RUNNERS).linux }}')
     expect(job.steps?.flatMap((step) => step.run ?? [])).toEqual([
-      'npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend install --frozen-lockfile',
-      'npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend --filter @dinkster/app build',
+      'pnpm --dir .frontend install --frozen-lockfile',
+      'pnpm --dir .frontend --filter @dinkster/app build',
       'pnpm install --frozen-lockfile',
       'pnpm lint',
       'pnpm typecheck',

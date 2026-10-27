@@ -2,7 +2,7 @@
 
 ## Local checks
 
-Install Node.js 22 and pnpm 10.31.0, then run the fast checks from the
+Install Node.js 26.12.0 and pnpm 11.28.8, then run the fast checks from the
 repository root:
 
 ```sh

@@ -11,3 +11,6 @@ coverage/
 .DS_Store
 test-results/
 playwright-report/
+.dinkster/
+.smoke-backend/
+.smoke-backend.tar

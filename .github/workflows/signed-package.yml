@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  DINKSTER_FRONTEND_REF: fa99988eb5fcbf645fbcf7ead85a523b650de660
+  DINKSTER_FRONTEND_REF: 08deab9ce537bc8d567cd96ad4a11e014a33d2ff
 
 jobs:
   package:
@@ -55,13 +55,13 @@ jobs:
           dest: ${{ runner.tool_cache }}/setup-pnpm
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.12.0
           cache: pnpm
           cache-dependency-path: |
             pnpm-lock.yaml
             .frontend/pnpm-lock.yaml
-      - run: pnpm --dir .frontend install --frozen-lockfile
-      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend install --frozen-lockfile
+      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - name: Package and sign with Artifact Signing
         env:

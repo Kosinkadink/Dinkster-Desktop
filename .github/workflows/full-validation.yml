@@ -16,8 +16,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DINKSTER_FRONTEND_REF: fa99988eb5fcbf645fbcf7ead85a523b650de660
-  DINKSTER_REF: afe226cd233840d61a0467c186112a431c7c10aa
+  DINKSTER_FRONTEND_REF: 08deab9ce537bc8d567cd96ad4a11e014a33d2ff
+  DINKSTER_REF: d15d168ccf3e725e7b0d11eea63529331711f10f
 
 jobs:
   linux:
@@ -42,30 +42,35 @@ jobs:
           dest: ${{ runner.tool_cache }}/setup-pnpm
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.12.0
           cache: pnpm
           cache-dependency-path: |
             pnpm-lock.yaml
             .frontend/pnpm-lock.yaml
-      - run: pnpm --dir .frontend install --frozen-lockfile
-      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend install --frozen-lockfile
+      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
 
-  frontend-e2e:
-    name: frontend browser assets
+  desktop-smoke:
+    name: packaged Linux Desktop startup
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           clean: true
           persist-credentials: false
           repository: Kosinkadink/Dinkster-Frontend
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
       - uses: actions/checkout@v4
         with:
           clean: true
@@ -79,20 +84,29 @@ jobs:
           dest: ${{ runner.tool_cache }}/setup-pnpm
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.12.0
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            .frontend/pnpm-lock.yaml
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: '3.12'
+      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend install --frozen-lockfile
+      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
-      - run: uv sync --project .dinkster --locked --package dinkster --no-dev
-      - run: .dinkster/.venv/bin/dinkster-pack --accelerator cpu prepare-catalogs --defaults --library-root .ci/native-library
-      - run: pnpm --filter @dinkster/e2e exec playwright install chromium
-      - run: pnpm --filter @dinkster/e2e exec playwright test --config=playwright.audit-assets.config.ts
-        env:
-          DINKSTER_E2E_PORT: '15376'
-          DINKSTER_E2E_DINKSTER_ROOT: ${{ github.workspace }}/.dinkster
+      - run: pnpm build
+      - run: node scripts/prepare-smoke-backend.mjs
+      - run: pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
+      - run: xvfb-run --auto-servernum node scripts/smoke-desktop.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-smoke
+          path: |
+            test-results/desktop-smoke/**/*.png
+            test-results/desktop-smoke/**/logs/*.log
+          retention-days: 7
 
   windows-package:
     name: Windows package and update feed
@@ -135,13 +149,13 @@ jobs:
           dest: ${{ runner.tool_cache }}/setup-pnpm
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26.12.0
           cache: pnpm
           cache-dependency-path: |
             pnpm-lock.yaml
             .frontend/pnpm-lock.yaml
-      - run: pnpm --dir .frontend install --frozen-lockfile
-      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend install --frozen-lockfile
+      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
@@ -152,18 +166,18 @@ jobs:
   main-status:
     name: main validation status
     if: always()
-    needs: [linux, frontend-e2e, windows-package]
+    needs: [linux, desktop-smoke, windows-package]
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 2
     steps:
       - name: Record every lane result
         env:
           LINUX_RESULT: ${{ needs.linux.result }}
-          E2E_RESULT: ${{ needs.frontend-e2e.result }}
+          SMOKE_RESULT: ${{ needs.desktop-smoke.result }}
           WINDOWS_RESULT: ${{ needs.windows-package.result }}
         run: |
-          printf '{"commit":"%s","lanes":{"linux":"%s","frontend-e2e":"%s","windows-package":"%s"}}\n' \
-            "$GITHUB_SHA" "$LINUX_RESULT" "$E2E_RESULT" "$WINDOWS_RESULT" > main-validation-status.json
+          printf '{"commit":"%s","lanes":{"linux":"%s","desktop-smoke":"%s","windows-package":"%s"}}\n' \
+            "$GITHUB_SHA" "$LINUX_RESULT" "$SMOKE_RESULT" "$WINDOWS_RESULT" > main-validation-status.json
           cat main-validation-status.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -175,9 +189,9 @@ jobs:
       - name: Require every lane to pass
         env:
           LINUX_RESULT: ${{ needs.linux.result }}
-          E2E_RESULT: ${{ needs.frontend-e2e.result }}
+          SMOKE_RESULT: ${{ needs.desktop-smoke.result }}
           WINDOWS_RESULT: ${{ needs.windows-package.result }}
         run: |
           test "$LINUX_RESULT" = success
-          test "$E2E_RESULT" = success
+          test "$SMOKE_RESULT" = success
           test "$WINDOWS_RESULT" = success

@@ -9,7 +9,7 @@ import backend from '../../desktop/src/backend-release.json' with { type: 'json'
 import { ENGINE_RELEASE } from '../../desktop/src/release.ts'
 
 const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
-const advertisedWireVersions = [21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44]
+const schemaWireVersion = 1
 
 const executablePath = process.env.DINKSTER_DESKTOP_EXECUTABLE
 const directory = process.env.DINKSTER_DESKTOP_VERIFY_ROOT
@@ -132,14 +132,14 @@ for (const launch of ['first-run', 'restart', 'mismatched-profile']) {
       return response.json()
     })
     assert.equal(health.state, 'ready')
-    const catalog = await page.evaluate(async (versions) => {
-      const response = await fetch(`/api/nodes?wire=${versions.join(',')}`)
+    const catalog = await page.evaluate(async () => {
+      const response = await fetch('/api/nodes')
       if (!response.ok) throw new Error(`Catalog request failed: ${response.status}`)
       return response.json()
-    }, advertisedWireVersions)
+    })
     assert.ok(catalog && typeof catalog === 'object', 'Installed backend must provide a catalog object')
     assert.ok(catalog.nodes && typeof catalog.nodes === 'object' && Object.keys(catalog.nodes).length > 0, 'Installed backend must provide usable nodes')
-    assert.ok(advertisedWireVersions.includes(catalog.dinkster?.schemaWire), 'Installed backend must select an advertised schema wire')
+    assert.equal(catalog.dinkster?.schemaWire, schemaWireVersion, 'Installed backend must use the frontend schema wire')
     const nativeEnvironments = await inspectNativeEnvironments()
     await page.screenshot({ path: join(root, `${launch}.png`), fullPage: true })
     await writeFile(join(root, `${launch}.json`), JSON.stringify({ status, info, health, nodes: Object.keys(catalog.nodes).length, schemaWire: catalog.dinkster.schemaWire, nativeEnvironments }, null, 2))

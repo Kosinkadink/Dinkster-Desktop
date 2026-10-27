@@ -283,9 +283,10 @@ describe('desktop package inputs', () => {
       currentPublisher: string
       acceptedUpdatePublishers: string[]
       artifactSigning: Record<string, string>
+      signtoolOptions: { sign: unknown; signingHashAlgorithms: string[]; publisherName: string }
       default(): Promise<{
         publish: { provider: string; url: string; publisherName?: string[] }[]
-        win: { forceCodeSigning: boolean; azureSignOptions: Record<string, string>; artifactName: string }
+        win: { forceCodeSigning: boolean; signtoolOptions: unknown; artifactName: string }
       }>
     }
     const manifest = JSON.parse(await readFile(resolve(root, 'packages/desktop/package.json'), 'utf8')) as {
@@ -293,21 +294,37 @@ describe('desktop package inputs', () => {
     }
     const configuration = await signed.default()
     expect(configuration.win.forceCodeSigning).toBe(true)
-    expect(configuration.win.azureSignOptions).toBe(signed.artifactSigning)
+    expect(configuration.win).not.toHaveProperty('azureSignOptions')
+    expect(configuration.win.signtoolOptions).toBe(signed.signtoolOptions)
     expect(signed.artifactSigning).toEqual({
-      publisherName: signed.currentPublisher,
       endpoint: 'https://wus2.codesigning.azure.net',
       codeSigningAccountName: 'dinkster',
       certificateProfileName: 'dinkster-desktop',
     })
-    expect(typeof signed.artifactSigning['publisherName']).toBe('string')
+    expect(typeof signed.signtoolOptions.sign).toBe('function')
+    expect(signed.signtoolOptions.signingHashAlgorithms).toEqual(['sha256'])
+    expect(signed.signtoolOptions.publisherName).toBe(signed.currentPublisher)
     expect(signed.acceptedUpdatePublishers).toContain(signed.currentPublisher)
     expect(configuration.publish).toEqual([{ ...(manifest.build.publish[0] as object), publisherName: signed.acceptedUpdatePublishers }])
     const { forceCodeSigning: _unsigned, ...unsignedWin } = manifest.build.win
-    const { forceCodeSigning: _signed, azureSignOptions: _options, ...signedWin } = configuration.win
+    const { forceCodeSigning: _signed, signtoolOptions: _options, ...signedWin } = configuration.win
     expect(signedWin).toEqual(unsignedWin)
     expect(Object.keys(configuration).sort()).toEqual(Object.keys(manifest.build).sort())
     expect(JSON.stringify(signed)).not.toMatch(/secret|password|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+  })
+
+  it('signs each file with the ArtifactSigning PowerShell module', async () => {
+    const { installCommand, signCommand } = await import('../scripts/artifact-sign.mjs') as {
+      installCommand(): string
+      signCommand(signing: Record<string, string>, file: string): string
+    }
+    const { artifactSigning } = await import('../electron-builder.signed.mjs') as { artifactSigning: Record<string, string> }
+    expect(installCommand()).toBe('Install-Module -Name ArtifactSigning -Force -Repository PSGallery -Scope CurrentUser')
+    expect(signCommand(artifactSigning, "D:\\a\\release\\Dinkster's Desktop.exe")).toBe(
+      "Invoke-ArtifactSigning -Endpoint 'https://wus2.codesigning.azure.net' -CodeSigningAccountName 'dinkster'" +
+        " -CertificateProfileName 'dinkster-desktop' -TimestampRfc3161 'http://timestamp.acs.microsoft.com'" +
+        " -TimestampDigest 'SHA256' -FileDigest 'SHA256' -Files 'D:\\a\\release\\Dinkster''s Desktop.exe'",
+    )
   })
 
   it('uses the workflow token for public release inputs and publication', async () => {

@@ -15,10 +15,8 @@ are public: they appear on every signed binary.
 ### What is set up
 
 The Windows path uses Microsoft's Artifact Signing service, formerly Trusted
-Signing: a managed Public Trust certificate, no EV token and no Key Vault. The
-portal says Artifact Signing; electron-builder 26 still says Trusted Signing
-and `azureSignOptions`. Resources that exist, all in the subscription's West
-US 2 region:
+Signing: a managed Public Trust certificate, no EV token and no Key Vault.
+Resources that exist, all in the subscription's West US 2 region:
 
 - Artifact Signing account `dinkster`, Basic tier, endpoint
   `https://wus2.codesigning.azure.net`.
@@ -35,32 +33,44 @@ validation can live beside this one.
 ### Build configuration
 
 [packages/desktop/package.json](../packages/desktop/package.json) stays
-unsigned (`win.forceCodeSigning: false`, no `azureSignOptions`) so local and
+unsigned (`win.forceCodeSigning: false`, no signing options) so local and
 validation builds need no Azure credentials.
 [packages/desktop/electron-builder.signed.mjs](../packages/desktop/electron-builder.signed.mjs)
 is the release configuration: it reuses the `build` object from package.json
-and adds `win.forceCodeSigning: true` plus `win.azureSignOptions` with the
-account, profile, endpoint, and certificate common name. The script
+and adds `win.forceCodeSigning: true` plus `win.signtoolOptions` whose `sign`
+hook is built by
+[packages/desktop/scripts/artifact-sign.mjs](../packages/desktop/scripts/artifact-sign.mjs)
+from the account, profile, and endpoint. The script
 `pnpm --filter @dinkster/desktop package:win:signed` runs the normal packaging
 chain with `--config electron-builder.signed.mjs`.
 
+The hook exists because electron-builder 26's built-in `win.azureSignOptions`
+calls the `TrustedSigning` PowerShell module, which Microsoft retired along
+with the Trusted Signing name; PowerShell Gallery no longer serves it, so a
+build using `azureSignOptions` fails with `Invoke-TrustedSigning` not
+recognized. The replacement module is
+[ArtifactSigning](https://www.powershellgallery.com/packages/ArtifactSigning)
+and its `Invoke-ArtifactSigning` command takes the same parameters. The hook
+installs that module for the current user once per build, then runs
+`Invoke-ArtifactSigning` for each file electron-builder hands it: every `.exe`
+in the packaged application, the NSIS uninstaller, and the installer. Each file is
+signed once with SHA-256 (`signingHashAlgorithms: ['sha256']`); the builder's
+default would call the hook a second time for SHA-1. The build machine needs
+`pwsh` (PowerShell 7) on PATH, the .NET runtime, and access to PowerShell
+Gallery and the endpoint. Authentication comes only from the environment:
+`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`.
+
 Two publisher settings matter and they differ:
 
-- `win.azureSignOptions.publisherName` is the certificate common name, exactly
-  as issued, and must be a single string; the installed builder's schema
-  rejects an array here.
+- `win.signtoolOptions.publisherName` is the certificate common name, exactly
+  as issued. Nothing in the current targets reads it, but it is the value
+  electron-builder would otherwise try to extract from a local certificate.
 - `publish[0].publisherName` is the list of publishers an installed
   application accepts when it verifies the signature of a downloaded update.
   It is written to the application's `app-update.yml`. The list holds the
   current publisher and `Dinkster Inc`, so installs shipped now will accept a
   later company-signed release. Never remove the current publisher while
   installs signed by it exist.
-
-The builder installs the `TrustedSigning` PowerShell module for the current
-user and calls `Invoke-TrustedSigning` for every executable, so the build
-machine needs Windows PowerShell 5.1 or later and access to PowerShell Gallery
-and the endpoint. Authentication comes only from the environment:
-`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`.
 
 ### Give the build its own identity
 

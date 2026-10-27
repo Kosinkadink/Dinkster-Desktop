@@ -13,9 +13,10 @@ if (backend.repository !== 'Kosinkadink/Dinkster' || !/^[a-f0-9]{40}$/.test(back
   throw new Error('Invalid pinned backend release metadata')
 }
 const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
-if (!aimdo || aimdo.repository !== 'Kosinkadink/dinkster-aimdo' || !/^[a-f0-9]{40}$/.test(aimdo.commit) ||
-  !/^\d+\.\d+\.\d+(?:\.post\d+)?$/.test(aimdo.version) || aimdo.releaseTag !== `v${aimdo.version}` ||
-  aimdo.archive !== `dinkster_aimdo-${aimdo.version}-cp39-abi3-win_amd64.whl` || !/^[a-f0-9]{64}$/.test(aimdo.sha256)) {
+if (!aimdo || aimdo.repository !== 'Comfy-Org/comfy-aimdo' ||
+  !/^\d+\.\d+\.\d+$/.test(aimdo.version) || aimdo.releaseTag !== `v${aimdo.version}` ||
+  aimdo.archive !== `comfy_aimdo-${aimdo.version}-cp39-abi3-win_amd64.whl` || !/^[a-f0-9]{64}$/.test(aimdo.sha256) ||
+  !aimdo.url?.startsWith('https://files.pythonhosted.org/packages/')) {
   throw new Error('Invalid pinned Aimdo release metadata')
 }
 const payloads = [

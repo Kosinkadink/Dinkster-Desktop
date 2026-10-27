@@ -17,7 +17,7 @@ concurrency:
 
 env:
   DINKSTER_FRONTEND_REF: 08deab9ce537bc8d567cd96ad4a11e014a33d2ff
-  DINKSTER_REF: d15d168ccf3e725e7b0d11eea63529331711f10f
+  DINKSTER_REF: dfb4d7f451a5fbaba7b317a2a6e9facc1cd15ebd
 
 jobs:
   linux:
@@ -140,10 +140,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Pinned backend release download failed' }
           "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $destination $pin.archive)" >> $env:GITHUB_ENV
           $aimdo = $pin.desktopWindowsRuntime.aimdo
-          if ($aimdo.repository -ne 'Kosinkadink/dinkster-aimdo' -or $aimdo.releaseTag -ne "v$($aimdo.version)") { throw 'Invalid Aimdo pin' }
-          gh release download $aimdo.releaseTag --repo Kosinkadink/dinkster-aimdo --pattern $aimdo.archive --dir $destination
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned Aimdo wheel download failed' }
-          "DINKSTER_AIMDO_WHEEL=$(Join-Path $destination $aimdo.archive)" >> $env:GITHUB_ENV
+          if ($aimdo.url -notlike 'https://files.pythonhosted.org/packages/*') { throw 'Invalid Aimdo wheel URL' }
+          $wheel = Join-Path $destination $aimdo.archive
+          Invoke-WebRequest -Uri $aimdo.url -OutFile $wheel
+          "DINKSTER_AIMDO_WHEEL=$wheel" >> $env:GITHUB_ENV
       - uses: pnpm/action-setup@v4
         with:
           version: 10.31.0
@@ -163,11 +163,76 @@ jobs:
       - run: pnpm test
       - run: pnpm --filter @dinkster/desktop package:win
       - run: pnpm --filter @dinkster/desktop verify:update-feed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: packages/desktop/release/*-Setup.exe
+          retention-days: 1
+          if-no-files-found: error
+
+  windows-installed:
+    name: Windows installed app without Git
+    needs: windows-package
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: installer
+      - name: Install into an isolated directory
+        id: install
+        run: |
+          $installer = Get-Item installer/*-Setup.exe
+          $destination = Join-Path $env:RUNNER_TEMP dinkster-installed
+          if (Test-Path $destination) { throw 'Installation directory must be fresh' }
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          "DINKSTER_DESKTOP_EXECUTABLE=$(Join-Path $destination 'Dinkster Desktop.exe')" >> $env:GITHUB_ENV
+          "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
+      - run: pnpm --filter @dinkster/desktop verify:installed
+        env:
+          DINKSTER_ACCELERATOR: cpu
+      - name: Preserve installed-app evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installed-app
+          path: |
+            ${{ runner.temp }}/dinkster-first-run/*.png
+            ${{ runner.temp }}/dinkster-first-run/*.json
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Remove the owned installation
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP dinkster-installed
+          $uninstaller = Join-Path $destination 'Uninstall Dinkster Desktop.exe'
+          if (Test-Path $uninstaller) {
+            $process = Start-Process -FilePath $uninstaller -ArgumentList @('/S', '/currentuser') -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Uninstaller exited $($process.ExitCode)" }
+          }
 
   main-status:
     name: main validation status
     if: always()
-    needs: [linux, desktop-smoke, windows-package]
+    needs: [linux, desktop-smoke, windows-package, windows-installed]
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 2
     steps:
@@ -176,9 +241,10 @@ jobs:
           LINUX_RESULT: ${{ needs.linux.result }}
           SMOKE_RESULT: ${{ needs.desktop-smoke.result }}
           WINDOWS_RESULT: ${{ needs.windows-package.result }}
+          INSTALLED_RESULT: ${{ needs.windows-installed.result }}
         run: |
-          printf '{"commit":"%s","lanes":{"linux":"%s","desktop-smoke":"%s","windows-package":"%s"}}\n' \
-            "$GITHUB_SHA" "$LINUX_RESULT" "$SMOKE_RESULT" "$WINDOWS_RESULT" > main-validation-status.json
+          printf '{"commit":"%s","lanes":{"linux":"%s","desktop-smoke":"%s","windows-package":"%s","windows-installed":"%s"}}\n' \
+            "$GITHUB_SHA" "$LINUX_RESULT" "$SMOKE_RESULT" "$WINDOWS_RESULT" "$INSTALLED_RESULT" > main-validation-status.json
           cat main-validation-status.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -192,7 +258,9 @@ jobs:
           LINUX_RESULT: ${{ needs.linux.result }}
           SMOKE_RESULT: ${{ needs.desktop-smoke.result }}
           WINDOWS_RESULT: ${{ needs.windows-package.result }}
+          INSTALLED_RESULT: ${{ needs.windows-installed.result }}
         run: |
           test "$LINUX_RESULT" = success
           test "$SMOKE_RESULT" = success
           test "$WINDOWS_RESULT" = success
+          test "$INSTALLED_RESULT" = success

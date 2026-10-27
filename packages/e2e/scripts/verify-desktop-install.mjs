@@ -8,6 +8,7 @@ import { _electron as electron } from '@playwright/test'
 import backend from '../../desktop/src/backend-release.json' with { type: 'json' }
 import { ENGINE_RELEASE } from '../../desktop/src/release.ts'
 
+const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
 const advertisedWireVersions = [21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44]
 
 const executablePath = process.env.DINKSTER_DESKTOP_EXECUTABLE
@@ -69,16 +70,16 @@ print(json.dumps(result))
     const versions = JSON.parse(stdout.trim())
     if (entry.name === 'host') {
       assert.ok(versions.torch, 'Host Torch must import')
-      assert.equal(versions.aimdo, backend.aimdo.version)
+      assert.equal(versions.aimdo, aimdo.version)
     }
     if (versions.torch) {
-      const expected = variant === 'cuda' ? backend.cudaTorch.version
-        : `${backend.cudaTorch.version.split('+')[0]}+cpu`
+      const expected = variant === 'cuda' ? cudaTorch.version
+        : `${cudaTorch.version.split('+')[0]}+cpu`
       assert.equal(versions.torch, expected, `${entry.name} Torch`)
-      assert.equal(versions.cuda, variant === 'cuda' ? backend.cudaTorch.cudaVersion : null, `${entry.name} CUDA`)
+      assert.equal(versions.cuda, variant === 'cuda' ? cudaTorch.cudaVersion : null, `${entry.name} CUDA`)
     }
-    if (versions.torchvision) assert.equal(versions.torchvision, `${backend.cudaTorch.torchvisionVersion}+${variant === 'cuda' ? backend.cudaTorch.version.split('+')[1] : 'cpu'}`, `${entry.name} torchvision`)
-    if (versions.aimdo) assert.equal(versions.aimdo, backend.aimdo.version, `${entry.name} Aimdo`)
+    if (versions.torchvision) assert.equal(versions.torchvision, `${cudaTorch.torchvisionVersion}+${variant === 'cuda' ? cudaTorch.version.split('+')[1] : 'cpu'}`, `${entry.name} torchvision`)
+    if (versions.aimdo) assert.equal(versions.aimdo, aimdo.version, `${entry.name} Aimdo`)
     results.push({ name: entry.name, ...versions })
   }
   assert.ok(results.some((entry) => entry.name !== 'host' && entry.torch), 'Isolated worker Torch must import')

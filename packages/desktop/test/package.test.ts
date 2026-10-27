@@ -48,9 +48,10 @@ describe('desktop package inputs', () => {
       sha256: '', size: 0, workerProtocol: 8,
       desktopWindowsRuntime: {
         aimdo: {
-          repository: 'Kosinkadink/dinkster-aimdo', commit: 'b'.repeat(40),
-          releaseTag: 'v0.5.5.post1', version: '0.5.5.post1',
-          archive: 'dinkster_aimdo-0.5.5.post1-cp39-abi3-win_amd64.whl',
+          repository: 'Comfy-Org/comfy-aimdo',
+          releaseTag: 'v0.6.0', version: '0.6.0',
+          archive: 'comfy_aimdo-0.6.0-cp39-abi3-win_amd64.whl',
+          url: 'https://files.pythonhosted.org/packages/test/comfy_aimdo.whl',
           sha256: createHash('sha256').update(wheelContent).digest('hex'), size: wheelContent.length,
         },
         cudaTorch: {

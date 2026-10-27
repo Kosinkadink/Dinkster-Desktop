@@ -55,14 +55,14 @@ jobs:
           "DINKSTER_AIMDO_WHEEL=$(Join-Path $destination $aimdo.archive)" >> $env:GITHUB_ENV
       - uses: pnpm/action-setup@v4
         with:
-          version: 10.31.0
+          version: 11.28.8
           dest: ${{ runner.tool_cache }}/setup-pnpm
       - uses: actions/setup-node@v4
         with:
           node-version: 26.12.0
           cache: pnpm
-      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend install --frozen-lockfile
-      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test

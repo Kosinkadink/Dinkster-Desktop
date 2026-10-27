@@ -32,7 +32,7 @@ jobs:
           path: .frontend
       - uses: pnpm/action-setup@v4
         with:
-          version: 10.31.0
+          version: 11.28.8
           dest: ${{ runner.tool_cache }}/setup-pnpm
       - uses: actions/setup-node@v4
         with:
@@ -41,8 +41,8 @@ jobs:
           cache-dependency-path: |
             pnpm-lock.yaml
             .frontend/pnpm-lock.yaml
-      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend install --frozen-lockfile
-      - run: npm exec --yes --package=pnpm@11.28.8 -- pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck

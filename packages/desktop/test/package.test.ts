@@ -77,8 +77,8 @@ describe('desktop package inputs', () => {
       await mkdir(resolve(scratch, 'src'))
       script = resolve(scratch, 'scripts/prepare-engine-source.mjs')
       const original = await readFile(resolve(root, 'packages/desktop/scripts/prepare-engine-source.mjs'), 'utf8')
-      const extract = pathToFileURL(createRequire(import.meta.url).resolve('extract-zip')).href
-      await writeFile(script, original.replace("'extract-zip'", JSON.stringify(extract)))
+      const zip = pathToFileURL(createRequire(import.meta.url).resolve('fflate')).href
+      await writeFile(script, original.replace("'fflate'", JSON.stringify(zip)))
       input = resolve(scratch, pin.archive)
       await writeArchive()
       wheel = resolve(scratch, aimdo.archive)
@@ -101,6 +101,21 @@ describe('desktop package inputs', () => {
       await writeFile(resolve(output, 'stale.zip'), 'stale')
       await prepare()
       expect((await readdir(output)).sort()).toEqual([aimdo.archive, pin.archive].sort())
+      expect(await readFile(resolve(output, pin.archive))).toEqual(content)
+      expect(await readFile(resolve(output, aimdo.archive))).toEqual(wheelContent)
+    })
+
+    it('validates the profile when the source ZIP contains large stored assets', async () => {
+      const prefix = `dinkster-backend-${pin.commit}`
+      content = Buffer.from(zipSync({
+        [`${prefix}/assets/image.bin`]: [new Uint8Array(512 * 1024), { level: 0 }],
+        [`${prefix}/scripts/desktop_windows_runtime.json`]: Buffer.from(JSON.stringify({ aimdo, cudaTorch })),
+      }))
+      pin.sha256 = createHash('sha256').update(content).digest('hex')
+      pin.size = content.length
+      await writeFile(input, content)
+      await writeFile(resolve(scratch, 'src/backend-release.json'), JSON.stringify(pin))
+      await prepare()
       expect(await readFile(resolve(output, pin.archive))).toEqual(content)
       expect(await readFile(resolve(output, aimdo.archive))).toEqual(wheelContent)
     })

@@ -1,124 +1,225 @@
 # Desktop signing
 
-Draft instructions for distributing Dinkster Desktop with a verified publisher.
-Provider documentation was checked on October 9, 2026. Account verification and
-a successful signed build must still be confirmed by the account holder. Never
-put identity documents, passwords, private keys, or client secrets in this
-repository, support posts, build logs, or the installed application.
+How Dinkster Desktop releases get a verified publisher on Windows (Azure
+Artifact Signing) and macOS (Apple Developer ID with notarization). Both
+platforms sign as the individual account holder; converting to the company is a
+later, optional step covered at the end. Never put identity documents,
+passwords, private keys, client secrets, personal street addresses, or account,
+subscription, tenant, or enrollment identifiers in this repository, support
+posts, build logs, or the installed application. The signing account name, the
+certificate profile name, the regional endpoint, and the certificate subject
+are public: they appear on every signed binary.
 
-## What this build currently does
+## Windows
 
-The build lives in [packages/desktop/package.json](../packages/desktop/package.json),
-not in the backend or frontend repository. It uses Electron and electron-builder
-**26.15.3**, resolved by [pnpm-lock.yaml](../pnpm-lock.yaml); the package's
-`^26.0.12` dependency is not the installed version.
+### What is set up
 
-- Application identifier: `com.dinkster.desktop`.
-- Product: `Dinkster Desktop`.
-- Windows: x64 NSIS installer, `Dinkster-Desktop-${version}-Setup.exe`.
-- `win.forceCodeSigning` is currently `false`. No Azure signing settings or
-  Key Vault integration are configured. External certificate credentials could
-  enable traditional signing, but the repository does not supply them.
-- The [release workflow](../.github/workflows/release-desktop.yml) explicitly
-  describes its output as unsigned. It has no signing credentials or signature
-  validation step. Do not dispatch it to test these instructions.
-- There is no macOS packaging script, target configuration, entitlement file,
-  or notarization credential wiring. The engine packaging script requires the
-  pinned Windows runtime profile and Windows Aimdo wheel. Apple enrollment can
-  proceed, but a complete macOS product build is not established by this guide.
+The Windows path uses Microsoft's Artifact Signing service, formerly Trusted
+Signing: a managed Public Trust certificate, no EV token and no Key Vault. The
+portal says Artifact Signing; electron-builder 26 still says Trusted Signing
+and `azureSignOptions`. Resources that exist, all in the subscription's West
+US 2 region:
 
-The Windows account holder has created an **Artifact Signing account named
-`dinkster`**, with no subsequent setup completed. This is Microsoft's service
-formerly called **Trusted Signing**, not an EV certificate stored in Key Vault.
-Keep the existing account; do not buy a separate certificate or create a vault
-for this path. The account name is not the certificate publisher's legal name.
+- Artifact Signing account `dinkster`, Basic tier, endpoint
+  `https://wus2.codesigning.azure.net`.
+- A Completed Public identity validation of type Individual for the account
+  holder, imported from the subscription's Individual billing account.
+- Certificate profile `dinkster-desktop` of type Public Trust. Its subject
+  carries the legal name as CN and O plus city, state, and country; street
+  address and postal code are excluded.
 
-## macOS: unblock Apple identity verification
+Keep the account; do not create a second one or buy a certificate elsewhere.
+Identity validations are scoped to the subscription, so a later company
+validation can live beside this one.
 
-### Reach the correct support channel
+### Build configuration
 
-Apple explicitly says to [contact support for verification using a method other
-than the Apple Developer app](https://developer.apple.com/help/account/membership/identity-verification/).
-Use **Apple Developer Support for enrollment/membership**, not App Review,
-Feedback Assistant, a code-level support request, or a public forum post with ID
-documents.
+[packages/desktop/package.json](../packages/desktop/package.json) stays
+unsigned (`win.forceCodeSigning: false`, no `azureSignOptions`) so local and
+validation builds need no Azure credentials.
+[packages/desktop/electron-builder.signed.mjs](../packages/desktop/electron-builder.signed.mjs)
+is the release configuration: it reuses the `build` object from package.json
+and adds `win.forceCodeSigning: true` plus `win.azureSignOptions` with the
+account, profile, endpoint, and certificate common name. The script
+`pnpm --filter @dinkster/desktop package:win:signed` runs the normal packaging
+chain with `--config electron-builder.signed.mjs`.
 
-1. Open [Apple Developer Support's contact page](https://developer.apple.com/contact/)
-   in a browser and sign in with the **same Apple Account used for enrollment**.
-2. Select the enrollment/membership topic and describe the identity-verification
-   failure. The signed-in form's exact labels and available contact methods vary;
-   they are not exposed by the public page. Do not create another Apple Account
-   to try to bypass verification.
-3. Request a support call if that option is offered, or submit the email/contact
-   request. Apple confirms [phone and email support](https://developer.apple.com/support/)
-   for membership and account questions. Its [telephone support page](https://developer.apple.com/support/worldwide-telephone-hours/)
-   specifically says to **start the request online to receive a support call**.
-   Use that route rather than an unverified phone number from search results.
-4. Ask for an **alternative method of identity verification** for the existing
-   enrollment. Apple decides the method and required evidence; support contact
-   does not guarantee approval or a waiver of verification.
+Two publisher settings matter and they differ:
 
-Have ready: enrollment Apple Account email, legal name and country/region,
-individual versus organization enrollment, Enrollment ID if issued, prior case
-number, exact error and when it occurred, device/app version if relevant, and
-payment/order status. For an organization, also have its legal entity name,
-D-U-N-S Number, and signing-authority details. Supply documents only through the
-secure channel Apple directs you to use.
+- `win.azureSignOptions.publisherName` is the certificate common name, exactly
+  as issued, and must be a single string; the installed builder's schema
+  rejects an array here.
+- `publish[0].publisherName` is the list of publishers an installed
+  application accepts when it verifies the signature of a downloaded update.
+  It is written to the application's `app-update.yml`. The list holds the
+  current publisher and `Dinkster Inc`, so installs shipped now will accept a
+  later company-signed release. Never remove the current publisher while
+  installs signed by it exist.
 
-Suggested request, with brackets replaced privately:
+The builder installs the `TrustedSigning` PowerShell module for the current
+user and calls `Invoke-TrustedSigning` for every executable, so the build
+machine needs Windows PowerShell 5.1 or later and access to PowerShell Gallery
+and the endpoint. Authentication comes only from the environment:
+`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`.
 
-```text
-I started Apple Developer Program enrollment as [individual/organization]
-using this Apple Account. Enrollment ID: [ID, or not issued].
-The normal identity-verification flow fails at [step] with [exact error].
-I have already tried [brief factual description]. Previous case: [if any].
-Please help me complete this existing enrollment using an alternative method
-of identity verification, as described in your identity-verification guidance.
-My goal is Developer ID Application signing and notarization for a macOS app
-distributed outside the Mac App Store. Please tell me the next required step
-and the secure channel for any supporting documents.
+### Give the build its own identity
+
+Follow Microsoft's [role assignment tutorial](https://learn.microsoft.com/en-us/azure/artifact-signing/tutorial-assign-roles):
+
+1. Entra ID -> App registrations -> New registration, single tenant, no
+   redirect URI. Record the Application (client) ID and Directory (tenant) ID.
+2. Certificates & secrets -> New client secret. Copy the Value once into a
+   password manager; the Secret ID is not the credential. Microsoft recommends
+   certificate or federated credentials over client secrets for production;
+   a short-lived secret is acceptable for the first signed builds.
+3. On the `dinkster` account (or the certificate profile) -> Access control
+   (IAM) -> Add role assignment -> **Artifact Signing Certificate Profile
+   Signer** -> assign to the app registration. Owner or Contributor on the
+   subscription does not grant signing. Allow a few minutes to propagate.
+4. In the GitHub repository settings add Actions secrets `AZURE_TENANT_ID`,
+   `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. The
+   [release workflow](../.github/workflows/release-desktop.yml) passes them
+   only to its packaging step.
+
+### Sign locally
+
+In PowerShell at the repository root, with the pinned frontend built and the
+pinned backend archive and Aimdo wheel downloaded as described in
+[README](../README.md). The secret is read interactively so it never appears
+in a command line or shell history:
+
+```powershell
+$env:DINKSTER_FRONTEND_DIST = 'C:\PATH\TO\Dinkster-Frontend\packages\app\dist'
+$env:DINKSTER_ENGINE_ARCHIVE = 'C:\PATH\TO\PINNED-BACKEND.zip'
+$env:DINKSTER_AIMDO_WHEEL = 'C:\PATH\TO\PINNED-AIMDO.whl'
+$env:AZURE_TENANT_ID = 'DIRECTORY-TENANT-ID'
+$env:AZURE_CLIENT_ID = 'APPLICATION-CLIENT-ID'
+$secret = Read-Host 'Signing client secret VALUE' -AsSecureString
+try {
+  $env:AZURE_CLIENT_SECRET = [System.Net.NetworkCredential]::new('', $secret).Password
+  pnpm install --frozen-lockfile
+  if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+  pnpm --filter @dinkster/desktop package:win:signed
+  if ($LASTEXITCODE -ne 0) { throw 'Packaging or signing failed' }
+  pnpm --filter @dinkster/desktop verify:update-feed
+  if ($LASTEXITCODE -ne 0) { throw 'Update feed verification failed' }
+} finally {
+  Remove-Item Env:\AZURE_CLIENT_SECRET -ErrorAction SilentlyContinue
+  Remove-Item Env:\AZURE_CLIENT_ID -ErrorAction SilentlyContinue
+  Remove-Item Env:\AZURE_TENANT_ID -ErrorAction SilentlyContinue
+  $secret.Dispose()
+}
 ```
 
-Check the enrollment state at [your developer account](https://developer.apple.com/account/).
-If verification is pending, resolve it before requesting certificates. If payment
-was completed but membership confirmation did not arrive within 24 hours, Apple's
-[enrollment instructions](https://developer.apple.com/help/account/membership/program-enrollment/)
-say to contact support and include the Enrollment ID. If membership is active,
-continue below rather than restarting enrollment.
+With `forceCodeSigning` on, any signing failure fails the build; do not switch
+back to the unsigned configuration to get a release through. For a 403, check
+that the identity validation is Completed, the profile is active, the endpoint
+matches the account region, the account and profile names are exact, and the
+Certificate Profile Signer role is on the app registration's service
+principal. For an authentication failure, check that the secret Value (not its
+ID) was used, that it has not expired, and that the tenant and client IDs
+belong to the same registration.
 
-### Obtain the Developer ID Application identity
+### Verify the result
 
-After membership activation, follow Apple's [Developer ID certificate guide](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/):
+The release workflow runs this check before installing; run the same thing
+after a local build:
 
-1. As the **Account Holder**, open Certificates, Identifiers & Profiles ->
-   Certificates -> `+` -> Software -> Developer ID.
-2. Choose **Developer ID Application**, which signs the app. Developer ID
-   Installer is for a signed `.pkg` installer, not a substitute for the app
-   certificate. Apple Distribution/Mac App Store certificates are not this path.
-3. On the Mac that will hold the signing key, use Keychain Access -> Certificate
-   Assistant -> Request a Certificate From a Certificate Authority. Follow
-   Apple's [CSR instructions](https://developer.apple.com/help/account/certificates/create-a-certificate-signing-request/)
-   and save the CSR to disk. The private key remains on that Mac.
-4. Upload the `.certSigningRequest`, continue, download the `.cer`, and
-   double-click it to import it into the same Mac's keychain. Under My
-   Certificates, confirm the certificate has its associated private key.
-5. Record the Team ID and exact identity. On that Mac:
+```powershell
+$files = @(
+  Get-ChildItem packages/desktop/release -Filter '*-Setup.exe'
+  Get-Item 'packages/desktop/release/win-unpacked/Dinkster Desktop.exe'
+)
+foreach ($file in $files) {
+  $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+  $signature | Select-Object Path, Status, @{Name='Publisher'; Expression={$_.SignerCertificate.Subject}}, @{Name='Timestamp'; Expression={$_.TimeStamperCertificate.Subject}}
+  if ($signature.Status -ne 'Valid' -or !$signature.TimeStamperCertificate) {
+    throw "Invalid or untimestamped signature: $($file.Name)"
+  }
+}
+```
 
-   ```sh
-   security find-identity -v -p codesigning
-   ```
+Require **Valid**, the intended publisher, and a timestamp on both files. Then
+install into a scratch directory, check the installed executable and generated
+uninstaller the same way, and exercise first launch. A valid signature proves
+the publisher and the file's integrity; SmartScreen reputation is earned
+separately per publisher and can still warn on early downloads.
 
-   Expected: a valid `Developer ID Application: LEGAL NAME (TEAMID)` identity.
-   Stop if it is absent, expired, or missing its private key. A downloaded `.cer`
-   alone cannot sign. If a different build Mac needs the key, export/import the
-   identity as a password-protected `.p12` through a secure channel, never Git.
+### Common identity validation problems
 
-### Connect signing and notarization to a macOS build
+- `New identity` is dimmed: assign yourself Artifact Signing Identity Verifier
+  on the account.
+- The Individual form shows wrong name, address, or casing: the fields are
+  imported read-only from the billing account's sold-to address. The portal
+  cannot change casing; `az billing account update --sold-to ...` can (see
+  the [FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq)).
+  Updating the billing account can trigger a short account review and an
+  email re-verification, and the portal's own address editor re-adds ZIP+4.
+  Microsoft's documented failure reasons are content mismatches (address,
+  name, FaceCheck), not letter case, so the casing fix is cosmetic: it only
+  changes how the state appears in the certificate subject.
+- Status stays Action Required after the ID scan: the scan only issued a
+  Verified ID into Microsoft Authenticator. Reopen the verification link,
+  scan the "Present your Verified ID" QR code from Authenticator's Verified
+  IDs tab, and share it. Completed follows within minutes.
+- "You don't have permission": the browser is signed in with a different
+  account than the request's primary email. Use a private window with only
+  that account.
+- Address or name mismatch, FaceCheck failure: delete the request and the
+  Verified ID in Authenticator, then submit a new request.
 
-This is the required integration shape, **not an existing working macOS release
-command**. First establish a macOS-compatible engine payload and packaging path;
-do not reuse the pinned Windows wheel as a macOS runtime. In the desktop package's
-`build` configuration, a Developer ID build needs settings such as:
+Microsoft routes identity validation questions to Microsoft Q&A or Stack
+Overflow with the `artifact-signing` tag; requests cannot be expedited.
+
+## macOS
+
+### Enrollment
+
+The Apple Developer Program enrollment is an Individual enrollment. If the
+Apple Developer app cannot read the identity document during enrollment, Apple
+offers [verification by another method](https://developer.apple.com/help/account/membership/identity-verification/)
+through Developer Support: start at the [contact page](https://developer.apple.com/contact/)
+signed in with the enrollment Apple Account, choose the membership topic, and
+request a call; support calls are scheduled online, during US business hours.
+Have the Enrollment ID, the exact error, and the device and app version ready.
+Do not create a second Apple Account or a second enrollment.
+
+Suggested request, filled in privately:
+
+```text
+I started an Individual Apple Developer Program enrollment with this Apple
+Account. Enrollment ID: [ID]. The Apple Developer app's identity verification
+fails at document capture with [exact error] for both passport and driver's
+license. Please complete this existing enrollment using an alternative method
+of identity verification. My goal is Developer ID Application signing and
+notarization for a macOS app distributed outside the Mac App Store.
+```
+
+When membership is active, continue below rather than re-enrolling.
+
+### Developer ID certificate
+
+Follow Apple's [Developer ID certificate guide](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)
+as the Account Holder: Certificates -> `+` -> Developer ID Application. Create
+the certificate signing request in Keychain Access on the Mac that will hold
+the key, upload it, download the `.cer`, and import it into the same keychain.
+Confirm with:
+
+```sh
+security find-identity -v -p codesigning
+```
+
+Expected: `Developer ID Application: LEGAL NAME (TEAMID)` with its private key.
+A `.cer` without the key cannot sign. Move the identity between Macs only as a
+password-protected `.p12` over a secure channel, never through Git.
+
+### Build integration
+
+There is no macOS packaging path yet: the engine packaging script requires the
+pinned Windows runtime profile and Windows Aimdo wheel, and no macOS target,
+entitlements, or notarization wiring exist. Account activation does not
+produce a macOS build. When a macOS engine payload exists, the desktop
+package's `build.mac` needs at least:
 
 ```json
 {
@@ -132,260 +233,47 @@ do not reuse the pinned Windows wheel as a macOS runtime. In the desktop package
 }
 ```
 
-Use the matching keychain identity's name **without the `Developer ID Application:`
-prefix**. The locked builder selects that certificate type itself and
-[rejects a prefixed qualifier](https://github.com/electron-userland/electron-builder/blob/electron-builder%4026.15.3/packages/app-builder-lib/src/codeSign/macCodeSign.ts).
-Review Electron/native-code entitlements for the real macOS payload before packaging. Do not use ad-hoc
-identity `-`, `identity: null`, or disable hardened runtime to get a release
-through notarization. The locked builder's [macOS signing implementation](https://github.com/electron-userland/electron-builder/blob/electron-builder%4026.15.3/packages/app-builder-lib/src/mac/MacTargetHelper.ts)
-uses credentials to activate notarization; **`notarize: true` alone can still
-skip notarization when credentials are missing**.
-
-For local notarization, install current Xcode and generate an
-[app-specific password](https://support.apple.com/102654) for the enrollment
-Apple Account. Store credentials interactively in the Mac's keychain rather
-than putting the password on a command line:
+`identity` is the keychain name without the `Developer ID Application:`
+prefix; the installed builder selects the certificate type itself and rejects
+the prefix. `notarize: true` only takes effect when credentials are present,
+so store them once in the build Mac's keychain:
 
 ```sh
 xcrun notarytool store-credentials "dinkster-notary"
 ```
 
-Enter the Apple Account, app-specific password, and Team ID when prompted.
-Expected: credentials validate and are saved. Stop on authentication failure.
-Set `APPLE_KEYCHAIN_PROFILE=dinkster-notary` in the macOS packaging process to
-let electron-builder use that profile. Do not simultaneously provide a partial
-`APPLE_ID`/password set; the builder checks those credentials before a profile.
+and set `APPLE_KEYCHAIN_PROFILE=dinkster-notary` for the packaging process.
+Verify a build with `xcrun notarytool submit ... --wait`, `xcrun stapler
+staple`, `codesign --verify --deep --strict`, and `spctl --assess --type
+execute`, then install and launch the downloaded artifact on a clean Mac.
 
-For a signed distribution that needs manual notarization, Apple's
-[command-line workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)
-uses `notarytool`, not deprecated `altool`:
+## Converting to Dinkster Inc later
 
-```sh
-xcrun notarytool submit "PATH/TO/DISTRIBUTION.dmg" --keychain-profile "dinkster-notary" --wait
-xcrun notarytool log "SUBMISSION_ID" --keychain-profile "dinkster-notary" notarization-log.json
-xcrun stapler staple "PATH/TO/DISTRIBUTION.dmg"
-xcrun stapler validate "PATH/TO/DISTRIBUTION.dmg"
-codesign --verify --deep --strict --verbose=2 "PATH/TO/Dinkster Desktop.app"
-spctl --assess --type execute --verbose=4 "PATH/TO/Dinkster Desktop.app"
-```
+Nothing above has to be redone when the company becomes the publisher; the
+individual certificates keep working until replaced. Prerequisites for both
+platforms: a D-U-N-S Number (free, request through Apple's
+[D-U-N-S lookup](https://developer.apple.com/enroll/duns-lookup/)), a working
+website on a company domain, and a mailbox on that domain.
 
-Replace paths and submission ID. Require status **Accepted**, inspect the log
-even on success, require successful stapling/validation, and require Gatekeeper
-acceptance with the intended Developer ID. Stop on Invalid, signature failures,
-or rejection. ZIPs cannot be stapled directly: staple the app and rebuild the
-ZIP. Test the final downloaded artifact's install and first launch on a clean
-Mac; signing the Electron shell is not proof that its engine works.
-
-## Windows: continue from the existing `dinkster` account
-
-### Validate the publisher identity
-
-Use Microsoft's [Artifact Signing quickstart](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart)
-and [role assignment guide](https://learn.microsoft.com/en-us/azure/artifact-signing/tutorial-assign-roles).
-The portal uses Artifact Signing names; electron-builder retains Trusted Signing
-terminology and `azureSignOptions`.
-
-1. In [Azure portal](https://portal.azure.com/), search Artifact Signing Accounts
-   and open **dinkster**. Record its subscription, resource group, tenant, and
-   region. Check the subscription's Resource providers list shows
-   `Microsoft.CodeSigning` as Registered. Do not recreate an existing account.
-2. Under Access control (IAM) -> Add -> Add role assignment, assign your user
-   **Artifact Signing Identity Verifier**. The user also needs at least Reader
-   at subscription scope. Owner/Contributor alone do not grant identity
-   validation or signing rights. If Add role assignment is unavailable, an
-   administrator with role-assignment permission must make the assignment.
-3. Choose the actual publisher type, not a brand name:
-   - **Individual**: currently limited to US/Canada developers. The subscription's
-     billing account must have Account Type **Individual**. Its legal name and
-     sold-to address must match your government ID. Correct discrepancies in
-     the billing account before submitting; the validation form's imported
-     identity fields are read-only.
-   - **Organization**: use the registered legal entity, business identifier,
-     address, website and organization-domain contact emails. Check the
-     quickstart's current supported countries. Organization validation does not
-     require a billing account of type Organization.
-4. Open Objects -> Identity validations. For an individual, change the
-   Organization dropdown to Individual -> New Identity -> **Public**. Select
-   the associated billing account and check Certificate subject preview. Use
-   the same email for the verification request and the Microsoft Account used
-   to open its verification link. For an organization, select Organization ->
-   New Identity -> Public and provide the business information.
-5. Create the request. When status is Action Required, open it and follow
-   **Please complete your verification here**. Complete the partner ID checks
-   reached from the portal link. The current individual walkthrough uses a
-   mobile camera and **Microsoft Authenticator** to add a Verified ID and then
-   present/share it with Artifact Signing. Keep the desktop browser open while
-   scanning the QR codes. Do not send the documents to this repository or chat.
-6. Require portal status **Completed**, not just success on the partner page.
-   Organizations can require further business documents; the quickstart lists
-   1-20 business days, possibly longer. Respond to Action Required requests and
-   email links before they expire. Do not repeatedly submit duplicates to try
-   to accelerate an in-progress request.
-
-For inactive New Identity, check the Identity Verifier role. For failures,
-follow the [Artifact Signing FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq)
-for the specific error rather than deleting the signing account. Microsoft's
-quickstart directs identity-validation questions to Microsoft Q&A or Stack
-Overflow; post only a redacted status/error, never ID documents. Azure portal
-support is available for other service setup problems.
-
-### Create the Public Trust certificate profile
-
-1. In dinkster -> Objects -> Certificate profiles -> Create, choose
-   **Public Trust**, not Private Trust or Public Trust Test.
-2. Name the profile, for example `dinksterdesktop`. Keep Program Type **None**.
-3. For Verified CN and O, select the completed identity validation. Inspect the
-   certificate subject preview and record the **exact CN** as the publisher
-   name. An individual certificate identifies the legal person, not an
-   arbitrary product brand. Review which address fields will be public.
-4. Create the profile and confirm it is active. Record its name and the regional
-   endpoint from the account. The region must match: East US uses
-   `https://eus.codesigning.azure.net`; other regions have different endpoints
-   listed in the quickstart. Do not select an endpoint based on your home
-   timezone.
-
-### Give the build its own signing identity
-
-For an initial local Windows build, use an Entra app registration and a securely
-supplied credential. This is separate from the publisher identity validation.
-Microsoft [recommends certificates or federation over client secrets for
-production](https://learn.microsoft.com/en-us/entra/identity-platform/how-to-add-credentials).
-A short-lived secret is a straightforward first local test, not a reason to
-embed credentials in the app or grant CI broad subscription permissions.
-
-1. In the same tenant, follow [Register an application](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app):
-   Entra ID -> App registrations -> New registration. Use a descriptive name
-   such as `dinkster-desktop-signing`, single-tenant accounts, and no redirect
-   URI for this noninteractive signing client. Register it.
-2. Record Application (client) ID and Directory (tenant) ID from Overview.
-3. Under Certificates & secrets -> Client secrets -> New client secret, choose
-   a short lifetime and save its **Value**, not its Secret ID, in a password
-   manager. It is shown only once. Do this privately, not in a shared transcript.
-4. At the certificate profile's IAM scope, assign **Artifact Signing Certificate
-   Profile Signer** to the app's service principal. Search for the registration
-   name under user/group/service principal members. Grant at profile scope
-   rather than subscription scope. Do not confuse the application's client ID
-   with the service principal's object ID when assigning roles.
-5. The build environment needs Node 22, pnpm 10.31.0 and Windows PowerShell or
-   PowerShell 7, with network access to Azure and PowerShell Gallery. The locked
-   builder installs the TrustedSigning module for CurrentUser and calls
-   `Invoke-TrustedSigning`. It delegates authentication to that module; it does
-   not acquire a GitHub OIDC token for you.
-
-### Connect the profile to electron-builder 26
-
-Once the endpoint, CN, and profile are known, merge these fields into the
-existing **build.win** object in packages/desktop/package.json. Preserve icon,
-NSIS target, artifactName, and other existing settings. This sample is not yet
-configured in the repository:
-
-```json
-{
-  "forceCodeSigning": true,
-  "azureSignOptions": {
-    "publisherName": "EXACT CERTIFICATE CN",
-    "endpoint": "EXACT REGIONAL ENDPOINT",
-    "codeSigningAccountName": "dinkster",
-    "certificateProfileName": "dinksterdesktop",
-    "fileDigest": "SHA256",
-    "timestampDigest": "SHA256",
-    "timestampRfc3161": "http://timestamp.acs.microsoft.com"
-  }
-}
-```
-
-Use the actual profile name if different. For this version, publisherName belongs
-**inside azureSignOptions** and is the certificate CN, not the entire `CN=...`
-subject string. The [locked-version implementation](https://github.com/electron-userland/electron-builder/blob/electron-builder%4026.15.3/packages/app-builder-lib/src/codeSign/windowsSignAzureManager.ts)
-and [options](https://github.com/electron-userland/electron-builder/blob/electron-builder%4026.15.3/packages/app-builder-lib/src/options/winOptions.ts)
-are the reference. Do not copy unreleased v27's `win.sign.type=azure` configuration.
-Do not add signtoolOptions or CSC_LINK for this cloud signing path.
-
-### Build locally without publishing
-
-In a Windows PowerShell terminal at the desktop repository root, build the pinned
-frontend as described in [README](../README.md) and obtain the pinned backend ZIP
-and Aimdo wheel from their official repository releases. Keep those artifacts
-outside packages/desktop/resources/engine; preparation verifies the pinned sizes
-and SHA-256 digests. Replace the paths and IDs below. Do not paste a secret into
-a command, print environment variables, or use DEBUG logging with credentials.
-
-```powershell
-$env:DINKSTER_FRONTEND_DIST = 'C:\PATH\TO\PINNED-FRONTEND\packages\app\dist'
-$env:DINKSTER_ENGINE_ARCHIVE = 'C:\PATH\TO\PINNED-BACKEND.zip'
-$env:DINKSTER_AIMDO_WHEEL = 'C:\PATH\TO\PINNED-AIMDO.whl'
-$env:AZURE_TENANT_ID = 'DIRECTORY-TENANT-ID'
-$env:AZURE_CLIENT_ID = 'APPLICATION-CLIENT-ID'
-$secret = Read-Host 'Signing client secret VALUE' -AsSecureString
-try {
-  $env:AZURE_CLIENT_SECRET = [System.Net.NetworkCredential]::new('', $secret).Password
-  pnpm install --frozen-lockfile
-  if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
-  pnpm --filter @dinkster/desktop package:win
-  if ($LASTEXITCODE -ne 0) { throw 'Packaging or signing failed' }
-  pnpm --filter @dinkster/desktop verify:update-feed
-  if ($LASTEXITCODE -ne 0) { throw 'Update feed verification failed' }
-} finally {
-  Remove-Item Env:\AZURE_CLIENT_SECRET -ErrorAction SilentlyContinue
-  Remove-Item Env:\AZURE_CLIENT_ID -ErrorAction SilentlyContinue
-  Remove-Item Env:\AZURE_TENANT_ID -ErrorAction SilentlyContinue
-  $secret.Dispose()
-}
-```
-
-Expected: a successful package build with Azure signing, a generated Setup.exe,
-and passing update-feed verification. Stop on any error; do not disable signing
-to continue. For 403, check completed validation, active profile, regional
-endpoint, exact account/profile names, and the **service principal's** Profile
-Signer role. Allow a recent role assignment time to propagate. For authentication
-failure, check secret Value versus ID, expiration, tenant and client ID.
-
-### Verify signatures, then test installation
-
-From the same repository root on Windows:
-
-```powershell
-$files = @(
-  Get-ChildItem 'packages/desktop/release' -Filter '*-Setup.exe'
-  Get-Item 'packages/desktop/release/win-unpacked/Dinkster Desktop.exe'
-)
-if ($files.Count -ne 2) { throw 'Expected one installer and one app executable' }
-foreach ($file in $files) {
-  $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
-  $signature | Select-Object Path, Status, @{Name='Publisher'; Expression={$_.SignerCertificate.Subject}}, @{Name='Timestamp'; Expression={$_.TimeStamperCertificate.Subject}}
-  if ($signature.Status -ne 'Valid' -or !$signature.TimeStamperCertificate) {
-    throw "Invalid or untimestamped signature: $($file.Name)"
-  }
-}
-```
-
-Require **Valid**, the intended legal publisher, and a timestamp on both files.
-Install the resulting installer into an isolated test directory and check the
-installed app and generated uninstaller with Get-AuthenticodeSignature too.
-Then exercise first launch and engine setup. A build exit code alone is not
-proof of a valid signed installer. Signing identifies the publisher and protects
-integrity; it is not a guarantee that SmartScreen will never show a warning.
-
-Before any future release integration, the account holder must arrange secure
-credential delivery to the Windows signing job, restrict its profile access,
-add these signature checks before checksum generation/publication, and replace
-the unsigned release description only after signing is verified. Secret changes
-and release publication are user actions, not part of this documentation test.
+- Apple: submit the [individual to organization migration request](https://developer.apple.com/contact/request/migrate-individual-account)
+  for the existing team rather than enrolling a second time; the founder
+  submits it, and Certificates, Identifiers & Profiles is unavailable while
+  Apple processes it. Afterwards the team carries the organization name:
+  create a new Developer ID Application certificate under that name, then
+  rebuild and re-notarize.
+- Windows: add an Organization identity validation on the same subscription
+  (website, two addresses on the company domain, EIN as the business
+  identifier, 1-20 business days), create a second certificate profile from
+  it, and switch `artifactSigning` in `electron-builder.signed.mjs` to the new
+  profile and common name. `acceptedUpdatePublishers` already lists the
+  company, so existing installs accept the first company-signed update.
+  SmartScreen reputation starts over for the new publisher.
 
 ## Completion evidence
 
-Keep this guide and its pull request draft until the account holder confirms:
+Record redacted results, never credentials or documents:
 
-- Apple's alternative-verification support request resolved the actual blocked
-  enrollment state, and the Developer ID Application identity is usable.
-- Artifact Signing identity validation is Completed and the Public Trust profile
-  is active, with the actual region/profile/CN reflected in build configuration.
-- A locally produced Windows installer, app and uninstaller have valid intended
-  publisher signatures and timestamps, and install/first launch succeed.
-- A macOS-compatible build has been established, signed with Developer ID,
-  notarized, stapled, and verified on a Mac. Account approval alone is not this
-  result.
-
-Do not report either platform as signed based only on these instructions or the
-existence of an account. Record redacted verification results, not credentials
-or identity documents.
+- Windows: a release workflow run whose `Verify publisher signatures` step
+  passed, followed by a successful install and first launch of that installer.
+- macOS: Developer Support confirms the enrollment is active; later, a
+  notarized, stapled build passes Gatekeeper on a clean Mac.

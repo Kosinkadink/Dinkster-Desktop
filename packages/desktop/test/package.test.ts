@@ -274,6 +274,40 @@ describe('desktop package inputs', () => {
     })
     expect(manifest.build.publish).toEqual([{ provider: 'generic', url: 'https://updates.dinkster.invalid/desktop' }])
     expect(manifest.build.win.forceCodeSigning).toBe(false)
+    expect(manifest.build.win).not.toHaveProperty('azureSignOptions')
+    expect(manifest.scripts['package:win:signed']).toBe('pnpm package:win --config electron-builder.signed.mjs')
+  })
+
+  it('signs releases through the Artifact Signing profile and accepts both publishers on update', async () => {
+    const signed = await import('../electron-builder.signed.mjs') as {
+      currentPublisher: string
+      acceptedUpdatePublishers: string[]
+      artifactSigning: Record<string, string>
+      default(): Promise<{
+        publish: { provider: string; url: string; publisherName?: string[] }[]
+        win: { forceCodeSigning: boolean; azureSignOptions: Record<string, string>; artifactName: string }
+      }>
+    }
+    const manifest = JSON.parse(await readFile(resolve(root, 'packages/desktop/package.json'), 'utf8')) as {
+      build: { publish: unknown[]; win: Record<string, unknown> }
+    }
+    const configuration = await signed.default()
+    expect(configuration.win.forceCodeSigning).toBe(true)
+    expect(configuration.win.azureSignOptions).toBe(signed.artifactSigning)
+    expect(signed.artifactSigning).toEqual({
+      publisherName: signed.currentPublisher,
+      endpoint: 'https://wus2.codesigning.azure.net',
+      codeSigningAccountName: 'dinkster',
+      certificateProfileName: 'dinkster-desktop',
+    })
+    expect(typeof signed.artifactSigning['publisherName']).toBe('string')
+    expect(signed.acceptedUpdatePublishers).toContain(signed.currentPublisher)
+    expect(configuration.publish).toEqual([{ ...(manifest.build.publish[0] as object), publisherName: signed.acceptedUpdatePublishers }])
+    const { forceCodeSigning: _unsigned, ...unsignedWin } = manifest.build.win
+    const { forceCodeSigning: _signed, azureSignOptions: _options, ...signedWin } = configuration.win
+    expect(signedWin).toEqual(unsignedWin)
+    expect(Object.keys(configuration).sort()).toEqual(Object.keys(manifest.build).sort())
+    expect(JSON.stringify(signed)).not.toMatch(/secret|password|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
   })
 
   it('uses the workflow token for public release inputs and publication', async () => {
@@ -287,8 +321,19 @@ describe('desktop package inputs', () => {
     expect(steps.find((step) => step.run !== undefined)).toBe(acquire)
     expect(acquire.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
     expect(acquire.run).not.toMatch(/DINKSTER_RELEASE_READ_TOKEN|githubtoken|\$env:GH_TOKEN\s*=/i)
-    expect(source).not.toContain('secrets.')
+    const signing = steps.find((step) => step.name === 'Package and sign with Artifact Signing')!
+    expect(signing.run).toBe('pnpm --filter @dinkster/desktop package:win:signed')
+    expect(signing.env).toEqual({
+      AZURE_TENANT_ID: '${{ secrets.AZURE_TENANT_ID }}',
+      AZURE_CLIENT_ID: '${{ secrets.AZURE_CLIENT_ID }}',
+      AZURE_CLIENT_SECRET: '${{ secrets.AZURE_CLIENT_SECRET }}',
+    })
+    expect(source.match(/secrets\.\w+/g)?.sort()).toEqual(['secrets.AZURE_CLIENT_ID', 'secrets.AZURE_CLIENT_SECRET', 'secrets.AZURE_TENANT_ID'])
+    expect(steps.filter((step) => step.env && Object.keys(step.env).some((name) => name.startsWith('AZURE_')))).toEqual([signing])
+    expect(steps.map((step) => step.name ?? step.run)).toContain('Verify publisher signatures')
+    expect(steps.findIndex((step) => step.name === 'Verify publisher signatures')).toBeLessThan(steps.findIndex((step) => step.name === 'Install into an isolated directory'))
     expect(steps.find((step) => step.name === 'Create release')?.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
+    expect(steps.find((step) => step.name === 'Create release')?.run).not.toContain('Unsigned')
   })
 
   it('keeps both tinkerer launchers on the shared web runtime', async () => {

@@ -185,7 +185,7 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
-          version: 10.31.0
+          version: 11.28.8
           dest: ${{ runner.tool_cache }}/setup-pnpm
       - uses: actions/setup-node@v4
         with:

@@ -64,8 +64,11 @@ describe('desktop package inputs', () => {
     const { aimdo, cudaTorch } = pin.desktopWindowsRuntime
 
     async function writeArchive(profile: string | null = JSON.stringify({ aimdo, cudaTorch }),
-      path = `dinkster-backend-${pin.commit}/scripts/desktop_windows_runtime.json`): Promise<void> {
-      content = Buffer.from(zipSync(profile === null ? {} : { [path]: Buffer.from(profile) }))
+      path = `dinkster-backend-${pin.commit}/scripts/desktop_windows_runtime.json`,
+      manifests: Record<string, string> = {}): Promise<void> {
+      const entries = Object.fromEntries(Object.entries(manifests).map(([name, text]) =>
+        [`dinkster-backend-${pin.commit}/${name}`, Buffer.from(text)]))
+      content = Buffer.from(zipSync({ ...entries, ...(profile === null ? {} : { [path]: Buffer.from(profile) }) }))
       pin.sha256 = createHash('sha256').update(content).digest('hex')
       pin.size = content.length
       await writeFile(input, content)
@@ -104,6 +107,28 @@ describe('desktop package inputs', () => {
       expect((await readdir(output)).sort()).toEqual([aimdo.archive, pin.archive].sort())
       expect(await readFile(resolve(output, pin.archive))).toEqual(content)
       expect(await readFile(resolve(output, aimdo.archive))).toEqual(wheelContent)
+    })
+
+    it.each([
+      ['uv.lock', 'source = { git = "https://example.test/source" }'],
+      ['packages/example/pyproject.toml', '[tool.uv.sources]\nexample = { git = "https://example.test/source" }'],
+      ['packages/example/dinkster-pack.toml', '[pack]\nrequires = ["example @ git+https://example.test/source"]'],
+      ['packages/example/dinkster-legacy-pack.toml', '[pack]\nrequires = ["example @ git+https://example.test/source"]'],
+    ])('rejects Git requirements in %s before changing outputs', async (name, manifest) => {
+      await writeArchive(undefined, undefined, { [name]: manifest })
+      await writeFile(resolve(output, 'existing.zip'), 'preserved')
+      await expect(prepare()).rejects.toThrow(`Backend ZIP requires Git in ${name}`)
+      expect(await readFile(resolve(output, 'existing.zip'), 'utf8')).toBe('preserved')
+    })
+
+    it('accepts archive requirements and ignores comments and unrelated source assets', async () => {
+      await writeArchive(undefined, undefined, {
+        'packages/example/dinkster-pack.toml': '# git+ is forbidden\n[pack]\nrequires = ["example @ https://example.test/source.zip"]',
+        'uv.lock': 'source = { registry = "https://pypi.org/simple" }',
+        'docs/example.txt': 'git+https://example.test/source',
+      })
+      await prepare()
+      expect(await readFile(resolve(output, pin.archive))).toEqual(content)
     })
 
     it('validates the profile when the source ZIP contains large stored assets', async () => {

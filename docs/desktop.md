@@ -1,50 +1,48 @@
-# Desktop engine boundaries
+# Desktop environment boundaries
 
-## Release mirror
+## Projects and engines
 
-Desktop treats the configured release mirror as a security boundary. Production
-mirror URLs use HTTPS, contain no credentials, and have no query string or
-fragment. Loopback HTTP is accepted only for local tests. Release requests use
-paths relative to that base URL; redirects are followed only while they remain
-on the same origin and under the same base path.
+Desktop stores its project names and engine bindings in `projects.json` under
+the shell data directory. A local project binds one absolute install root and
+a `stable` or `main` channel to one or more named engines. Additional local
+engines need distinct explicit ports. Each engine records its assigned GPUs.
+Two projects cannot bind the same install root.
 
-The mirror client parses JSON without defining the engine document schema and
-verifies downloaded bytes against a caller-supplied SHA-256 digest. The engine
-release layer owns the channel and manifest schemas and supplies the expected
-digests. Desktop also compares the running shell version with a numeric minimum
-version before an update can proceed.
+A remote-only project stores server URLs and no install root. Opening it loads
+the server's frontend in an isolated window without a Desktop preload or Node
+capabilities. It does not invoke environment commands or create a generation.
 
-## Projects
+Desktop bindings are not environment state. The environment tools own
+`project.json`, generation records, `current`, `store`, journals, dependency
+constraints, and private supervisor runtime metadata. Desktop never writes
+those files or defines substitute formats for them.
 
-Each Desktop project id, including `default`, binds to one absolute Dinkster
-install root and one channel: `stable` or `github-live`. Two projects cannot
-bind the same install root. The registry is stored atomically under the Desktop
-shell data directory and rejects malformed documents, duplicate project ids,
-relative roots, unsupported channels, and roots assigned more than once.
+## Environment commands
 
-The registry does not own models, outputs, history, settings, generation files,
-or install commands. Those remain outside this Desktop metadata boundary.
+The project manager delegates setup, update, rollback, move, doctor, garbage
+collection, and named engine start/stop to `dinkster-env`. Mutations show the
+command's read-only plan first and require confirmation. The confirmation
+token applies to exactly that request; it cannot authorize a changed root,
+variant, channel, or destination.
 
-## Generation swap
+The client consumes `dinkster.environment-result/1`. An update may start a new
+supervisor on a different port, so open local engine windows follow the ready
+URL returned by the command rather than reconstructing it from saved ports.
+Mirror discovery, artifact verification, generation construction, activation,
+recovery, and retention are responsibilities of the environment tools.
 
-Desktop coordinates an update through injected engine operations so it does not
-duplicate the engine install implementation. For one project, it:
+For development, `DINKSTER_ENV` selects an installed environment executable.
+Alternatively, `DINKSTER_TOOLS_PYTHON` selects an interpreter containing the
+tools and runs `-m dinkster_supervisor.environment`. Desktop does not install
+missing tools by resolving packages at runtime.
 
-1. Writes a durable operation journal and builds the target generation while
-   the previous supervisor continues serving.
-2. Takes a pre-update snapshot, records the switching stage, and stops the
-   previous supervisor.
-3. Activates the target and starts that generation's supervisor on the
-   project's port with a new instance id.
-4. Persists the new selection and clears the journal only after readiness is
-   reported for that exact instance id.
+## Shell updates
 
-If build fails, the previous supervisor remains running. If activation, startup,
-or readiness fails after the previous supervisor stops, Desktop stops the failed
-candidate, reactivates the previous generation, starts its supervisor with
-another new instance id, waits for readiness, and persists the previous
-selection. The failed journal is retained for support diagnostics. A target
-generation is not deleted by the coordinator.
-
-Projects use separate coordinators, supervisors, and ports. Updating one project
-does not stop or change another project's supervisor.
+Shell updates are separate from engine environment updates. The shell updater
+checks only during startup, downloads without installing on quit, and records
+the downloaded version for installation on the next startup. It records each
+installation attempt before handing control to the installer and stops after
+three unsuccessful launches for the same version. A successful launch at that
+version clears the pending attempts; a different update remains eligible.
+Corrupt attempt metadata fails closed. Previous installer files are retained.
+Manual update IPC calls report status only; they do not check or install.

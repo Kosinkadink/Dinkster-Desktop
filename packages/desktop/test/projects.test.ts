@@ -40,6 +40,8 @@ describe('Desktop project bindings', () => {
     expect(next.projects).toHaveLength(1)
     expect(next.projects[0]).toMatchObject({ channel: 'main', root: join(root, 'install'), engines: project.engines })
     expect(() => saveProject(next, { ...project, id: 'duplicate-root' })).toThrow('already belongs')
+    expect(() => saveProject(next, { ...project, id: 'equivalent-root', root: `${root}/install/../install` })).toThrow('already belongs')
+    expect(saveProject(next, { ...project, id: 'default', root: join(root, 'default') }).projects).toHaveLength(2)
     const first = { id: 'first', name: 'First', kind: 'local', gpus: ['1'], port: 44001 }
     const second = { id: 'second', name: 'Second', kind: 'local', gpus: ['0'], port: 44002 }
     expect(parseProject({ ...project, engines: [first, second] }).engines).toEqual([first, second])
@@ -59,5 +61,21 @@ describe('Desktop project bindings', () => {
     expect(() => parseProject(local)).toThrow('absolute install root')
     expect(() => parseProject({ ...local, root, engines: [...local.engines, ...local.engines] })).toThrow('duplicate engine')
     expect(() => parseProject({ ...local, root, channel: 'nightly' })).toThrow('invalid Desktop project')
+    for (const id of ['', 'UPPER', 'has space', 'x'.repeat(65), 'p_alpha', 7, null]) {
+      expect(() => parseProject({ ...local, root, id })).toThrow('invalid Desktop project')
+    }
+    const valid = { ...local, root }
+    for (const document of [
+      { version: 2, projects: [] },
+      { version: 1, projects: 'invalid' },
+      { version: 1, projects: [valid, valid] },
+      { version: 1, projects: [valid, { ...valid, id: 'other' }] },
+      { version: 1, projects: [valid, local] },
+      [valid],
+    ]) {
+      await writeFile(join(root, 'projects.json'), JSON.stringify(document))
+      await expect(readProjects(root)).rejects.toThrow()
+      await expect(writeProjects(root, document as Parameters<typeof writeProjects>[1])).rejects.toThrow()
+    }
   })
 })

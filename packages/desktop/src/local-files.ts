@@ -1,5 +1,6 @@
 import { realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import type { DesktopAssetIdentity, DesktopFileCapabilities } from './types.js'
 import { validProjectId } from './window-layout.js'
 
@@ -77,7 +78,7 @@ export async function grantedFile(path: unknown, roots: readonly string[]): Prom
 export async function revealGrantedFile(
   path: unknown,
   roots: readonly string[],
-  shell: { showItemInFolder(path: string): void; openPath(path: string): Promise<string> },
+  shell: { showItemInFolder(path: string): void; openExternal(url: string): Promise<void> },
   authorize: () => Promise<void>,
   platform = process.platform,
 ): Promise<{ mode: 'selected' | 'folder' }> {
@@ -88,7 +89,8 @@ export async function revealGrantedFile(
     shell.showItemInFolder(target)
     return { mode: 'selected' }
   }
-  const error = await shell.openPath(dirname(target))
-  if (error) throw new Error('The file manager could not open the containing folder')
+  // Electron 37's Linux openPath drops its completion callback.
+  try { await shell.openExternal(pathToFileURL(dirname(target)).href) }
+  catch { throw new Error('The file manager could not open the containing folder') }
   return { mode: 'folder' }
 }

@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, revealGrantedFile } from '../src/local-files.js'
 
@@ -91,13 +92,13 @@ describe('local file authority', () => {
       const opened: string[] = []
       const shell = {
         showItemInFolder: (path: string) => { selected.push(path) },
-        openPath: async (path: string) => { opened.push(path); return '' },
+        openExternal: async (url: string) => { opened.push(url) },
       }
       expect(await revealGrantedFile(file, [granted], shell, async () => {}, 'win32')).toEqual({ mode: 'selected' })
       expect(selected).toEqual([await realpath(file)])
       expect(await revealGrantedFile(file, [granted], shell, async () => {}, 'linux')).toEqual({ mode: 'folder' })
-      expect(opened).toEqual([await realpath(granted)])
-      await expect(revealGrantedFile(file, [granted], { ...shell, openPath: async () => 'failed' }, async () => {}, 'linux')).rejects.toThrow('file manager')
+      expect(opened).toEqual([pathToFileURL(await realpath(granted)).href])
+      await expect(revealGrantedFile(file, [granted], { ...shell, openExternal: async () => { throw new Error('failed') } }, async () => {}, 'linux')).rejects.toThrow('file manager')
       await expect(revealGrantedFile(file, [granted], shell, async () => { throw new Error('revoked') }, 'win32')).rejects.toThrow('revoked')
       expect(selected).toHaveLength(1)
       await expect(revealGrantedFile(file, [granted], shell, async () => { await rm(file) }, 'win32')).rejects.toThrow('missing')

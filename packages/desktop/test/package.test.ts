@@ -296,7 +296,7 @@ describe('desktop package inputs', () => {
     })
   })
 
-  it('cleans generated outputs and selects only the manifest engine archive', async () => {
+  it('cleans generated outputs and excludes engine installation inputs from the shell package', async () => {
     const manifest = JSON.parse(await readFile(resolve(root, 'packages/desktop/package.json'), 'utf8')) as {
       scripts: Record<string, string>
       build: {
@@ -306,13 +306,9 @@ describe('desktop package inputs', () => {
       }
     }
     expect(manifest.scripts['build']).toContain('clean-output.mjs dist')
-    expect(manifest.scripts['prepare:engine']).toBe('node scripts/prepare-engine-source.mjs')
     expect(manifest.scripts['package:win']).toContain('clean-output.mjs release')
-    expect(manifest.build.extraResources[1]).toEqual({
-      from: 'resources/engine',
-      to: 'engine',
-      filter: ['*.zip', '*.whl'],
-    })
+    expect(manifest.scripts['package:win']).not.toMatch(/prepare:engine|prepare-engine-source/)
+    expect(manifest.build.extraResources).toEqual([{ from: '../app/dist', to: 'app' }])
     expect(manifest.build.publish).toEqual([{ provider: 'generic', url: 'https://updates.dinkster.invalid/desktop' }])
     expect(manifest.build.win.forceCodeSigning).toBe(false)
     expect(manifest.build.win).not.toHaveProperty('azureSignOptions')
@@ -368,18 +364,22 @@ describe('desktop package inputs', () => {
     )
   })
 
-  it('uses the workflow token for public release inputs and publication', async () => {
+  it('scopes the release token to publication and never acquires engine installation inputs', async () => {
     const yaml = createRequire(import.meta.url)('js-yaml') as { load(source: string): unknown }
     const source = await readFile(resolve(root, '.github/workflows/release-desktop.yml'), 'utf8')
     const workflow = yaml.load(source) as {
       jobs: { release: { steps: { name?: string; run?: string; env?: Record<string, string> }[] } }
     }
     const steps = workflow.jobs.release.steps
-    const acquire = steps.find((step) => step.name === 'Download pinned backend and Aimdo')!
     expect(steps.find((step) => step.run !== undefined)?.name).toBe('Validate version tag')
-    expect(steps.find((step) => step.env?.['GH_TOKEN'] !== undefined)).toBe(acquire)
-    expect(acquire.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
-    expect(acquire.run).not.toMatch(/DINKSTER_RELEASE_READ_TOKEN|githubtoken|\$env:GH_TOKEN\s*=/i)
+    expect(steps.filter((step) => step.env?.['GH_TOKEN'] !== undefined)).toEqual([
+      steps.find((step) => step.name === 'Create release'),
+    ])
+    for (const file of ['release-desktop.yml', 'signed-package.yml', 'full-validation.yml']) {
+      const packaging = await readFile(resolve(root, '.github/workflows', file), 'utf8')
+      expect(packaging).not.toMatch(/DINKSTER_ENGINE_ARCHIVE|DINKSTER_AIMDO_WHEEL|prepare:engine|gh release download|Invoke-WebRequest/)
+      expect(packaging).not.toMatch(/DINKSTER_RELEASE_READ_TOKEN|githubtoken|\$env:GH_TOKEN\s*=/i)
+    }
     const signing = steps.find((step) => step.name === 'Package and sign with Artifact Signing')!
     expect(signing.run).toBe('pnpm --filter @dinkster/desktop package:win:signed')
     expect(signing.env).toEqual({

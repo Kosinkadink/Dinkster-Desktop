@@ -228,7 +228,7 @@ describe('desktop workflows', () => {
     }
   })
 
-  it('downloads public release inputs with the workflow token', () => {
+  it('limits legacy backend downloads to the published verifier and scopes its token', () => {
     for (const workflow of [full, release, signed, published]) {
       const downloadSteps = Object.values(workflow.jobs).flatMap((job) =>
         (job.steps ?? []).filter(
@@ -237,7 +237,8 @@ describe('desktop workflows', () => {
             step.run?.includes('gh release download'),
         ),
       )
-      expect(downloadSteps.length).toBeGreaterThan(0)
+      if (workflow === published) expect(downloadSteps).toHaveLength(1)
+      else expect(downloadSteps).toEqual([])
       for (const step of downloadSteps) {
         expect(step.env?.['GH_TOKEN']).toBe('${{ github.token }}')
         expect(step.run).not.toContain('DINKSTER_RELEASE_READ_TOKEN')

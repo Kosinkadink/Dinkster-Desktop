@@ -6,10 +6,10 @@ project install-root bindings, and supervisor-per-generation swap contract.
 
 ## Inputs
 
-The desktop shell and its two external inputs are pinned independently:
+The desktop shell and its external inputs are pinned independently:
 
 - Dinkster-Frontend is checked out at the 40-character `DINKSTER_FRONTEND_REF` in `.github/workflows/ci.yml`. The frontend checkout builds `@dinkster/app`; Desktop copies only the resulting `packages/app/dist` bundle into its package input. Desktop does not compile against frontend workspace source.
-- The backend release, native profile, and checksums are pinned in `packages/desktop/src/backend-release.json`. Packaging accepts only the matching backend archive and Aimdo wheel supplied through `DINKSTER_ENGINE_ARCHIVE` and `DINKSTER_AIMDO_WHEEL`.
+- The checkout-development backend selection is pinned in `packages/desktop/src/backend-release.json`. Shell packaging does not download or embed that source archive or native wheels. Project generations are acquired by the environment tools, not by the shell's package builder.
 
 For a local build, build the pinned Dinkster-Frontend checkout first and point `DINKSTER_FRONTEND_DIST` at its `packages/app/dist` directory:
 
@@ -21,7 +21,7 @@ pnpm typecheck
 pnpm test
 ```
 
-`pnpm --filter @dinkster/desktop package:win` additionally requires the two verified backend release artifacts and produces an unsigned installer. The release workflow uses `package:win:signed`, which signs through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before owner-approved signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release.
+`pnpm --filter @dinkster/desktop package:win` produces an unsigned shell installer without backend source or native wheel inputs. The release workflow uses `package:win:signed`, which signs through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before owner-approved signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release. Production local-project bootstrap remains incomplete until the standalone environment tools payload is packaged; a shell-only package is not a complete local installation.
 
 ## Environment client development
 

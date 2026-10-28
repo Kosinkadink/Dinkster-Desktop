@@ -218,6 +218,65 @@ try {
   assert.equal(untrusted.length, 3)
   for (const rejection of untrusted)
     assert.match(rejection, /untrusted renderer/)
+
+  // Restart the real backend while the dialog is pending. Cached shell status
+  // remains running, but the returned path must lose native authority.
+  await app.evaluate(
+    ({ dialog }, { origin, path }) => {
+      dialog.showOpenDialog = async () => {
+        const response = await fetch(`${origin}/supervisor/engine/restart`, {
+          method: 'POST',
+        })
+        const status = await response.json()
+        if (!response.ok || status.state !== 'starting') {
+          throw new Error('Backend restart did not enter the starting state')
+        }
+        return { canceled: false, filePaths: [path] }
+      }
+    },
+    { origin: new URL(page.url()).origin, path: chosen },
+  )
+  const restartRejection = await page.evaluate(async () => {
+    try {
+      await window.dinksterDesktop.chooseDirectory(location.origin)
+      return 'accepted'
+    } catch (error) {
+      return String(error)
+    }
+  })
+  assert.match(restartRejection, /shell-managed backend is no longer available/)
+  assert.equal(
+    (await page.evaluate(() => window.dinksterDesktop.status())).phase,
+    'running',
+  )
+  await app.evaluate(({ dialog }) => {
+    dialog.showOpenDialog = globalThis.originalOpenDialog
+  })
+  const restartDeadline = Date.now() + 600_000
+  let recovered
+  do {
+    recovered = await page.evaluate(async () =>
+      (await fetch('/supervisor/status', { cache: 'no-store' })).json(),
+    )
+    if (recovered.state === 'failed') throw new Error(recovered.detail)
+    if (recovered.state === 'ready') break
+    await delay(250)
+  } while (Date.now() < restartDeadline)
+  assert.equal(recovered.state, 'ready')
+  assert.equal(recovered.instance, health.instance)
+  assert.notEqual(recovered.engine.pid, health.engine.pid)
+  assert.equal(
+    (
+      await page.evaluate(() =>
+        window.dinksterDesktop.fileCapabilities(location.origin),
+      )
+    ).nativeFolderChoice,
+    true,
+  )
+  await writeFile(
+    join(root, 'restart-during-choice.json'),
+    JSON.stringify({ rejection: restartRejection, recovered }),
+  )
   await writeFile(
     join(root, 'local-files.json'),
     JSON.stringify(
@@ -232,6 +291,7 @@ try {
         cancellation: true,
         errorsVisible: true,
         untrustedSenderDenied: true,
+        restartDuringChoiceDenied: true,
       },
       null,
       2,

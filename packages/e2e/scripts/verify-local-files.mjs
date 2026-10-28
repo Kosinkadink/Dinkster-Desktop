@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { closeSync, openSync } from 'node:fs'
+import { closeSync, createWriteStream, openSync } from 'node:fs'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
+import { finished } from 'node:stream/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from '@playwright/test'
@@ -83,13 +84,33 @@ try {
 } finally {
   closeSync(preparationLog)
 }
-const app = await electron.launch({
-  args: [fileURLToPath(new URL('../../desktop', import.meta.url))],
-  chromiumSandbox: true,
-  env,
-  timeout: 60_000,
+const stderrLog = createWriteStream(join(root, 'electron-stderr.log'), {
+  flags: 'wx',
 })
+const stdoutLog = createWriteStream(join(root, 'electron-stdout.log'), {
+  flags: 'wx',
+})
+let app
+let electronProcess
 try {
+  app = await electron.launch({
+    args: [fileURLToPath(new URL('../../desktop', import.meta.url))],
+    chromiumSandbox: true,
+    env,
+    timeout: 60_000,
+  })
+  electronProcess = app.process()
+  electronProcess.stderr.pipe(stderrLog, { end: false })
+  electronProcess.stdout.pipe(stdoutLog, { end: false })
+  await writeFile(
+    join(root, 'electron-process.json'),
+    JSON.stringify({
+      launcherPid: electronProcess.pid,
+      mainPid: await app.evaluate(() => process.pid),
+      appLogDirectory: join(data, 'logs'),
+      stdioCaptureStartedAfterLaunch: true,
+    }),
+  )
   const page = await app.firstWindow()
   const deadline = Date.now() + 600_000
   let status
@@ -341,11 +362,22 @@ try {
       2,
     ),
   )
-  console.log(
-    nativeDialog
-      ? 'Real managed backend, native folder dialogs and IPC checks passed'
-      : 'Real managed backend and native-file IPC checks passed; native dialog outcomes were scripted',
-  )
+} catch (error) {
+  await writeFile(join(root, 'harness-error.txt'), String(error.stack ?? error))
+  throw error
 } finally {
-  await app.close()
+  try {
+    if (app) await app.close()
+  } finally {
+    electronProcess?.stderr.unpipe(stderrLog)
+    electronProcess?.stdout.unpipe(stdoutLog)
+    stderrLog.end()
+    stdoutLog.end()
+    await Promise.all([finished(stderrLog), finished(stdoutLog)])
+  }
 }
+console.log(
+  nativeDialog
+    ? 'Real managed backend, native folder dialogs and IPC checks passed'
+    : 'Real managed backend and native-file IPC checks passed; native dialog outcomes were scripted',
+)

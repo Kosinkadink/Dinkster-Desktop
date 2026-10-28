@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { detectNvidiaGpus, planVariant, type NvidiaGpu, type VariantHardware } from '../src/hardware.js'
 
 const manifests: readonly VariantHardware[] = [
-  { variant: 'win-nvidia-cu126', nvidia: { minimumDriver: '525', minimumComputeCapability: 5, maximumExclusiveComputeCapability: 10 } },
-  { variant: 'win-cpu', nvidia: null },
-  { variant: 'win-nvidia', nvidia: { minimumDriver: '580', minimumComputeCapability: 7.5, maximumExclusiveComputeCapability: null } },
-  { variant: 'linux-cpu', nvidia: null },
+  { variant: 'win-nvidia-cu126', platform: { os: 'windows', arch: 'x86_64' }, nvidia: { minimumDriver: '525', minimumComputeCapability: '5.0', maximumExclusiveComputeCapability: '10.0' } },
+  { variant: 'win-cpu', platform: { os: 'windows', arch: 'x86_64' }, nvidia: null },
+  { variant: 'win-nvidia', platform: { os: 'windows', arch: 'x86_64' }, nvidia: { minimumDriver: '580', minimumComputeCapability: '7.5', maximumExclusiveComputeCapability: null } },
+  { variant: 'linux-cpu', platform: { os: 'linux', arch: 'x86_64' }, nvidia: null },
 ]
 const gpus: readonly NvidiaGpu[] = [
-  { id: '0', name: 'Display GPU', driver: '580.10', computeCapability: 6.1 },
-  { id: '1', name: 'Compute GPU', driver: '580.10', computeCapability: 8.9 },
+  { id: '0', name: 'Display GPU', driver: '580.10', computeCapability: '6.1' },
+  { id: '1', name: 'Compute GPU', driver: '580.10', computeCapability: '8.9' },
 ]
 
 describe('project hardware plan', () => {
@@ -65,14 +65,37 @@ describe('project hardware plan', () => {
   })
 
   it('applies both capability boundaries from manifest data, not GPU model names', () => {
-    const assigned = (capability: number) => [{ id: '1', name: 'arbitrary GPU', driver: '580.0', computeCapability: capability }]
-    expect(planVariant(manifests, { gpus: assigned(7.49) }, ['1'], 'win32').selected).toBe('win-nvidia-cu126')
-    expect(planVariant(manifests, { gpus: assigned(7.5) }, ['1'], 'win32').selected).toBe('win-nvidia')
-    const oldDriver = assigned(10).map((gpu) => ({ ...gpu, driver: '579' }))
+    const assigned = (capability: string) => [{ id: '1', name: 'arbitrary GPU', driver: '580.0', computeCapability: capability }]
+    expect(planVariant(manifests, { gpus: assigned('7.4') }, ['1'], 'win32').selected).toBe('win-nvidia-cu126')
+    expect(planVariant(manifests, { gpus: assigned('7.5') }, ['1'], 'win32').selected).toBe('win-nvidia')
+    const oldDriver = assigned('10.0').map((gpu) => ({ ...gpu, driver: '579' }))
     expect(planVariant(manifests, { gpus: oldDriver }, ['1'], 'win32').selected).toBeUndefined()
     const raised = manifests.map((manifest) => manifest.nvidia ? { ...manifest, nvidia: { ...manifest.nvidia, minimumDriver: '600' } } : manifest)
     expect(planVariant(raised, { gpus }, ['1'], 'win32').selected).toBeUndefined()
     expect(planVariant(manifests, { gpus }, ['1'], 'linux').choices.map((choice) => choice.variant)).toEqual(['linux-cpu'])
     expect(() => planVariant(manifests, { gpus }, ['1'], 'linux', 'win-nvidia')).toThrow('not available')
+  })
+
+  it('compares numeric dotted components for driver and capability bounds', async () => {
+    const facts = await detectNvidiaGpus('win32', async () => '1, GPU, 580.10.1, 7.10, 8192 MiB')
+    expect(facts.gpus[0]?.computeCapability).toBe('7.10')
+    const dotted = manifests.map((manifest) => manifest.nvidia && manifest.variant === 'win-nvidia'
+      ? { ...manifest, nvidia: { ...manifest.nvidia, minimumDriver: '580.9.99' } } : manifest)
+    expect(planVariant(dotted, facts, ['1'], 'win32').selected).toBe('win-nvidia')
+    const cu126Only = manifests.filter((manifest) => manifest.variant !== 'win-nvidia')
+    const assigned = (capability: string) => ({ gpus: [{ id: '1', name: 'GPU', driver: '580', computeCapability: capability }] })
+    expect(planVariant(cu126Only, assigned('9.99'), ['1'], 'win32').selected).toBe('win-nvidia-cu126')
+    expect(planVariant(cu126Only, assigned('10.0'), ['1'], 'win32').selected).toBeUndefined()
+    expect(planVariant(cu126Only, assigned('5.0'), ['1'], 'win32').selected).toBe('win-nvidia-cu126')
+    expect(planVariant(cu126Only, assigned('4.99'), ['1'], 'win32').selected).toBeUndefined()
+  })
+
+  it('uses explicit platform metadata rather than interpreting variant labels', () => {
+    const renamed = manifests.map((manifest) => ({ ...manifest, variant: `custom-${manifest.variant}` }))
+    expect(planVariant(renamed, { gpus }, ['1'], 'win32').selected).toBe('custom-win-nvidia')
+    const misleading: VariantHardware[] = [{ variant: 'win-nvidia', platform: { os: 'linux', arch: 'x86_64' }, nvidia: manifests[2]!.nvidia }]
+    expect(planVariant(misleading, { gpus }, ['1'], 'win32').choices).toEqual([])
+    expect(planVariant(misleading, { gpus }, ['1'], 'linux').selected).toBe('win-nvidia')
+    expect(planVariant(manifests, { gpus }, ['1'], 'win32', undefined, 'arm64').choices).toEqual([])
   })
 })

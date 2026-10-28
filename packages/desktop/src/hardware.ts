@@ -5,7 +5,7 @@ export interface NvidiaGpu {
   readonly id: string
   readonly name: string
   readonly driver?: string
-  readonly computeCapability?: number
+  readonly computeCapability?: string
   readonly memoryMiB?: number
 }
 
@@ -30,14 +30,13 @@ export async function detectNvidiaGpus(
     ])
     const gpus = csv.trim().split(/\r?\n/).filter(Boolean).map((line): NvidiaGpu => {
       const [id, name, driver, capability, memory] = line.split(',').map((field) => field.trim())
-      const computeCapability = Number(capability)
       const memoryMiB = Number(memory?.replace(/\s*MiB$/, ''))
       if (!id || !/^\d+$/.test(id) || !name || !driver || !/^\d+(\.\d+)*$/.test(driver)
-        || !capability || !Number.isFinite(computeCapability) || computeCapability <= 0
+        || !capability || !/^\d+\.\d+$/.test(capability) || capability.split('.').every((part) => Number(part) === 0)
         || !memory || !Number.isFinite(memoryMiB) || memoryMiB <= 0) {
         throw new Error('nvidia-smi returned incomplete GPU information')
       }
-      return { id, name, driver, computeCapability, memoryMiB }
+      return { id, name, driver, computeCapability: capability, memoryMiB }
     })
     if (new Set(gpus.map((gpu) => gpu.id)).size !== gpus.length) throw new Error('nvidia-smi returned duplicate GPU indexes')
     return { gpus }
@@ -75,10 +74,11 @@ export async function detectNvidiaGpus(
 /** Hardware fields from the base producer's dinkster.base/1 manifest. */
 export interface VariantHardware {
   readonly variant: string
+  readonly platform: { readonly os: 'windows' | 'linux'; readonly arch: 'x86_64' }
   readonly nvidia: {
     readonly minimumDriver: string
-    readonly minimumComputeCapability: number
-    readonly maximumExclusiveComputeCapability: number | null
+    readonly minimumComputeCapability: string
+    readonly maximumExclusiveComputeCapability: string | null
   } | null
 }
 
@@ -88,14 +88,14 @@ export interface VariantPlan {
   readonly choices: readonly { readonly variant: string; readonly supported: boolean; readonly reason: string }[]
 }
 
-function versionAtLeast(actual: string, minimum: string): boolean {
+function compareVersions(actual: string, minimum: string): number {
   const left = actual.split('.').map(Number)
   const right = minimum.split('.').map(Number)
   for (let index = 0; index < Math.max(left.length, right.length); index++) {
     const difference = (left[index] ?? 0) - (right[index] ?? 0)
-    if (difference !== 0) return difference > 0
+    if (difference !== 0) return difference
   }
-  return true
+  return 0
 }
 
 export function planVariant(
@@ -104,11 +104,13 @@ export function planVariant(
   assignedGpuIds: readonly string[],
   platform: NodeJS.Platform,
   override?: string,
+  architecture: NodeJS.Architecture = process.arch,
 ): VariantPlan {
-  const prefix = platform === 'win32' ? 'win-' : platform === 'linux' ? 'linux-' : undefined
+  const os = platform === 'win32' ? 'windows' : platform === 'linux' ? 'linux' : undefined
+  const arch = architecture === 'x64' ? 'x86_64' : undefined
   const assigned = detection.gpus.filter((gpu) => assignedGpuIds.includes(gpu.id))
   const missing = assignedGpuIds.some((id) => !assigned.some((gpu) => gpu.id === id))
-  const variants = manifests.filter((manifest) => prefix && manifest.variant.startsWith(prefix))
+  const variants = manifests.filter((manifest) => os && arch && manifest.platform.os === os && manifest.platform.arch === arch)
   const choices = variants.map((manifest) => {
     const limits = manifest.nvidia
     let reason: string
@@ -118,15 +120,16 @@ export function planVariant(
       reason = 'CPU runs locally without an NVIDIA GPU. Select it explicitly; it can be much slower.'
     } else if (missing || assigned.length === 0) {
       reason = `Assign an NVIDIA GPU with driver ${limits.minimumDriver} or newer and compute capability ${limits.minimumComputeCapability} or newer.`
-    } else if (assigned.some((gpu) => !gpu.driver || !versionAtLeast(gpu.driver, limits.minimumDriver))) {
+    } else if (assigned.some((gpu) => !gpu.driver || compareVersions(gpu.driver, limits.minimumDriver) < 0)) {
       reason = `${assigned.map((gpu) => `${gpu.name}: driver ${gpu.driver ?? 'not detected'}`).join('; ')}. Requires NVIDIA driver ${limits.minimumDriver} or newer.`
     } else if (assigned.some((gpu) => gpu.computeCapability === undefined)) {
       reason = 'GPU compute capability is unknown. Repair the NVIDIA driver and retry detection.'
     } else {
-      const lowest = Math.min(...assigned.map((gpu) => gpu.computeCapability!))
-      const highest = Math.max(...assigned.map((gpu) => gpu.computeCapability!))
-      supported = lowest >= limits.minimumComputeCapability
-        && (limits.maximumExclusiveComputeCapability === null || highest < limits.maximumExclusiveComputeCapability)
+      const capabilities = assigned.map((gpu) => gpu.computeCapability!).sort(compareVersions)
+      const lowest = capabilities[0]!
+      const highest = capabilities[capabilities.length - 1]!
+      supported = compareVersions(lowest, limits.minimumComputeCapability) >= 0
+        && (limits.maximumExclusiveComputeCapability === null || compareVersions(highest, limits.maximumExclusiveComputeCapability) < 0)
       reason = supported
         ? `Assigned GPUs meet driver ${limits.minimumDriver}; lowest compute capability ${lowest} meets ${limits.minimumComputeCapability}.`
         : `Assigned compute capabilities ${lowest}-${highest} require support from ${limits.minimumComputeCapability}${limits.maximumExclusiveComputeCapability === null ? ' upwards' : ` to below ${limits.maximumExclusiveComputeCapability}`}.`
@@ -140,7 +143,7 @@ export function planVariant(
   }
   // Prefer the newest compatible base, independent of manifest input ordering.
   const preferred = variants.filter((manifest) => manifest.nvidia !== null)
-    .sort((a, b) => b.nvidia!.minimumComputeCapability - a.nvidia!.minimumComputeCapability)
+    .sort((a, b) => compareVersions(b.nvidia!.minimumComputeCapability, a.nvidia!.minimumComputeCapability))
     .find((manifest) => choices.find((choice) => choice.variant === manifest.variant)?.supported)
   if (preferred) {
     const choice = choices.find((candidate) => candidate.variant === preferred.variant)!

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { closeSync, openSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+import { fileURLToPath } from 'node:url'
 import { _electron as electron } from '@playwright/test'
 
 const source = process.env.DINKSTER_ENGINE_SOURCE
@@ -44,26 +47,51 @@ env.DINKSTER_DESKTOP_DATA = data
 env.DINKSTER_ENGINE_SOURCE = resolve(source)
 env.DINKSTER_ACCELERATOR = 'cpu'
 env.DINKSTER_UV = process.env.DINKSTER_UV ?? 'uv'
+// Development sources skip the release catalog preparation in EngineRuntime.
+const preparationLog = openSync(join(root, 'catalog-preparation.log'), 'wx')
+try {
+  execFileSync(
+    env.DINKSTER_UV,
+    [
+      'run',
+      '--no-sync',
+      'dinkster-pack',
+      'prepare-catalogs',
+      '--defaults',
+      '--library-root',
+      join(data, 'library'),
+    ],
+    {
+      cwd: resolve(source),
+      env,
+      stdio: ['ignore', preparationLog, preparationLog],
+    },
+  )
+} finally {
+  closeSync(preparationLog)
+}
 const app = await electron.launch({
-  args: [resolve('packages/desktop')],
+  args: [fileURLToPath(new URL('../../desktop', import.meta.url))],
+  chromiumSandbox: true,
   env,
   timeout: 60_000,
 })
 try {
   const page = await app.firstWindow()
-  await page.waitForFunction(
-    async () => {
-      const status = await window.dinksterDesktop.status()
-      if (status.phase === 'failed')
-        throw new Error('Managed backend startup failed')
-      return status.phase === 'running'
-    },
-    undefined,
-    { timeout: 600_000 },
-  )
+  const deadline = Date.now() + 600_000
+  let status
+  do {
+    status = await page.evaluate(() => window.dinksterDesktop.status())
+    if (status.phase === 'failed')
+      throw new Error(status.error ?? status.detail)
+    if (status.phase === 'running') break
+    await delay(250)
+  } while (Date.now() < deadline)
+  assert.equal(status.phase, 'running', 'Managed backend did not become ready')
   const health = await page.evaluate(async () =>
-    (await fetch('/supervisor/status')).json(),
+    (await fetch('/supervisor/status', { cache: 'no-store' })).json(),
   )
+  await writeFile(join(root, 'supervisor-status.json'), JSON.stringify(health))
   assert.equal(health.state, 'ready')
   const local = await page.evaluate(() =>
     window.dinksterDesktop.fileCapabilities(location.origin),
@@ -93,7 +121,7 @@ try {
 
   // Script dialog outcomes, not the IPC bridge or backend: cancellation and
   // raw native paths must survive the real renderer/main transport unchanged.
-  const chosen = join(root, 'mounted network folder with spaces')
+  const chosen = join(root, 'local folder with spaces')
   await mkdir(chosen)
   await app.evaluate(({ dialog }, path) => {
     globalThis.originalOpenDialog = dialog.showOpenDialog
@@ -134,34 +162,41 @@ try {
     dialog.showOpenDialog = globalThis.originalOpenDialog
   })
 
-  const untrusted = await app.evaluate(async ({ BrowserWindow }, origin) => {
-    const main = BrowserWindow.getAllWindows()[0]
-    const preferences = main.webContents.getLastWebPreferences()
-    const child = new BrowserWindow({
-      show: false,
-      webPreferences: {
-        preload: preferences.preload,
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    })
-    try {
-      await child.loadURL(origin)
-      return await child.webContents.executeJavaScript(`(async () => {
-        try { await window.dinksterDesktop.fileCapabilities(location.origin); return false }
-        catch (error) { return String(error).includes('untrusted renderer') }
+  const untrusted = await app.evaluate(
+    async ({ BrowserWindow, app }, origin) => {
+      const child = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          preload: `${app.getAppPath()}/dist/preload.cjs`,
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      })
+      try {
+        await child.loadURL(origin)
+        return await child.webContents.executeJavaScript(`(async () => {
+        try { await window.dinksterDesktop.fileCapabilities(location.origin); return 'accepted' }
+        catch (error) { return String(error) }
       })()`)
-    } finally {
-      child.destroy()
-    }
-  }, page.url())
-  assert.equal(untrusted, true)
+      } finally {
+        child.destroy()
+      }
+    },
+    page.url(),
+  )
+  await writeFile(
+    join(root, 'untrusted-sender.json'),
+    JSON.stringify(untrusted),
+  )
+  assert.match(untrusted, /untrusted renderer/)
   await writeFile(
     join(root, 'local-files.json'),
     JSON.stringify(
       {
         backendCommit: commit,
+        scriptedDialogOutcomes: true,
+        nativeNetworkPathsVerified: false,
         nativeFolderChoice: true,
         reveal: local.reveal,
         remoteDenied: true,

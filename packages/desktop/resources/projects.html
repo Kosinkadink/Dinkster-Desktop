@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+  <title>Dinkster projects</title>
+  <style>
+    :root { color-scheme: dark; font: 14px system-ui, sans-serif; background: #171717; color: #ededed; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { height: 54px; display: flex; align-items: center; padding: 0 24px; border-bottom: 1px solid #383838; -webkit-app-region: drag; }
+    main { max-width: 1000px; margin: auto; padding: 28px; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    h2 { font-size: 16px; margin: 0 0 18px; }
+    p { line-height: 1.5; color: #b8b8b8; }
+    .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px; }
+    section, article { border: 1px solid #3c3c3c; border-radius: 10px; padding: 20px; background: #202020; }
+    article { margin: 0 0 12px; }
+    label { display: grid; gap: 7px; margin-bottom: 16px; color: #d0d0d0; }
+    input, select, button { font: inherit; border-radius: 6px; padding: 10px 12px; }
+    input, select { min-width: 0; width: 100%; border: 1px solid #555; background: #171717; color: inherit; }
+    input:focus, select:focus, button:focus-visible { outline: 2px solid #8be9fd; outline-offset: 2px; }
+    button { cursor: pointer; border: 1px solid #555; background: #303030; color: #ededed; -webkit-app-region: no-drag; }
+    button.primary { background: #8be9fd; color: #111; border-color: #8be9fd; font-weight: 600; }
+    button:disabled { opacity: .5; cursor: wait; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .endpoint { overflow-wrap: anywhere; font-size: 12px; }
+    #message { min-height: 24px; white-space: pre-wrap; color: #bdeef9; }
+    @media (max-width: 700px) { .columns { grid-template-columns: 1fr; } main { padding: 20px; } }
+  </style>
+</head>
+<body>
+  <header>Dinkster Desktop</header>
+  <main>
+    <h1>Projects</h1>
+    <p>Choose an installation or connect to a remote engine. Remote projects do not install a local environment.</p>
+    <div class="columns">
+      <section aria-labelledby="saved-title">
+        <h2 id="saved-title">Your projects</h2>
+        <div id="projects"></div>
+      </section>
+      <section aria-labelledby="create-title">
+        <h2 id="create-title">Connect a remote project</h2>
+        <form id="create">
+          <label>Project name<input id="name" required maxlength="128" placeholder="Remote studio"></label>
+          <label>Server URL<input id="url" required type="url" placeholder="https://your-server.example"></label>
+          <label>Channel<select id="channel"><option value="stable">Stable</option><option value="main">Main</option></select></label>
+          <p>Uses the frontend served by this engine. No local generation, wheel store or update journal is created.</p>
+          <button class="primary" type="submit">Save remote project</button>
+        </form>
+      </section>
+    </div>
+    <p id="message" role="status" aria-live="polite"></p>
+  </main>
+  <script type="module" src="../dist/project-dialog.js"></script>
+</body>
+</html>

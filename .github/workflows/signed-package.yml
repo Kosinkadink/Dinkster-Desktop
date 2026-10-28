@@ -5,8 +5,6 @@ name: Windows signed package
 # Signing setup and gives testers a signed build without cutting a release.
 
 on:
-  push:
-    tags: ['v*.*.*']
   workflow_dispatch:
 
 permissions:

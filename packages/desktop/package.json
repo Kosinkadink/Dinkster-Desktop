@@ -46,6 +46,7 @@
     "asar": true,
     "files": [
       "dist/**/*",
+      "resources/projects.html",
       "package.json"
     ],
     "extraResources": [

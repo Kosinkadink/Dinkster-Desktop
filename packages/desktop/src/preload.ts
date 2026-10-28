@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ProjectDialogBridge } from './project-dialog.js'
+import type { DesktopProjects } from './projects.js'
 import type {
   DesktopBridge,
   DesktopConnectionCredentials,
@@ -69,3 +71,11 @@ const bridge: DesktopBridge = {
 }
 
 contextBridge.exposeInMainWorld('dinksterDesktop', bridge)
+
+const projects: ProjectDialogBridge = {
+  list: () => ipcRenderer.invoke('desktop:projects-list') as Promise<DesktopProjects>,
+  save: (project) => ipcRenderer.invoke('desktop:projects-save', project) as Promise<void>,
+  remove: (projectId) => ipcRenderer.invoke('desktop:projects-remove', projectId) as Promise<void>,
+  open: (projectId, engineId) => ipcRenderer.invoke('desktop:projects-open', projectId, engineId) as Promise<void>,
+}
+contextBridge.exposeInMainWorld('dinksterProjects', projects)

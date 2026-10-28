@@ -376,7 +376,8 @@ describe('desktop package inputs', () => {
     }
     const steps = workflow.jobs.release.steps
     const acquire = steps.find((step) => step.name === 'Download pinned backend and Aimdo')!
-    expect(steps.find((step) => step.run !== undefined)).toBe(acquire)
+    expect(steps.find((step) => step.run !== undefined)?.name).toBe('Validate version tag')
+    expect(steps.find((step) => step.env?.['GH_TOKEN'] !== undefined)).toBe(acquire)
     expect(acquire.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
     expect(acquire.run).not.toMatch(/DINKSTER_RELEASE_READ_TOKEN|githubtoken|\$env:GH_TOKEN\s*=/i)
     const signing = steps.find((step) => step.name === 'Package and sign with Artifact Signing')!

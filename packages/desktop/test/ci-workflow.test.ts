@@ -10,6 +10,7 @@ const yaml = createRequire(import.meta.url)('js-yaml') as {
 }
 interface Step {
   id?: string
+  if?: string
   name?: string
   uses?: string
   run?: string
@@ -59,10 +60,11 @@ describe('desktop workflows', () => {
   })
 
   it('gates tag and manual signing on the same owner-approved environment without publishing', () => {
-    expect(signed.on).toEqual({
+    expect(release.on).toEqual({
       push: { tags: ['v*.*.*'] },
       workflow_dispatch: null,
     })
+    expect(signed.on).toEqual({ workflow_dispatch: null })
     expect(signed.permissions).toEqual({ contents: 'read' })
     expect(Object.keys(signed.jobs)).toEqual(['package'])
     const job = signed.jobs['package']!
@@ -246,14 +248,17 @@ describe('desktop workflows', () => {
     )
   })
 
-  it('validates the exact Desktop main commit before publication', () => {
+  it('validates main and tag commits and keeps test-tag output without publishing', () => {
     expect(release.jobs['validation']).toEqual({
-      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && github.ref == 'refs/heads/main'",
+      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))",
       uses: './.github/workflows/full-validation.yml',
     })
     expect(release.jobs['release']!.needs).toBe('validation')
     expect(release.jobs['release']!.if).toBe(release.jobs['validation']!.if)
-    expect(release.jobs['release']!.steps).toBeDefined()
+    const steps = release.jobs['release']!.steps!
+    expect(steps.find((step) => step.name === 'Keep the signed installer')?.with?.['name']).toBe('desktop-signed-installer')
+    expect(steps.find((step) => step.name === 'Create release')?.if).toBe("github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')")
+    expect(steps.filter((step) => step.run?.includes('gh release create'))).toHaveLength(1)
   })
 
   it('keeps published verification disabled and read-only', () => {

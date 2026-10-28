@@ -1,4 +1,5 @@
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFile, rm, writeFile } from 'node:fs/promises'
@@ -37,6 +38,7 @@ import {
 } from './remote-workers.js'
 import { ENGINE_RELEASE } from './release.js'
 import { configureUpdateFeed } from './update-feed.js'
+import { readProjects, saveProject, writeProjects } from './projects.js'
 import { createWebHost, type WebHost } from './web-host.js'
 import { writeFileAtomic } from './atomic-file.js'
 import { denyRendererPermissions, secureWebPreferences } from './security.js'
@@ -67,6 +69,8 @@ import type {
 
 const { autoUpdater } = updater
 let window: BrowserWindow | undefined
+let projectWindow: BrowserWindow | undefined
+const remoteWindows = new Set<BrowserWindow>()
 const windows = new Map<string, BrowserWindow>()
 const redockingWindows = new Set<string>()
 let windowLayout: WindowLayout = defaultWindowLayout()
@@ -304,6 +308,67 @@ function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
   }
 }
 
+const projectDialogPath = join(app.getAppPath(), 'resources', 'projects.html')
+
+function trustedProjectIpc(event: Electron.IpcMainInvokeEvent): void {
+  if (!projectWindow || event.sender !== projectWindow.webContents
+    || event.senderFrame !== projectWindow.webContents.mainFrame
+    || event.senderFrame.url !== pathToFileURL(projectDialogPath).href) {
+    throw new Error('project capability denied for an untrusted renderer')
+  }
+}
+
+async function createProjectManager(): Promise<void> {
+  if (projectWindow && !projectWindow.isDestroyed()) { projectWindow.show(); return }
+  projectWindow = new BrowserWindow({
+    width: 1040, height: 760, minWidth: 600, minHeight: 500,
+    title: 'Dinkster projects', backgroundColor: '#171717',
+    webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
+  })
+  denyRendererPermissions(projectWindow.webContents.session)
+  projectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  projectWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+  projectWindow.on('closed', () => { projectWindow = undefined })
+  await projectWindow.loadFile(projectDialogPath)
+}
+
+ipcMain.handle('desktop:projects-list', async (event) => {
+  trustedProjectIpc(event)
+  return readProjects(dataDirectory)
+})
+ipcMain.handle('desktop:projects-save', (event, value: unknown) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  await writeProjects(dataDirectory, saveProject(await readProjects(dataDirectory), value))
+}))
+ipcMain.handle('desktop:projects-remove', (event, projectId: unknown) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  if (!validProjectId(projectId)) throw new Error('invalid project id')
+  const projects = await readProjects(dataDirectory)
+  await writeProjects(dataDirectory, { ...projects, projects: projects.projects.filter((project) => project.id !== projectId) })
+}))
+ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: unknown) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  if (!validProjectId(projectId) || !validProjectId(engineId)) throw new Error('invalid engine binding')
+  const project = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === projectId)
+  const engine = project?.engines.find((candidate) => candidate.id === engineId)
+  if (!engine) throw new Error('engine binding not found')
+  if (engine.kind !== 'remote') throw new Error('Open a local project through its environment plan first')
+  const remote = new BrowserWindow({
+    width: 1440, height: 900, title: `${project!.name} - ${engine.name}`,
+    backgroundColor: '#171717',
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
+  })
+  remoteWindows.add(remote)
+  denyRendererPermissions(remote.webContents.session)
+  remote.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  remote.webContents.on('will-navigate', (navigation, url) => {
+    if (new URL(url).origin !== new URL(engine.url).origin) navigation.preventDefault()
+  })
+  remote.on('closed', () => remoteWindows.delete(remote))
+  try { await remote.loadURL(engine.url) }
+  catch (error) { remote.destroy(); throw error }
+}))
+
 async function gpuCheck(): Promise<SystemCheck['gpu']> {
   try {
     const { stdout } = await executeFile('nvidia-smi', [
@@ -334,6 +399,9 @@ async function shutdown(): Promise<void> {
   try {
     window = undefined
     await flushWindowLayout()
+    projectWindow?.destroy()
+    for (const managed of remoteWindows) managed.destroy()
+    remoteWindows.clear()
     for (const managed of windows.values()) managed.destroy()
     windows.clear()
     tray?.destroy()
@@ -1007,6 +1075,20 @@ app.on('open-url', (event, url) => {
 
 if (primaryInstance) app.whenReady().then(async () => {
   lifecycleLease = await acquireLifecycleLease(dataDirectory)
+  if (!process.env['DINKSTER_ENGINE_SOURCE']) {
+    credentialStore = await CredentialStore.open(join(dataDirectory, 'credentials.json'), desktopCredentialCipher())
+    applyCredentialHeaders()
+    await createProjectManager()
+    tray = new Tray(trayImage())
+    tray.setToolTip('Dinkster Desktop')
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Projects', click: () => { void createProjectManager() } },
+      { type: 'separator' },
+      { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
+    ]))
+    tray.on('double-click', () => { void createProjectManager() })
+    return
+  }
   backendPort = await availableLoopbackPort()
   const persistedDiagnostic = (message: string): void => { void shellLog.append(message) }
   const interrupted = await readEngineOperation(dataDirectory, persistedDiagnostic)

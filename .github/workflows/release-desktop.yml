@@ -1,6 +1,8 @@
 name: Windows Desktop release
 
 on:
+  push:
+    tags: ['v*.*.*']
   workflow_dispatch:
 
 permissions:
@@ -15,18 +17,26 @@ concurrency:
 
 jobs:
   validation:
-    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.ref == 'refs/heads/main'
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     uses: ./.github/workflows/full-validation.yml
 
   release:
     needs: validation
-    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.ref == 'refs/heads/main'
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     environment: desktop-signing
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
     timeout-minutes: 90
     permissions:
       contents: write
     steps:
+      - name: Validate version tag
+        shell: pwsh
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          if ($env:RELEASE_REF.StartsWith('refs/tags/') -and $env:RELEASE_REF -notmatch '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$') {
+            throw 'Expected vX.Y.Z or vX.Y.Z-test-suffix; refusing to sign an unrelated tag'
+          }
       - uses: actions/checkout@v4
         with:
           clean: true
@@ -123,7 +133,18 @@ jobs:
           @{ repository = 'Kosinkadink/Dinkster-Desktop'; commit = $env:GITHUB_SHA; version = $package.version; backend = $pin; archive = $installer.Name; sha256 = $hash; size = $installer.Length } | ConvertTo-Json -Depth 8 | Set-Content packages/desktop/release/desktop-release.json
           "$hash  $($installer.Name)" | Set-Content packages/desktop/release/SHA256SUMS
           "DESKTOP_TAG=desktop-v$($package.version)" >> $env:GITHUB_ENV
+      - name: Keep the signed installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-signed-installer
+          path: |
+            packages/desktop/release/*-Setup.exe
+            packages/desktop/release/desktop-release.json
+            packages/desktop/release/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error
       - name: Create release
+        if: github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

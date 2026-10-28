@@ -109,7 +109,7 @@ Environments -> New environment, use the exact name `desktop-signing`:
 - Store the three Azure values as environment secrets, never in source or
   workflow inputs. Do not copy their values into an issue or build log.
 
-Both signing workflows name this environment at job level. The tag workflow
+Both signing workflows name this environment at job level. A prerelease tag
 keeps the signed installer as an artifact and does not publish a release. A
 manual run waits for the identical approval. Before approving, inspect the
 run's exact commit and its workflow source; stop if either differs from the
@@ -120,8 +120,8 @@ from the YAML alone.
 
 ### Sign in GitHub Actions without releasing
 
-The **Windows signed package** workflow (`signed-package.yml`) runs on
-`vX.Y.Z` tag pushes and can also be started manually from an allowed branch.
+The **Windows signed package** workflow (`signed-package.yml`) runs manually
+from an allowed branch.
 Its signing job pauses at `desktop-signing` for owner approval before gaining
 access to signing secrets. It builds the pinned frontend,
 packages with `package:win:signed`, verifies both signatures, installs into a
@@ -131,9 +131,14 @@ creates a tag or release and does not run the main validation gate, so it is
 the fastest way to prove the signing setup or to hand testers a signed build.
 Actions -> Windows signed package -> Run workflow -> pick an allowed branch.
 
-The **Windows Desktop release** workflow adds the gate and the publication:
-it runs the full main validation first, then the same signing and
-verification steps, then creates the GitHub release. The version is not an
+The **Windows Desktop release** workflow runs on `vX.Y.Z` and
+`vX.Y.Z-test-suffix` tag pushes, or manually on main. It runs full validation
+through `workflow_call` at that exact commit, then waits for owner approval
+before the signing and installed-app checks. Every successful run keeps the
+signed installer and checksums as the `desktop-signed-installer` artifact.
+A tag with a prerelease suffix never creates a GitHub release: use that path
+to prove the approval pause and full validation without publication. Stable
+tags and manual main runs additionally create the GitHub release. The version is not an
 input: it is `version` in
 [packages/desktop/package.json](../packages/desktop/package.json), and the
 tag is `desktop-v<version>`. The workflow refuses to publish when that tag

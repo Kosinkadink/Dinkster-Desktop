@@ -102,6 +102,11 @@ export interface DesktopRemoteWorkerSave extends DesktopRemoteWorker {
   readonly tlsCaFileGrant?: string
 }
 
+export interface DesktopFileCapabilities {
+  readonly nativeFolderChoice: boolean
+  readonly reveal: boolean
+}
+
 export interface DesktopBridge {
   locale(): Promise<string>
   status(): Promise<LifecycleStatus>
@@ -110,7 +115,9 @@ export interface DesktopBridge {
   selectEngine(commit: string, variant: EngineAccelerator): Promise<void>
   checkForUpdates(): Promise<void>
   installUpdate(): Promise<void>
-  chooseDirectory(): Promise<string | undefined>
+  fileCapabilities(backendUrl: string): Promise<DesktopFileCapabilities>
+  chooseDirectory(backendUrl: string): Promise<string | undefined>
+  revealFile(backendUrl: string, path: string): Promise<{ mode: 'selected' | 'folder' }>
   exportSnapshot(): Promise<string | undefined>
   importSnapshot(): Promise<unknown | undefined>
   systemCheck(): Promise<DesktopSystemCheck>

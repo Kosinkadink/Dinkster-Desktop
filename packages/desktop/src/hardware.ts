@@ -150,7 +150,7 @@ export function planVariant(
     return { selected: choice.variant, reason: choice.reason, choices }
   }
   return {
-    reason: [detection.diagnostic, ...choices.filter((choice) => variants.find((manifest) => manifest.variant === choice.variant)?.nvidia !== null).map((choice) => choice.reason), 'Choose CPU explicitly or change the assigned hardware/driver.'].filter(Boolean).join(' '),
+    reason: [detection.diagnostic, ...choices.filter((choice) => variants.find((manifest) => manifest.variant === choice.variant)?.nvidia !== null).map((choice) => `${choice.variant}: ${choice.reason}`), 'Choose CPU explicitly or change the assigned hardware/driver.'].filter(Boolean).join('\n'),
     choices,
   }
 }

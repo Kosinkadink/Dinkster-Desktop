@@ -56,6 +56,8 @@ describe('project hardware plan', () => {
     const plan = planVariant(manifests, { gpus: old }, ['1'], 'win32')
     expect(plan.selected).toBeUndefined()
     expect(plan.reason).toContain('Requires NVIDIA driver 525')
+    expect(plan.reason).toContain('win-nvidia-cu126: Compute GPU: driver 524.99. Requires NVIDIA driver 525')
+    expect(plan.reason).toContain('win-nvidia: Compute GPU: driver 524.99. Requires NVIDIA driver 580')
     const transitional = gpus.map((gpu) => ({ ...gpu, driver: '579.99' }))
     expect(planVariant(manifests, { gpus: transitional }, ['1'], 'win32').selected).toBe('win-nvidia-cu126')
     expect(planVariant(manifests, { gpus: gpus.map((gpu) => ({ ...gpu, driver: '525.0' })) }, ['1'], 'win32').selected).toBe('win-nvidia-cu126')

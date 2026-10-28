@@ -8,7 +8,8 @@ import { _electron as electron } from '@playwright/test'
 import backend from '../../desktop/src/backend-release.json' with { type: 'json' }
 import { ENGINE_RELEASE } from '../../desktop/src/release.ts'
 
-const advertisedWireVersions = [21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44]
+const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
+const schemaWireVersion = 1
 
 const executablePath = process.env.DINKSTER_DESKTOP_EXECUTABLE
 const directory = process.env.DINKSTER_DESKTOP_VERIFY_ROOT
@@ -68,17 +69,21 @@ print(json.dumps(result))
 `], { env, cwd: source, windowsHide: true, timeout: 120_000 })
     const versions = JSON.parse(stdout.trim())
     if (entry.name === 'host') {
-      assert.ok(versions.torch, 'Host Torch must import')
-      assert.equal(versions.aimdo, backend.aimdo.version)
+      if (variant === 'cuda') assert.ok(versions.torch, 'CUDA host Torch must import')
+      else {
+        assert.equal(versions.torch, undefined, 'CPU host must remain Torch-free')
+        assert.equal(versions.torchvision, undefined, 'CPU host must remain torchvision-free')
+      }
+      assert.equal(versions.aimdo, aimdo.version)
     }
     if (versions.torch) {
-      const expected = variant === 'cuda' ? backend.cudaTorch.version
-        : `${backend.cudaTorch.version.split('+')[0]}+cpu`
+      const expected = variant === 'cuda' ? cudaTorch.version
+        : `${cudaTorch.version.split('+')[0]}+cpu`
       assert.equal(versions.torch, expected, `${entry.name} Torch`)
-      assert.equal(versions.cuda, variant === 'cuda' ? backend.cudaTorch.cudaVersion : null, `${entry.name} CUDA`)
+      assert.equal(versions.cuda, variant === 'cuda' ? cudaTorch.cudaVersion : null, `${entry.name} CUDA`)
     }
-    if (versions.torchvision) assert.equal(versions.torchvision, `${backend.cudaTorch.torchvisionVersion}+${variant === 'cuda' ? backend.cudaTorch.version.split('+')[1] : 'cpu'}`, `${entry.name} torchvision`)
-    if (versions.aimdo) assert.equal(versions.aimdo, backend.aimdo.version, `${entry.name} Aimdo`)
+    if (versions.torchvision) assert.equal(versions.torchvision, `${cudaTorch.torchvisionVersion}+${variant === 'cuda' ? cudaTorch.version.split('+')[1] : 'cpu'}`, `${entry.name} torchvision`)
+    if (versions.aimdo) assert.equal(versions.aimdo, aimdo.version, `${entry.name} Aimdo`)
     results.push({ name: entry.name, ...versions })
   }
   assert.ok(results.some((entry) => entry.name !== 'host' && entry.torch), 'Isolated worker Torch must import')
@@ -131,14 +136,14 @@ for (const launch of ['first-run', 'restart', 'mismatched-profile']) {
       return response.json()
     })
     assert.equal(health.state, 'ready')
-    const catalog = await page.evaluate(async (versions) => {
-      const response = await fetch(`/api/nodes?wire=${versions.join(',')}`)
+    const catalog = await page.evaluate(async () => {
+      const response = await fetch('/api/nodes')
       if (!response.ok) throw new Error(`Catalog request failed: ${response.status}`)
       return response.json()
-    }, advertisedWireVersions)
+    })
     assert.ok(catalog && typeof catalog === 'object', 'Installed backend must provide a catalog object')
     assert.ok(catalog.nodes && typeof catalog.nodes === 'object' && Object.keys(catalog.nodes).length > 0, 'Installed backend must provide usable nodes')
-    assert.ok(advertisedWireVersions.includes(catalog.dinkster?.schemaWire), 'Installed backend must select an advertised schema wire')
+    assert.equal(catalog.dinkster?.schemaWire, schemaWireVersion, 'Installed backend must use the frontend schema wire')
     const nativeEnvironments = await inspectNativeEnvironments()
     await page.screenshot({ path: join(root, `${launch}.png`), fullPage: true })
     await writeFile(join(root, `${launch}.json`), JSON.stringify({ status, info, health, nodes: Object.keys(catalog.nodes).length, schemaWire: catalog.dinkster.schemaWire, nativeEnvironments }, null, 2))

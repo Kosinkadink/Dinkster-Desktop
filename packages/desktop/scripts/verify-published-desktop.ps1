@@ -30,8 +30,13 @@ function Assert-Artifact($Pin, [string]$Path) {
 }
 
 function Get-ReleaseArtifact($Pin) {
-    gh release download $Pin.releaseTag --repo $Pin.repository --pattern $Pin.archive --dir $assets
-    if ($LASTEXITCODE -ne 0) { throw 'Pinned release download failed' }
+    if ($Pin.url) {
+        if ($Pin.url -notlike 'https://files.pythonhosted.org/packages/*') { throw 'Invalid wheel URL' }
+        Invoke-WebRequest -Uri $Pin.url -OutFile (Join-Path $assets $Pin.archive)
+    } else {
+        gh release download $Pin.releaseTag --repo $Pin.repository --pattern $Pin.archive --dir $assets
+        if ($LASTEXITCODE -ne 0) { throw 'Pinned release download failed' }
+    }
     Assert-Artifact $Pin (Join-Path $assets $Pin.archive)
 }
 

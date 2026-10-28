@@ -13,9 +13,10 @@ if (backend.repository !== 'Kosinkadink/Dinkster' || !/^[a-f0-9]{40}$/.test(back
   throw new Error('Invalid pinned backend release metadata')
 }
 const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
-if (!aimdo || aimdo.repository !== 'Kosinkadink/dinkster-aimdo' || !/^[a-f0-9]{40}$/.test(aimdo.commit) ||
-  !/^\d+\.\d+\.\d+(?:\.post\d+)?$/.test(aimdo.version) || aimdo.releaseTag !== `v${aimdo.version}` ||
-  aimdo.archive !== `dinkster_aimdo-${aimdo.version}-cp39-abi3-win_amd64.whl` || !/^[a-f0-9]{64}$/.test(aimdo.sha256)) {
+if (!aimdo || aimdo.repository !== 'Comfy-Org/comfy-aimdo' ||
+  !/^\d+\.\d+\.\d+$/.test(aimdo.version) || aimdo.releaseTag !== `v${aimdo.version}` ||
+  aimdo.archive !== `comfy_aimdo-${aimdo.version}-cp39-abi3-win_amd64.whl` || !/^[a-f0-9]{64}$/.test(aimdo.sha256) ||
+  !aimdo.url?.startsWith('https://files.pythonhosted.org/packages/')) {
   throw new Error('Invalid pinned Aimdo release metadata')
 }
 const payloads = [
@@ -57,17 +58,28 @@ for (const payload of payloads) {
   if (actual !== pin.sha256) throw new Error(`${pin.archive} checksum mismatch: expected ${pin.sha256}, got ${actual}`)
   if (size !== pin.size) throw new Error(`${pin.archive} size mismatch: expected ${pin.size}, got ${size}`)
 }
-// Only the native profile is needed; do not extract unrelated source assets.
-const profile = `dinkster-backend-${backend.commit}/scripts/desktop_windows_runtime.json`
+// Inspect dependency manifests as well as the native profile without extracting unrelated assets.
+const prefix = `dinkster-backend-${backend.commit}/`
+const profile = `${prefix}scripts/desktop_windows_runtime.json`
 let declared
+let files
 try {
-  const files = unzipSync(await readFile(payloads[0].source), { filter: (entry) => entry.name === profile })
+  files = unzipSync(await readFile(payloads[0].source), {
+    filter: ({ name }) => name.startsWith(prefix) &&
+      (name === profile || /\/(?:uv\.lock|pyproject\.toml|[^/]*-pack\.toml)$/.test(name)),
+  })
   declared = JSON.parse(Buffer.from(files[profile] ?? []).toString('utf8'))
 } catch (cause) {
   throw new Error('Backend ZIP must contain valid scripts/desktop_windows_runtime.json at its pinned source prefix', { cause })
 }
 if (!isDeepStrictEqual(declared, { aimdo, cudaTorch })) {
   throw new Error('Backend ZIP Windows native profile does not match the frontend release pin')
+}
+for (const [name, bytes] of Object.entries(files)) {
+  const source = Buffer.from(bytes).toString('utf8').replace(/^\s*#.*$/gm, '')
+  if (/\bgit\+|\bgit\s*=/i.test(source)) {
+    throw new Error(`Backend ZIP requires Git in ${name.slice(prefix.length)}`)
+  }
 }
 await rm(directory, { recursive: true, force: true })
 await mkdir(directory, { recursive: true })

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import backend from '../src/backend-release.json'
 
 const root = resolve(import.meta.dirname, '../../..')
 const yaml = createRequire(import.meta.url)('js-yaml') as {
@@ -117,7 +118,7 @@ describe('desktop workflows', () => {
   })
 
   it('runs Linux build, packaged Desktop startup, and Windows package lanes on main', () => {
-    expect(full.env?.['DINKSTER_REF']).toMatch(/^[0-9a-f]{40}$/)
+    expect(full.env?.['DINKSTER_REF']).toBe(backend.commit)
     expect(full.on).toMatchObject({
       push: { branches: ['main'] },
       workflow_dispatch: null,
@@ -127,6 +128,7 @@ describe('desktop workflows', () => {
       'linux',
       'desktop-smoke',
       'windows-package',
+      'windows-installed',
       'main-status',
     ])
     expect(full.jobs['linux']!['runs-on']).toBe(
@@ -157,6 +159,22 @@ describe('desktop workflows', () => {
     expect(JSON.stringify(full)).not.toContain('playwright.audit-assets.config.ts')
   })
 
+  it('requires installed Windows first start without Git before main can pass', () => {
+    const installed = full.jobs['windows-installed']!
+    expect(installed.needs).toBe('windows-package')
+    expect(installed['runs-on']).toBe('${{ fromJSON(vars.CI_RUNNERS).windows }}')
+    expect(installed['timeout-minutes']).toBe(60)
+    const download = installed.steps?.find((step) => step.uses === 'actions/download-artifact@v4')
+    expect(download?.with?.['name']).toBe('windows-installer')
+    const upload = full.jobs['windows-package']!.steps?.find((step) => step.uses === 'actions/upload-artifact@v4')
+    expect(upload?.with?.['name']).toBe(download?.with?.['name'])
+    expect(installed.steps?.map((step) => step.run)).toContain('pnpm --filter @dinkster/desktop verify:installed')
+    expect(full.jobs['main-status']!.needs).toContain('windows-installed')
+    const requireSuccess = full.jobs['main-status']!.steps?.find((step) => step.name === 'Require every lane to pass')
+    expect(requireSuccess?.env?.['INSTALLED_RESULT']).toBe('${{ needs.windows-installed.result }}')
+    expect(requireSuccess?.run).toContain('test "$INSTALLED_RESULT" = success')
+  })
+
   it('uses one required variable for every hosted-eligible job', () => {
     for (const workflow of [ci, full, release, signed, published]) {
       for (const [name, job] of Object.entries(workflow.jobs)) {
@@ -175,12 +193,14 @@ describe('desktop workflows', () => {
       'linux',
       'desktop-smoke',
       'windows-package',
+      'windows-installed',
     ])
     const source = status.steps?.flatMap((step) => step.run ?? []).join('\n')
     expect(source).toContain('main-validation-status.json')
     expect(source).toContain('test "$LINUX_RESULT" = success')
     expect(source).toContain('test "$SMOKE_RESULT" = success')
     expect(source).toContain('test "$WINDOWS_RESULT" = success')
+    expect(source).toContain('test "$INSTALLED_RESULT" = success')
   })
 
   it('uses clean checkouts without persisting credentials', () => {

@@ -45,10 +45,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Pinned backend release download failed' }
           "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $destination $pin.archive)" >> $env:GITHUB_ENV
           $aimdo = $pin.desktopWindowsRuntime.aimdo
-          if ($aimdo.repository -ne 'Kosinkadink/dinkster-aimdo' -or $aimdo.releaseTag -ne "v$($aimdo.version)") { throw 'Invalid Aimdo pin' }
-          gh release download $aimdo.releaseTag --repo Kosinkadink/dinkster-aimdo --pattern $aimdo.archive --dir $destination
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned Aimdo wheel download failed' }
-          "DINKSTER_AIMDO_WHEEL=$(Join-Path $destination $aimdo.archive)" >> $env:GITHUB_ENV
+          if ($aimdo.url -notlike 'https://files.pythonhosted.org/packages/*') { throw 'Invalid Aimdo wheel URL' }
+          $wheel = Join-Path $destination $aimdo.archive
+          Invoke-WebRequest -Uri $aimdo.url -OutFile $wheel
+          "DINKSTER_AIMDO_WHEEL=$wheel" >> $env:GITHUB_ENV
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8

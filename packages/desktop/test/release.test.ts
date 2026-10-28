@@ -13,11 +13,11 @@ describe('engine release selection', () => {
     expect(backend).not.toHaveProperty('identityCommit')
     expect(backend).not.toHaveProperty('install')
     const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
-    expect(aimdo.repository).toBe('Kosinkadink/dinkster-aimdo')
-    expect(aimdo.commit).toMatch(/^[a-f0-9]{40}$/)
+    expect(aimdo.repository).toBe('Comfy-Org/comfy-aimdo')
+    expect(new URL(aimdo.url).origin).toBe('https://files.pythonhosted.org')
     expect(aimdo.sha256).toMatch(/^[a-f0-9]{64}$/)
     expect(aimdo.releaseTag).toBe(`v${aimdo.version}`)
-    expect(aimdo.archive).toBe(`dinkster_aimdo-${aimdo.version}-cp39-abi3-win_amd64.whl`)
+    expect(aimdo.archive).toBe(`comfy_aimdo-${aimdo.version}-cp39-abi3-win_amd64.whl`)
     expect(ENGINE_RELEASE).toMatchObject({
       commit: backend.commit,
       sourceSha256: backend.sha256,

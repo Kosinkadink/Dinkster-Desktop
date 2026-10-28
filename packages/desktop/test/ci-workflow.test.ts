@@ -2,7 +2,6 @@ import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import backend from '../src/backend-release.json'
 
 const root = resolve(import.meta.dirname, '../../..')
 const yaml = createRequire(import.meta.url)('js-yaml') as {
@@ -126,7 +125,6 @@ describe('desktop workflows', () => {
   })
 
   it('runs Linux build, packaged Desktop startup, and Windows package lanes on main', () => {
-    expect(full.env?.['DINKSTER_REF']).toBe(backend.commit)
     expect(full.on).toMatchObject({
       push: { branches: ['main'] },
       workflow_dispatch: null,
@@ -161,9 +159,14 @@ describe('desktop workflows', () => {
     const smokeCommands = full.jobs['desktop-smoke']!.steps?.flatMap(
       (step) => step.run ?? [],
     )
-    expect(smokeCommands).toContain('node scripts/prepare-smoke-backend.mjs')
+    expect(smokeCommands).toContain('xvfb-run --auto-servernum node packages/e2e/scripts/verify-environment-client.mjs')
     expect(smokeCommands).toContain('pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never')
-    expect(smokeCommands).toContain('xvfb-run --auto-servernum node scripts/smoke-desktop.mjs')
+    const installed = full.jobs['desktop-smoke']!.steps?.find((step) => step.run?.includes('node packages/e2e/scripts/verify-desktop-install.mjs'))
+    expect(installed?.env).toEqual({
+      DINKSTER_DESKTOP_EXECUTABLE: 'packages/desktop/release/linux-unpacked/dinkster-desktop-smoke',
+      DINKSTER_DESKTOP_VERIFY_ROOT: 'test-results/desktop-smoke/installed',
+    })
+    expect(JSON.stringify(full)).not.toMatch(/prepare-smoke-backend|engine-source|setup-uv|DINKSTER_REF/)
     expect(JSON.stringify(full)).not.toContain('playwright.audit-assets.config.ts')
   })
 

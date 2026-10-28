@@ -23,8 +23,7 @@
   "dependencies": {
     "@decimalturn/toml-patch": "3.0.4",
     "electron-updater": "^6.6.2",
-    "http-proxy": "^1.18.1",
-    "tar": "^7.4.3"
+    "http-proxy": "^1.18.1"
   },
   "devDependencies": {
     "@types/http-proxy": "^1.17.16",
@@ -41,7 +40,14 @@
   "build": {
     "appId": "com.dinkster.desktop",
     "productName": "Dinkster Desktop",
-    "protocols": [{ "name": "Dinkster", "schemes": ["dinkster"] }],
+    "protocols": [
+      {
+        "name": "Dinkster",
+        "schemes": [
+          "dinkster"
+        ]
+      }
+    ],
     "asar": true,
     "files": [
       "dist/**/*",
@@ -57,7 +63,12 @@
     "directories": {
       "output": "release"
     },
-    "publish": [{ "provider": "generic", "url": "https://updates.dinkster.invalid/desktop" }],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://updates.dinkster.invalid/desktop"
+      }
+    ],
     "win": {
       "icon": "resources/icon.ico",
       "target": [

@@ -17,7 +17,6 @@ concurrency:
 
 env:
   DINKSTER_FRONTEND_REF: 08deab9ce537bc8d567cd96ad4a11e014a33d2ff
-  DINKSTER_REF: 5b98f9e7e5f3d0dfa094791de48e1059fe74133b
 
 jobs:
   linux:
@@ -71,13 +70,6 @@ jobs:
           repository: Kosinkadink/Dinkster-Frontend
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
           path: .frontend
-      - uses: actions/checkout@v4
-        with:
-          clean: true
-          persist-credentials: false
-          repository: Kosinkadink/Dinkster
-          ref: ${{ env.DINKSTER_REF }}
-          path: .dinkster
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -89,25 +81,23 @@ jobs:
           cache-dependency-path: |
             pnpm-lock.yaml
             .frontend/pnpm-lock.yaml
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: '3.12'
-          enable-cache: false
       - run: pnpm --dir .frontend install --frozen-lockfile
       - run: pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-environment-client.mjs
-      - run: node scripts/prepare-smoke-backend.mjs
       - run: pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
-      - run: xvfb-run --auto-servernum node scripts/smoke-desktop.mjs
+      - run: mkdir -p test-results/desktop-smoke && xvfb-run --auto-servernum node packages/e2e/scripts/verify-desktop-install.mjs
+        env:
+          DINKSTER_DESKTOP_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
+          DINKSTER_DESKTOP_VERIFY_ROOT: test-results/desktop-smoke/installed
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: desktop-smoke
           path: |
             test-results/desktop-smoke/**/*.png
-            test-results/desktop-smoke/**/logs/*.log
+            test-results/desktop-smoke/**/*.json
           retention-days: 7
 
   windows-package:

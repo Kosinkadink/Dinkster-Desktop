@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, screen, session, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, screen, session, shell, Tray } from 'electron'
 import updater from 'electron-updater'
 import {
   clearEngineOperation,
@@ -28,7 +28,7 @@ import { changeEngineTransaction } from './engine-transaction.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
-import { fileCapabilities, requireLocalFiles } from './local-files.js'
+import { assetLocations, fileCapabilities, requireLocalFiles, revealGrantedFile } from './local-files.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
 import { RotatingLog } from './rotating-log.js'
@@ -897,8 +897,17 @@ ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) =
   const current = runtime
   const eligible = fileCapabilities(backendUrl, webHost?.url, current.status.phase === 'running')
   const owned = eligible.nativeFolderChoice && await current.ownsBackend() && runtime === current
+  const project = windowProject(senderWindowId(event)) ?? 'default'
+  let exactLookup = false
+  if (owned) {
+    try {
+      await assetLocations(`http://127.0.0.1:${backendPort}`, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project)
+      exactLookup = true
+    } catch { /* Folder choice does not depend on exact-file lookup support. */ }
+  }
+  const stillOwned = owned && runtime === current && await current.ownsBackend() && runtime === current
   trustedIpc(event)
-  return fileCapabilities(backendUrl, webHost?.url, owned)
+  return fileCapabilities(backendUrl, webHost?.url, stillOwned, exactLookup && (windowProject(senderWindowId(event)) ?? 'default') === project)
 })
 ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) => {
   await requireManagedFiles(event, backendUrl)
@@ -910,9 +919,27 @@ ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) =>
   await requireManagedFiles(event, backendUrl)
   return result.canceled ? undefined : result.filePaths[0]
 })
-ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown) => {
+ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: unknown) => {
   await requireManagedFiles(event, backendUrl)
-  throw new Error('This backend cannot authorize exact file reveal; copy the server path instead')
+  const current = runtime
+  const project = windowProject(senderWindowId(event)) ?? 'default'
+  const locations = await assetLocations(`http://127.0.0.1:${backendPort}`, asset, project)
+  const location = locations[0]
+  if (!location) throw new Error('No verified local copy exists in this project; copy the server path instead')
+  return revealGrantedFile(location.path, [location.root], shell, async () => {
+    if (runtime !== current || (windowProject(senderWindowId(event)) ?? 'default') !== project) {
+      throw new Error('The shell-managed backend or project changed during file verification')
+    }
+    // Requery after filesystem work: a revoked grant is not reveal authority.
+    const active = await assetLocations(`http://127.0.0.1:${backendPort}`, asset, project)
+    if (!active.some((item) => item.path === location.path && item.root === location.root)) {
+      throw new Error('The local asset location is no longer authorized')
+    }
+    await requireManagedFiles(event, backendUrl)
+    if (runtime !== current || (windowProject(senderWindowId(event)) ?? 'default') !== project) {
+      throw new Error('The shell-managed backend or project changed during file verification')
+    }
+  })
 })
 ipcMain.handle('desktop:export-snapshot', (event) => serializeLifecycle(async () => {
   trustedIpc(event)

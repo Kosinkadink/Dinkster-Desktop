@@ -107,6 +107,12 @@ export interface DesktopFileCapabilities {
   readonly reveal: boolean
 }
 
+export interface DesktopAssetIdentity {
+  readonly digest: string
+  readonly scope: string
+  readonly project: string
+}
+
 export interface DesktopBridge {
   locale(): Promise<string>
   status(): Promise<LifecycleStatus>
@@ -117,7 +123,7 @@ export interface DesktopBridge {
   installUpdate(): Promise<void>
   fileCapabilities(backendUrl: string): Promise<DesktopFileCapabilities>
   chooseDirectory(backendUrl: string): Promise<string | undefined>
-  revealFile(backendUrl: string, path: string): Promise<{ mode: 'selected' | 'folder' }>
+  revealFile(backendUrl: string, asset: DesktopAssetIdentity): Promise<{ mode: 'selected' | 'folder' }>
   exportSnapshot(): Promise<string | undefined>
   importSnapshot(): Promise<unknown | undefined>
   systemCheck(): Promise<DesktopSystemCheck>

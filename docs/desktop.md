@@ -25,6 +25,25 @@ relative roots, unsupported channels, and roots assigned more than once.
 The registry does not own models, outputs, history, settings, generation files,
 or install commands. Those remain outside this Desktop metadata boundary.
 
+## Native asset files
+
+`fileCapabilities(backendUrl)` reports folder choice and exact-file reveal for
+the running shell-managed connection. Unsupported or denied exact lookup does
+not disable folder choice. Remote connections have neither capability.
+
+`revealFile(backendUrl, {digest, scope, project})` accepts a BLAKE3 identity,
+`local` scope, and the requesting window's project. It never accepts renderer
+host paths or roots. The main process asks its backend for verified exact
+locations, checks canonical containment under active grants, and rechecks
+authorization before opening the file manager. Windows and macOS select the
+file; other platforms open its containing folder. Missing copies and denied
+or unsupported lookups reject rather than opening an unverified directory.
+
+This requires the backend's scoped/project exact-location route. A successful
+empty result is distinct from missing support or a failed request. Output
+files without retained project observations are not reveal targets merely
+because an output directory is granted.
+
 ## Generation swap
 
 Desktop coordinates an update through injected engine operations so it does not

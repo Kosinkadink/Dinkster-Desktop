@@ -69,13 +69,16 @@
               <option value="rollback">Rollback</option><option value="move">Move</option>
               <option value="doctor">Check drift</option><option value="gc">Garbage collection</option>
             </select></label>
-            <label>Variant (explicit choice)<input id="local-variant" placeholder="For example win-cpu or win-nvidia"></label>
+            <label>Variant (override available)<select id="local-variant"><option value="">Keep current / inspect before installing</option></select></label>
             <label>Mirrors, in order (one per line)<textarea id="local-mirrors" rows="2" placeholder="Local mirror directory or HTTPS URL"></textarea></label>
             <label>Wheel store (optional)<input id="local-data" placeholder="Use the registered store for this volume"></label>
             <label>Move destination<input id="local-destination" placeholder="Absolute destination directory"></label>
             <label>Engine name<input id="local-engine" required value="main" maxlength="128"></label>
             <label>Assigned NVIDIA devices (comma-separated)<input id="local-gpus" placeholder="For example 0,1; empty for explicit CPU"></label>
             <label>Supervisor port<input id="local-port" type="number" min="1" max="65535" required value="3639"></label>
+            <div class="actions"><button id="inspect-hardware" type="button">Inspect hardware and variants</button></div>
+            <p id="detected-gpus" style="white-space:pre-wrap"></p>
+            <p id="hardware-reason" style="white-space:pre-wrap" aria-live="polite">Inspect the catalog and assigned GPUs before choosing a variant. CPU is never selected automatically.</p>
             <p>Environment operations run through dinkster-env. Review its plan before any install, update, rollback, move or collection. CPU is never selected automatically.</p>
             <div class="actions"><button type="submit">Review environment plan</button><button id="bind-local" type="button">Save existing binding</button></div>
           </form>

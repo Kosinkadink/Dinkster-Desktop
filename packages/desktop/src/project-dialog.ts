@@ -1,11 +1,13 @@
 import type { DesktopProject, DesktopProjects } from './projects.js'
 import type { EnvironmentRequest, EnvironmentResult } from './environment.js'
+import type { HardwareDetection, VariantPlan } from './hardware.js'
 
 export interface ProjectDialogBridge {
   list(): Promise<DesktopProjects>
   save(project: DesktopProject): Promise<void>
   remove(projectId: string): Promise<void>
   open(projectId: string, engineId: string): Promise<void>
+  inspect(request: EnvironmentRequest): Promise<{ result: EnvironmentResult; hardware: HardwareDetection; plan: VariantPlan }>
   plan(project: DesktopProject, request: EnvironmentRequest): Promise<{ token?: string; result: EnvironmentResult }>
   apply(token: string): Promise<EnvironmentResult>
 }
@@ -19,6 +21,8 @@ const message = document.querySelector<HTMLElement>('#message')!
 let savedProjects: readonly DesktopProject[] = []
 let planToken: string | undefined
 let newProjectId = `project-${crypto.randomUUID()}`
+let hardwarePlan: VariantPlan | undefined
+let catalog: EnvironmentResult | undefined
 
 function field(id: string): string {
   return document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`#${id}`)!.value.trim()
@@ -46,12 +50,12 @@ function showPlan(result: EnvironmentResult, token?: string): void {
 }
 
 async function perform(action: () => Promise<void>): Promise<void> {
-  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
-  for (const button of buttons) button.disabled = true
+  const controls = Array.from(document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>('input, select, textarea, button'))
+  for (const control of controls) control.disabled = true
   message.textContent = ''
   try { await action() }
   catch (error) { message.textContent = error instanceof Error ? error.message : String(error) }
-  finally { for (const button of buttons) button.disabled = false }
+  finally { for (const control of controls) control.disabled = false }
 }
 
 async function render(): Promise<void> {
@@ -135,6 +139,7 @@ function populateLocal(project: DesktopProject | undefined, engineId?: string): 
     'local-port': String(engine?.kind === 'local' ? engine.port ?? 3639 : 3639),
     'local-operation': project ? 'update' : 'setup',
   })) document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`)!.value = value
+  clearHardware()
 }
 
 document.querySelector<HTMLSelectElement>('#local-project')!.addEventListener('change', () => {
@@ -146,6 +151,53 @@ document.querySelector<HTMLFormElement>('#local')!.addEventListener('input', () 
   document.querySelector<HTMLElement>('#plan-panel')!.hidden = true
 })
 
+function clearHardware(): void {
+  planToken = undefined
+  document.querySelector<HTMLElement>('#plan-panel')!.hidden = true
+  hardwarePlan = undefined
+  catalog = undefined
+  document.querySelector<HTMLElement>('#detected-gpus')!.textContent = ''
+  document.querySelector<HTMLSelectElement>('#local-variant')!.replaceChildren(new Option('Keep current / inspect before installing', ''))
+  document.querySelector<HTMLElement>('#hardware-reason')!.textContent = 'Inspect the catalog and assigned GPUs before choosing a variant. CPU is never selected automatically.'
+}
+
+for (const id of ['local-root', 'local-channel', 'local-mirrors', 'local-gpus', 'local-project']) {
+  document.querySelector(`#${id}`)!.addEventListener('input', clearHardware)
+}
+
+function showHardwareReason(override: boolean): void {
+  const selected = field('local-variant')
+  const choice = hardwarePlan?.choices.find((entry) => entry.variant === selected)
+  const bytes = catalog?.variants?.find((entry) => entry.variant === selected)?.downloadBytes
+  document.querySelector<HTMLElement>('#hardware-reason')!.textContent = [
+    choice ? `${override ? 'Explicit override: ' : ''}${choice.reason}` : hardwarePlan?.reason,
+    ...(choice ? hardwarePlan!.choices.filter((entry) => !entry.supported && entry.variant !== selected).map((entry) => `${entry.variant}: ${entry.reason}`) : []),
+    bytes === undefined ? '' : `Download: ${bytes.toLocaleString()} bytes (reported by dinkster-env).`,
+  ].filter(Boolean).join('\n')
+}
+
+document.querySelector<HTMLSelectElement>('#local-variant')!.addEventListener('change', () => showHardwareReason(true))
+document.querySelector<HTMLButtonElement>('#inspect-hardware')!.addEventListener('click', () => {
+  void perform(async () => {
+    clearHardware()
+    const result = await bridge.inspect({
+      root: field('local-root'), operation: 'catalog', channel: field('local-channel') as 'stable' | 'main',
+      mirrors: field('local-mirrors').split('\n').map((mirror) => mirror.trim()).filter(Boolean),
+      gpus: field('local-gpus').split(',').map((gpu) => gpu.trim()).filter(Boolean),
+    })
+    hardwarePlan = result.plan
+    catalog = result.result
+    const selector = document.querySelector<HTMLSelectElement>('#local-variant')!
+    for (const choice of hardwarePlan.choices) selector.add(new Option(`${choice.variant}${choice.supported ? '' : ' (override)'}`, choice.variant))
+    selector.value = hardwarePlan.selected ?? ''
+    document.querySelector<HTMLElement>('#detected-gpus')!.textContent = [
+      ...result.hardware.gpus.map((gpu) => `${gpu.id}: ${gpu.name}; driver ${gpu.driver ?? 'unknown'}; compute ${gpu.computeCapability ?? 'unknown'}`),
+      result.hardware.diagnostic,
+    ].filter(Boolean).join('\n') || 'No NVIDIA GPUs detected. CPU remains an explicit choice.'
+    showHardwareReason(false)
+  })
+})
+
 document.querySelector<HTMLFormElement>('#local')!.addEventListener('submit', (event) => {
   event.preventDefault()
   void perform(async () => {
@@ -155,7 +207,7 @@ document.querySelector<HTMLFormElement>('#local')!.addEventListener('submit', (e
     const request: EnvironmentRequest = {
       root: project.root!, operation,
       ...(['setup', 'update'].includes(operation) ? { channel: project.channel, ...(field('local-variant') ? { variant: field('local-variant') } : {}) } : {}),
-      ...(operation === 'setup' ? { mirrors: field('local-mirrors').split('\n').map((mirror) => mirror.trim()).filter(Boolean), port: Number(field('local-port')) } : {}),
+      ...(operation === 'setup' ? { mirrors: field('local-mirrors').split('\n').map((mirror) => mirror.trim()).filter(Boolean), port: Number(field('local-port')), engine: field('local-engine') } : {}),
       ...(['setup', 'move'].includes(operation) && field('local-data') ? { data: field('local-data') } : {}),
       ...(operation === 'move' ? { destination: field('local-destination') } : {}),
     }

@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process'
 import { isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
+import type { VariantHardware } from './hardware.js'
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'start' | 'stop' | 'status'
+export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'start' | 'stop' | 'status' | 'catalog'
 export type EnvironmentChannel = 'stable' | 'main'
 
 export interface EnvironmentRequest {
@@ -40,11 +41,19 @@ export interface EnvironmentResult {
   readonly changes?: readonly string[]
   readonly error?: string
   readonly engines?: readonly EnvironmentEngine[]
+  readonly channel?: EnvironmentChannel | null
+  readonly variant?: string | null
+  readonly variants?: readonly {
+    readonly variant: string
+    readonly base: string
+    readonly manifest: VariantHardware & { readonly format: 'dinkster.base/1'; readonly id: string }
+    readonly downloadBytes: number
+  }[]
 }
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
-  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'start', 'stop', 'status'].includes(request.operation)) throw new Error('unsupported environment operation')
+  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'start', 'stop', 'status', 'catalog'].includes(request.operation)) throw new Error('unsupported environment operation')
   if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'main') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
   if (request.operation === 'move') {
@@ -78,7 +87,7 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     args.push('--gpu', gpu)
   }
   args.push('--json')
-  if (request.operation !== 'status' && (request.operation !== 'doctor' || request.repair)) args.push(confirmed ? '--yes' : '--plan')
+  if (!['status', 'catalog'].includes(request.operation) && (request.operation !== 'doctor' || request.repair)) args.push(confirmed ? '--yes' : '--plan')
   return args
 }
 
@@ -92,6 +101,8 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     || !(row['current'] === null || (Number.isInteger(row['current']) && Number(row['current']) > 0))
     || !Array.isArray(row['plan']) || !row['plan'].every((line) => typeof line === 'string')
     || (row['url'] !== undefined && typeof row['url'] !== 'string')
+    || (row['channel'] !== undefined && row['channel'] !== null && row['channel'] !== 'stable' && row['channel'] !== 'main')
+    || (row['variant'] !== undefined && row['variant'] !== null && typeof row['variant'] !== 'string')
     || (row['changes'] !== undefined && (!Array.isArray(row['changes']) || !row['changes'].every((line) => typeof line === 'string')))
     || (row['engines'] !== undefined && (!Array.isArray(row['engines']) || !row['engines'].every((engine: unknown) => {
       if (!engine || typeof engine !== 'object') return false
@@ -102,6 +113,24 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     })))
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
+  }
+  if (operation === 'catalog' && row['status'] !== 'error') {
+    if (row['status'] !== 'clean' || !Array.isArray(row['variants']) || !row['variants'].every((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return false
+      const candidate = entry as Record<string, unknown>
+      const manifest = candidate['manifest'] as Record<string, unknown> | undefined
+      if (!manifest || manifest['format'] !== 'dinkster.base/1'
+        || typeof candidate['variant'] !== 'string' || manifest['variant'] !== candidate['variant']
+        || typeof candidate['base'] !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(candidate['base'])
+        || manifest['id'] !== candidate['base']
+        || !Number.isSafeInteger(candidate['downloadBytes']) || Number(candidate['downloadBytes']) < 0) return false
+      const platform = manifest['platform'] as Record<string, unknown> | undefined
+      if (!platform || !['windows', 'linux'].includes(String(platform['os'])) || platform['arch'] !== 'x86_64') return false
+      const nvidia = manifest['nvidia'] as Record<string, unknown> | null | undefined
+      return nvidia === null || (!!nvidia && ['minimumDriver', 'minimumComputeCapability', 'maximumExclusiveComputeCapability'].every((key) =>
+        (key === 'maximumExclusiveComputeCapability' && nvidia[key] === null)
+        || (typeof nvidia[key] === 'string' && /^\d+(\.\d+)*$/.test(nvidia[key]))))
+    })) throw new Error('unsupported dinkster-env catalog response')
   }
   return value as EnvironmentResult
 }

@@ -47,6 +47,13 @@ fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\n');
 const root = args[args.indexOf('--root') + 1];
 const operation = args[args.indexOf('--root') + 2];
 const planned = args.includes('--plan');
+if (operation === 'catalog') {
+  const base = 'sha256:' + 'a'.repeat(64);
+  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'clean',root,current:null,plan:[],channel:'stable',
+    variants:[{variant:'linux-cpu',base,downloadBytes:123456789,manifest:{format:'dinkster.base/1',id:base,variant:'linux-cpu',
+      platform:{os:'linux',arch:'x86_64'},nvidia:null,parts:[]}}]}));
+  process.exit(0);
+}
 const url = ${JSON.stringify(urls)}[operation === 'update' ? 1 : 0];
 console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,
 status:planned ? 'planned' : 'applied',root,current:operation === 'update' ? 2 : 1,
@@ -93,16 +100,37 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
     .click()
   await manager.locator('#local-name').fill('Local studio')
   await manager.locator('#local-root').fill(join(scratch, 'installation'))
-  await manager.locator('#local-variant').fill('linux-cpu')
+  await manager
+    .getByRole('button', { name: 'Inspect hardware and variants' })
+    .click()
+  await expect(
+    manager.locator('#local-variant option[value="linux-cpu"]'),
+  ).toHaveCount(1)
+  await expect(manager.locator('#local-variant')).toHaveValue('')
+  await manager.locator('#local-variant').selectOption('linux-cpu')
+  await expect(manager.locator('#hardware-reason')).toContainText(
+    'Explicit override: CPU',
+  )
+  await expect(manager.locator('#hardware-reason')).toContainText(
+    '123,456,789 bytes',
+  )
+  if (artifacts)
+    await manager.screenshot({
+      path: join(artifacts, 'hardware-cpu-choice.png'),
+      fullPage: true,
+    })
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await manager.getByRole('button', { name: 'Confirm and apply' }).waitFor()
   let history = (await readFile(calls, 'utf8'))
     .trim()
     .split('\n')
     .map(JSON.parse)
-  assert.equal(history.length, 1)
-  assert(history[0].includes('--plan'))
-  assert(!history[0].includes('--yes'))
+  assert.equal(history.length, 2)
+  assert.equal(history[0][2], 'catalog')
+  assert(!history[0].includes('--plan') && !history[0].includes('--yes'))
+  assert(history[1].includes('--plan'))
+  assert(!history[1].includes('--yes'))
+  assert.equal(history[1][history[1].indexOf('--engine') + 1], 'main')
   if (artifacts)
     await manager.screenshot({
       path: join(artifacts, 'local-plan.png'),
@@ -158,6 +186,117 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
   const dataFiles = await readdir(env.DINKSTER_DESKTOP_DATA)
   for (const forbidden of ['generations', 'current', 'store', 'journal'])
     assert(!dataFiles.includes(forbidden))
+  // Windows detection is mocked here; the UI and variant rule run unchanged.
+  for (const driver of ['524.99', '580.10']) {
+    await app.evaluate(
+      async ({ ipcMain }, input) => {
+        const require = process
+          .getBuiltinModule('node:module')
+          .createRequire(input.module)
+        const { planVariant } = require(input.module)
+        ipcMain.removeHandler('desktop:projects-inspect')
+        ipcMain.handle('desktop:projects-inspect', (_event, request) => {
+          const platform = { os: 'windows', arch: 'x86_64' }
+          const manifests = [
+            {
+              variant: 'win-nvidia',
+              platform,
+              nvidia: {
+                minimumDriver: '580',
+                minimumComputeCapability: '7.5',
+                maximumExclusiveComputeCapability: null,
+              },
+            },
+            {
+              variant: 'win-nvidia-cu126',
+              platform,
+              nvidia: {
+                minimumDriver: '525',
+                minimumComputeCapability: '5.0',
+                maximumExclusiveComputeCapability: '10.0',
+              },
+            },
+            { variant: 'win-cpu', platform, nvidia: null },
+          ]
+          const hardware = {
+            gpus: [
+              {
+                id: '0',
+                name: 'Display GPU',
+                driver: input.driver,
+                computeCapability: '6.1',
+              },
+              {
+                id: '1',
+                name: 'Compute GPU',
+                driver: input.driver,
+                computeCapability: '8.9',
+              },
+            ],
+          }
+          return {
+            hardware,
+            plan: planVariant(manifests, hardware, request.gpus, 'win32'),
+            result: {
+              format: 'dinkster.environment-result/1',
+              operation: 'catalog',
+              status: 'clean',
+              root: request.root,
+              current: null,
+              plan: [],
+              variants: manifests.map((manifest) => ({
+                variant: manifest.variant,
+                downloadBytes: 123456789,
+                manifest,
+              })),
+            },
+          }
+        })
+      },
+      {
+        driver,
+        module: join(root, 'packages/desktop/dist/hardware.js'),
+      },
+    )
+    await manager.locator('#local-gpus').fill('1')
+    await manager
+      .getByRole('button', { name: 'Inspect hardware and variants' })
+      .click()
+    if (driver === '524.99') {
+      await expect(manager.locator('#local-variant')).toHaveValue('')
+      await expect(manager.locator('#hardware-reason')).toContainText(
+        'Requires NVIDIA driver 525',
+      )
+      await expect(
+        manager.locator('#local-variant option[value="win-cpu"]'),
+      ).toHaveCount(1)
+      if (artifacts)
+        await manager
+          .locator('#local-settings')
+          .screenshot({ path: join(artifacts, 'hardware-old-driver.png') })
+      await manager.locator('#local-variant').selectOption('win-cpu')
+      await expect(manager.locator('#hardware-reason')).toContainText(
+        'Explicit override: CPU',
+      )
+    } else {
+      await expect(manager.locator('#local-variant')).toHaveValue('win-nvidia')
+      await expect(manager.locator('#hardware-reason')).toContainText(
+        'lowest compute capability 8.9',
+      )
+      if (artifacts)
+        await manager
+          .locator('#local-settings')
+          .screenshot({ path: join(artifacts, 'hardware-assigned-gpu.png') })
+      await manager.locator('#local-variant').selectOption('win-nvidia-cu126')
+      await expect(manager.locator('#hardware-reason')).toContainText(
+        'Explicit override:',
+      )
+      if (artifacts)
+        await manager
+          .locator('#local-settings')
+          .screenshot({ path: join(artifacts, 'hardware-override.png') })
+    }
+  }
   await app.evaluate(({ app: instance }) => {
     instance.quit()
   })

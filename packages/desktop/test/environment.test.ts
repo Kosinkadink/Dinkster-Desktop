@@ -31,14 +31,14 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 describe('Desktop dinkster-env command client', () => {
   it('plans by default and passes explicit confirmation without changing artifact formats', async () => {
     const { root, client } = await commandFixture()
-    const request = { root, operation: 'setup' as const, channel: 'main' as const, variant: 'win-nvidia-cu126', mirrors: [join(root, 'offline mirror'), 'https://releases.dinkster.org'], data: join(root, 'wheel store'), port: 44000 }
+    const request = { root, operation: 'setup' as const, channel: 'main' as const, variant: 'win-nvidia-cu126', mirrors: [join(root, 'offline mirror'), 'https://releases.dinkster.org'], data: join(root, 'wheel store'), port: 44000, engine: 'compute', gpus: ['1'] }
     const plan = await client.run(request)
     expect(plan.status).toBe('planned')
     expect(plan.plan).toEqual(['reuse the shared wheel store'])
     expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
       '--root', root, 'setup', '--channel', 'main', '--variant', 'win-nvidia-cu126',
       '--mirror', join(root, 'offline mirror'), '--mirror', 'https://releases.dinkster.org',
-      '--data', join(root, 'wheel store'), '--port', '44000', '--json', '--plan',
+      '--data', join(root, 'wheel store'), '--port', '44000', '--engine', 'compute', '--gpu', '1', '--json', '--plan',
     ])
     const applied = await client.run(request, true)
     expect(applied.status).toBe('applied')
@@ -59,6 +59,29 @@ describe('Desktop dinkster-env command client', () => {
       if (operation === 'move') expect(args[3]).toBe(join(root, 'moved project'))
     }
     await expect(client.run({ root, operation: 'doctor', repair: true }, true)).rejects.toThrow('generation drift needs offline repair')
+  })
+
+  it('reads catalog discovery without confirmation and preserves producer manifests', async () => {
+    const { root } = await commandFixture()
+    const base = `sha256:${'a'.repeat(64)}`
+    const manifest = { format: 'dinkster.base/1', id: base, variant: 'custom-base', platform: { os: 'windows', arch: 'x86_64' },
+      nvidia: { minimumDriver: '580.10.1', minimumComputeCapability: '7.5', maximumExclusiveComputeCapability: null }, parts: [], python: '3.14.10' }
+    const response = { format: 'dinkster.environment-result/1', operation: 'catalog', status: 'clean', root, current: null, plan: [], channel: 'main',
+      channelManifest: { format: 'dinkster.channel/1', base: { 'custom-base': base } }, variants: [{ variant: 'custom-base', base, manifest, downloadBytes: 123456789 }] }
+    const script = join(root, 'catalog.cjs')
+    await writeFile(script, `require('node:fs').writeFileSync(${JSON.stringify(join(root, 'catalog-args.json'))},JSON.stringify(process.argv.slice(2))); console.log(${JSON.stringify(JSON.stringify(response))});`)
+    const client = new EnvironmentClient(process.execPath, [script])
+    expect(await client.run({ root, operation: 'catalog', channel: 'main', mirrors: [join(root, 'mirror')] }, true)).toEqual(response)
+    expect(JSON.parse(await readFile(join(root, 'catalog-args.json'), 'utf8'))).toEqual(['--root', root, 'catalog', '--channel', 'main', '--mirror', join(root, 'mirror'), '--json'])
+    for (const invalid of [
+      { ...manifest, platform: undefined },
+      { ...manifest, nvidia: { ...manifest.nvidia, minimumDriver: 580 } },
+      { ...manifest, nvidia: { ...manifest.nvidia, maximumExclusiveComputeCapability: '10.x' } },
+      { ...manifest, id: `sha256:${'b'.repeat(64)}` },
+    ]) {
+      await writeFile(script, `console.log(${JSON.stringify(JSON.stringify({ ...response, variants: [{ ...response.variants[0], manifest: invalid }] }))});`)
+      await expect(client.run({ root, operation: 'catalog' })).rejects.toThrow('unsupported dinkster-env catalog response')
+    }
   })
 
   it('starts and stops named engines with scoped devices and consumes new supervisor URLs', async () => {

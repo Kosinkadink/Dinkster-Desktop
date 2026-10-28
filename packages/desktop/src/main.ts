@@ -41,6 +41,7 @@ import { configureUpdateFeed } from './update-feed.js'
 import { ShellUpdater } from './shell-updater.js'
 import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
 import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } from './environment.js'
+import { detectNvidiaGpus, planVariant } from './hardware.js'
 import { createWebHost, type WebHost } from './web-host.js'
 import { writeFileAtomic } from './atomic-file.js'
 import { denyRendererPermissions, secureWebPreferences } from './security.js'
@@ -339,6 +340,16 @@ ipcMain.handle('desktop:projects-remove', (event, projectId: unknown) => seriali
   const projects = await readProjects(dataDirectory)
   await writeProjects(dataDirectory, { ...projects, projects: projects.projects.filter((project) => project.id !== projectId) })
 }))
+ipcMain.handle('desktop:projects-inspect', async (event, input: EnvironmentRequest) => {
+  trustedProjectIpc(event)
+  const request: EnvironmentRequest = { root: input.root, operation: 'catalog',
+    ...(input.channel === undefined ? {} : { channel: input.channel }),
+    ...(input.mirrors === undefined ? {} : { mirrors: input.mirrors }) }
+  const result = await environmentClient.run(request)
+  const hardware = await detectNvidiaGpus()
+  const plan = planVariant((result.variants ?? []).map((entry) => entry.manifest), hardware, input.gpus ?? [], process.platform)
+  return { result, hardware, plan }
+})
 
 function localEngineUrl(project: DesktopProject, engineId: string, result: EnvironmentResult): string {
   const engine = result.engines?.find((candidate) => candidate.name === engineId)
@@ -369,7 +380,10 @@ ipcMain.handle('desktop:projects-plan', (event, value: unknown, input: Environme
   // Validate the shell binding before asking the environment owner to mutate it.
   saveProject(await readProjects(dataDirectory), project)
   if (input.operation === 'move') saveProject(await readProjects(dataDirectory), { ...project, root: input.destination })
-  const request: EnvironmentRequest = { ...input, root: project.root }
+  const engine = project.engines.find((binding) => binding.kind === 'local' && binding.id === input.engine)
+  if (input.operation === 'setup' && (!engine || engine.kind !== 'local')) throw new Error('select the local engine binding before setup')
+  const request: EnvironmentRequest = { ...input, root: project.root,
+    ...(input.operation === 'setup' && engine?.kind === 'local' ? { engine: engine.id, gpus: engine.gpus, port: engine.port } : {}) }
   const result = await environmentClient.run(request)
   if (result.status !== 'planned') return { result }
   const token = randomUUID()

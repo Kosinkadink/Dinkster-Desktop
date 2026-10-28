@@ -231,7 +231,7 @@ describe('desktop workflows', () => {
     }
   })
 
-  it('limits legacy backend downloads to the published verifier and scopes its token', () => {
+  it('excludes backend downloads and scopes published shell acquisition', () => {
     for (const workflow of [full, release, signed, published]) {
       const downloadSteps = Object.values(workflow.jobs).flatMap((job) =>
         (job.steps ?? []).filter(
@@ -240,13 +240,10 @@ describe('desktop workflows', () => {
             step.run?.includes('gh release download'),
         ),
       )
-      if (workflow === published) expect(downloadSteps).toHaveLength(1)
-      else expect(downloadSteps).toEqual([])
-      for (const step of downloadSteps) {
-        expect(step.env?.['GH_TOKEN']).toBe('${{ github.token }}')
-        expect(step.run).not.toContain('DINKSTER_RELEASE_READ_TOKEN')
-      }
+      expect(downloadSteps).toEqual([])
     }
+    const desktop = published.jobs['verify']!.steps?.find((step) => step.run?.includes('-Action DownloadDesktop'))
+    expect(desktop?.env?.['GH_TOKEN']).toBe('${{ github.token }}')
     expect(JSON.stringify([full, release, signed, published])).not.toContain(
       'DINKSTER_RELEASE_READ_TOKEN',
     )

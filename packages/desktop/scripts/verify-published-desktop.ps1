@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][ValidateSet('DownloadBackend', 'DownloadDesktop', 'Install', 'Cleanup')][string]$Action)
+param([Parameter(Mandatory)][ValidateSet('DownloadDesktop', 'Install', 'Cleanup')][string]$Action)
 
 $ErrorActionPreference = 'Stop'
 if ($Action.StartsWith('Download') -and -not $env:GH_TOKEN) {
@@ -12,14 +12,11 @@ $install = Join-Path $root 'app'
 $data = Join-Path $root 'run'
 $owner = Join-Path $root 'owned-install.json'
 $desktop = Get-Content (Join-Path $PSScriptRoot 'published-desktop.json') -Raw | ConvertFrom-Json
-if (-not $env:DINKSTER_PUBLISHED_SOURCE) { throw 'Set DINKSTER_PUBLISHED_SOURCE to the published Desktop checkout' }
-$backend = Get-Content (Join-Path $env:DINKSTER_PUBLISHED_SOURCE 'packages/desktop/src/backend-release.json') -Raw | ConvertFrom-Json
-$aimdo = $backend.desktopWindowsRuntime.aimdo
 if ($desktop.published -ne $true -and $Action -ne 'Cleanup') {
     throw 'No Dinkster Desktop release has been published'
 }
-if ($desktop.published -eq $true -and ($backend.commit -cne $desktop.backendCommit -or $backend.releaseTag -cne "backend-$($desktop.backendCommit)")) {
-    throw 'The published Desktop verifier requires its original backend pin'
+if ($desktop.repository -cne 'Kosinkadink/Dinkster-Desktop') {
+    throw 'The published installer must come from the Desktop repository'
 }
 
 function Assert-Artifact($Pin, [string]$Path) {
@@ -30,26 +27,14 @@ function Assert-Artifact($Pin, [string]$Path) {
 }
 
 function Get-ReleaseArtifact($Pin) {
-    if ($Pin.url) {
-        if ($Pin.url -notlike 'https://files.pythonhosted.org/packages/*') { throw 'Invalid wheel URL' }
-        Invoke-WebRequest -Uri $Pin.url -OutFile (Join-Path $assets $Pin.archive)
-    } else {
-        gh release download $Pin.releaseTag --repo $Pin.repository --pattern $Pin.archive --dir $assets
-        if ($LASTEXITCODE -ne 0) { throw 'Pinned release download failed' }
-    }
+    gh release download $Pin.releaseTag --repo $Pin.repository --pattern $Pin.archive --dir $assets
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned release download failed' }
     Assert-Artifact $Pin (Join-Path $assets $Pin.archive)
 }
 
-if ($Action -eq 'DownloadBackend') {
+if ($Action -eq 'DownloadDesktop') {
     if (Test-Path -LiteralPath $root) { throw 'Verification directory must be fresh' }
     New-Item -ItemType Directory -Path $assets, $proof | Out-Null
-    Get-ReleaseArtifact $backend
-    Get-ReleaseArtifact $aimdo
-    "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $assets $backend.archive)" >> $env:GITHUB_ENV
-    "DINKSTER_AIMDO_WHEEL=$(Join-Path $assets $aimdo.archive)" >> $env:GITHUB_ENV
-    return
-}
-if ($Action -eq 'DownloadDesktop') {
     Get-ReleaseArtifact $desktop
     return
 }
@@ -60,7 +45,7 @@ Get-ChildItem Env: | Where-Object { $_.Name -match 'TOKEN|SECRET|PASSWORD|CREDEN
 $protocol = 'Registry::HKEY_CURRENT_USER\Software\Classes\dinkster'
 $executable = Join-Path $install 'Dinkster Desktop.exe'
 if ($Action -eq 'Install') {
-    foreach ($pin in @($desktop, $backend, $aimdo)) { Assert-Artifact $pin (Join-Path $assets $pin.archive) }
+    Assert-Artifact $desktop (Join-Path $assets $desktop.archive)
     if ((Test-Path $install) -or (Test-Path $data) -or (Test-Path $owner) -or (Test-Path $protocol)) {
         throw 'Refusing to overwrite an existing installation, protocol, or verification environment'
     }
@@ -70,8 +55,7 @@ if ($Action -eq 'Install') {
     @{ install = $install; data = $data } | ConvertTo-Json | Set-Content $owner
     $process = Start-Process -FilePath (Join-Path $assets $desktop.archive) -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$install") -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
-    foreach ($pin in @($backend, $aimdo)) { Assert-Artifact $pin (Join-Path $install "resources/engine/$($pin.archive)") }
-    @{ desktop = $desktop; backend = $backend; embeddedInputsVerified = $true; accelerator = 'cpu' } |
+    @{ desktop = $desktop; installerVerified = $true } |
         ConvertTo-Json -Depth 8 | Set-Content (Join-Path $proof 'artifacts.json')
     "DINKSTER_DESKTOP_EXECUTABLE=$executable" >> $env:GITHUB_ENV
     "DINKSTER_DESKTOP_VERIFY_ROOT=$data" >> $env:GITHUB_ENV

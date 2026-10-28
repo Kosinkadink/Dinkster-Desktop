@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, screen, session, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, screen, session, Tray } from 'electron'
 import updater from 'electron-updater'
 import {
   clearEngineOperation,
@@ -28,7 +28,7 @@ import { changeEngineTransaction } from './engine-transaction.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
-import { fileCapabilities, requireLocalFiles, revealGrantedFile } from './local-files.js'
+import { fileCapabilities, requireLocalFiles } from './local-files.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
 import { RotatingLog } from './rotating-log.js'
@@ -898,20 +898,10 @@ ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) =>
   requireLocalFiles(backendUrl, webHost?.url, runtime.status.phase === 'running')
   return result.canceled ? undefined : result.filePaths[0]
 })
-ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, path: unknown) => {
+ipcMain.handle('desktop:reveal-file', (event, backendUrl: unknown) => {
   trustedIpc(event)
   requireLocalFiles(backendUrl, webHost?.url, runtime.status.phase === 'running')
-  const response = await fetch(`http://127.0.0.1:${backendPort}/api/mounts/locations`, {
-    signal: AbortSignal.timeout(5000), redirect: 'error',
-  })
-  if (!response.ok) throw new Error('The managed backend could not authorize local file access')
-  const locations = await response.json() as { activeMounts?: { path?: unknown }[] }
-  if (!Array.isArray(locations.activeMounts)) throw new Error('The managed backend did not report active grants')
-  const roots = locations.activeMounts.flatMap((mount) => typeof mount.path === 'string' ? [mount.path] : [])
-  roots.push(join(dataDirectory, 'library', 'vault'))
-  trustedIpc(event)
-  requireLocalFiles(backendUrl, webHost?.url, runtime.status.phase === 'running')
-  return revealGrantedFile(path, roots, shell)
+  throw new Error('This backend cannot authorize exact file reveal; copy the server path instead')
 })
 ipcMain.handle('desktop:export-snapshot', (event) => serializeLifecycle(async () => {
   trustedIpc(event)

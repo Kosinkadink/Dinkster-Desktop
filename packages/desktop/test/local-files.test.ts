@@ -7,7 +7,8 @@ import { fileCapabilities, grantedFile, requireLocalFiles, revealGrantedFile } f
 describe('local file authority', () => {
   it('binds capabilities and requests to the running managed connection only', () => {
     const managed = 'http://127.0.0.1:5011'
-    expect(fileCapabilities(`${managed}/`, managed, true)).toEqual({ nativeFolderChoice: true, reveal: true })
+    expect(fileCapabilities(`${managed}/`, managed, true)).toEqual({ nativeFolderChoice: true, reveal: false })
+    expect(() => requireLocalFiles(managed, managed, true)).not.toThrow()
     for (const url of [undefined, '', 'http://localhost:5011', 'http://127.0.0.1:5012', 'https://server.invalid', `${managed}/remote`, `${managed}?backend=remote`, 'http://user:password@127.0.0.1:5011']) {
       expect(fileCapabilities(url, managed, true)).toEqual({ nativeFolderChoice: false, reveal: false })
       expect(() => requireLocalFiles(url, managed, true)).toThrow('shell-managed backend')

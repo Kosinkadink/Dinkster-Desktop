@@ -12,11 +12,12 @@ export function fileCapabilities(backendUrl: unknown, managedUrl: string | undef
         && candidate.origin === managed.origin && candidate.pathname === '/'
     }
   } catch { /* An invalid connection has no native file authority. */ }
-  return { nativeFolderChoice: local, reveal: local }
+  // The pinned backend has no exact scoped asset-to-file lookup.
+  return { nativeFolderChoice: local, reveal: false }
 }
 
 export function requireLocalFiles(backendUrl: unknown, managedUrl: string | undefined, running: boolean): void {
-  if (!fileCapabilities(backendUrl, managedUrl, running).reveal) {
+  if (!fileCapabilities(backendUrl, managedUrl, running).nativeFolderChoice) {
     throw new Error('Native file access requires the running shell-managed backend')
   }
 }

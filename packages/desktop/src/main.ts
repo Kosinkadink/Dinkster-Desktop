@@ -45,6 +45,7 @@ import { detectNvidiaGpus, planVariant } from './hardware.js'
 import { createWebHost, type WebHost } from './web-host.js'
 import { writeFileAtomic } from './atomic-file.js'
 import { denyRendererPermissions, secureWebPreferences } from './security.js'
+import { installWindowChrome, windowChromeOptions } from './window-chrome.js'
 import {
   addChildWindow,
   addWorkspaceWindow,
@@ -315,10 +316,12 @@ function trustedProjectIpc(event: Electron.IpcMainInvokeEvent): void {
 async function createProjectManager(): Promise<void> {
   if (projectWindow && !projectWindow.isDestroyed()) { projectWindow.show(); return }
   projectWindow = new BrowserWindow({
+    ...windowChromeOptions(),
     width: 1040, height: 760, minWidth: 600, minHeight: 500,
     title: 'Dinkster projects', backgroundColor: '#171717',
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
+  installWindowChrome(projectWindow)
   denyRendererPermissions(projectWindow.webContents.session)
   projectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   projectWindow.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -442,10 +445,12 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
     return
   }
   const remote = new BrowserWindow({
+    ...windowChromeOptions(),
     width: 1440, height: 900, title: `${project!.name} - ${engine.name}`,
     backgroundColor: '#171717',
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
   })
+  installWindowChrome(remote)
   const binding = { projectId, engineId, url }
   remoteWindows.set(remote, binding)
   denyRendererPermissions(remote.webContents.session)
@@ -535,6 +540,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
   const bounds = normalizeWindowBounds(placement.bounds, displayWorkAreas())
   windowLayout = updateWindowPlacement(windowLayout, id, { bounds })
   const managed = new BrowserWindow({
+    ...windowChromeOptions(),
     ...bounds,
     minWidth: Math.min(900, bounds.width),
     minHeight: Math.min(640, bounds.height),
@@ -542,6 +548,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
     backgroundColor: '#171717',
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
+  installWindowChrome(managed)
   windows.set(id, managed)
   if (id === 'primary') window = managed
   denyRendererPermissions(managed.webContents.session)

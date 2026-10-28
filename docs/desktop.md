@@ -63,3 +63,14 @@ three unsuccessful launches for the same version. A successful launch at that
 version clears the pending attempts; a different update remains eligible.
 Corrupt attempt metadata fails closed. Previous installer files are retained.
 Manual update IPC calls report status only; they do not check or install.
+
+## Window controls
+
+Project, engine and managed workspace windows hide the separate native title
+bar. Windows and Linux retain native window controls over the application bar;
+macOS uses inset traffic lights. Desktop reserves the control area in the
+frontend's existing `.topbar` and the project manager's header and makes the
+remaining bar draggable. Bar controls remain interactive. Pages without an
+application bar receive a small host drag strip instead. Styling is reapplied
+after navigation, including generation updates, without giving remote pages
+a Desktop preload or Node access.

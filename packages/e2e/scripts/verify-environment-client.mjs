@@ -27,7 +27,9 @@ try {
     const server = createServer((_request, response) => {
       response.setHeader('Content-Type', 'text/html')
       response.end(
-        `<!doctype html><title>${heading}</title><h1>${heading}</h1>`,
+        `<!doctype html><title>${heading}</title><style>body{margin:0;background:#171717;color:#ededed;font:14px system-ui}.topbar{display:flex;align-items:center;justify-content:space-between;background:#202020}button{font:inherit;padding:8px 12px;color:inherit;background:#303030;border:1px solid #555;border-radius:6px}main{padding:24px}</style>
+        ${heading === 'Updated supervisor' ? '<header class="topbar"><button id="menu" onclick="this.textContent=\'Menu opened\'">Menu</button><span>Dinkster project</span><button id="settings">Settings</button></header>' : ''}
+        <main><h1>${heading}</h1></main>`,
       )
     })
     await new Promise((done) => server.listen(0, '127.0.0.1', done))
@@ -90,6 +92,15 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
   })
   const manager = await app.firstWindow()
   await manager.getByText('No projects yet.', { exact: false }).waitFor()
+  await expect
+    .poll(() =>
+      manager
+        .locator('header')
+        .evaluate((bar) =>
+          getComputedStyle(bar).getPropertyValue('-webkit-app-region'),
+        ),
+    )
+    .toBe('drag')
   if (artifacts)
     await manager.screenshot({
       path: join(artifacts, 'projects-default.png'),
@@ -144,6 +155,17 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
   await manager.getByRole('button', { name: 'Open main', exact: true }).click()
   const engine = await opened
   await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
+  await expect
+    .poll(() =>
+      engine
+        .locator('body')
+        .evaluate((body) => getComputedStyle(body, '::before').content),
+    )
+    .toBe('"Dinkster Desktop"')
+  if (artifacts)
+    await engine.screenshot({
+      path: join(artifacts, 'chrome-remote-fallback.png'),
+    })
   assert.equal(
     await engine.evaluate(() => typeof window.dinksterProjects),
     'undefined',
@@ -155,6 +177,30 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await engine.getByRole('heading', { name: 'Updated supervisor' }).waitFor()
+  await expect
+    .poll(() =>
+      engine
+        .locator('.topbar')
+        .evaluate((bar) =>
+          getComputedStyle(bar).getPropertyValue('-webkit-app-region'),
+        ),
+    )
+    .toBe('drag')
+  await expect
+    .poll(() =>
+      engine
+        .locator('#menu')
+        .evaluate((button) =>
+          getComputedStyle(button).getPropertyValue('-webkit-app-region'),
+        ),
+    )
+    .toBe('no-drag')
+  await engine.getByRole('button', { name: 'Menu', exact: true }).click()
+  await expect(engine.locator('#menu')).toHaveText('Menu opened')
+  if (artifacts)
+    await engine.screenshot({
+      path: join(artifacts, 'chrome-engine-topbar.png'),
+    })
   assert.equal(new URL(engine.url()).origin, urls[1])
   await manager
     .getByText('Environment operation completed.', { exact: false })

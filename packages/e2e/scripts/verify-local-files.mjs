@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { isAbsolute, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from '@playwright/test'
@@ -11,10 +11,22 @@ const source = process.env.DINKSTER_ENGINE_SOURCE
 const commit = process.env.DINKSTER_REF
 const directory = process.env.DINKSTER_DESKTOP_VERIFY_ROOT
 const nativeDialog = process.env.DINKSTER_DESKTOP_VERIFY_NATIVE_DIALOG === '1'
+const networkDirectory = process.env.DINKSTER_DESKTOP_VERIFY_NETWORK_DIRECTORY
 assert.ok(
   source && directory,
   'Set DINKSTER_ENGINE_SOURCE and a fresh DINKSTER_DESKTOP_VERIFY_ROOT',
 )
+if (networkDirectory) {
+  assert.ok(nativeDialog, 'Network selection requires actual native dialogs')
+  assert.ok(
+    isAbsolute(networkDirectory),
+    'Use an absolute mounted network path',
+  )
+  assert.ok(
+    (await stat(networkDirectory)).isDirectory(),
+    'The network directory must already exist',
+  )
+}
 assert.match(
   commit ?? '',
   /^[a-f0-9]{40}$/,
@@ -137,6 +149,15 @@ try {
       ),
       undefined,
     )
+    if (networkDirectory) {
+      console.log(`Select this existing network folder: ${networkDirectory}`)
+      assert.equal(
+        await page.evaluate(() =>
+          window.dinksterDesktop.chooseDirectory(location.origin),
+        ),
+        networkDirectory,
+      )
+    }
   }
   // Script dialog outcomes, not the IPC bridge or backend: cancellation and
   // raw native paths must survive the real renderer/main transport unchanged.
@@ -219,6 +240,24 @@ try {
   for (const rejection of untrusted)
     assert.match(rejection, /untrusted renderer/)
 
+  // Nested frames must not receive their own native-capability bridge.
+  const attached = page.waitForEvent('frameattached')
+  await page.evaluate(() => {
+    const frame = document.createElement('iframe')
+    frame.id = 'native-capability-frame'
+    frame.src = location.origin
+    document.body.append(frame)
+  })
+  const subframe = await attached
+  await subframe.waitForLoadState('domcontentloaded')
+  assert.equal(
+    await subframe.evaluate(() => typeof window.dinksterDesktop),
+    'undefined',
+  )
+  await page.evaluate(() =>
+    document.getElementById('native-capability-frame').remove(),
+  )
+
   // Restart the real backend while the dialog is pending. Cached shell status
   // remains running, but the returned path must lose native authority.
   await app.evaluate(
@@ -283,14 +322,19 @@ try {
       {
         backendCommit: commit,
         nativeFolderDialogVerified: nativeDialog,
+        ...(nativeDialog ? { nativeFolderPath: chosen } : {}),
         scriptedDialogOutcomes: true,
-        nativeNetworkPathsVerified: false,
+        nativeNetworkPathsVerified: nativeDialog && Boolean(networkDirectory),
+        ...(networkDirectory
+          ? { nativeNetworkFolderPath: networkDirectory }
+          : {}),
         nativeFolderChoice: true,
         reveal: local.reveal,
         remoteDenied: true,
         cancellation: true,
         errorsVisible: true,
         untrustedSenderDenied: true,
+        subframeBridgeAbsent: true,
         restartDuringChoiceDenied: true,
       },
       null,
@@ -298,7 +342,9 @@ try {
     ),
   )
   console.log(
-    'Real managed backend and native-file IPC checks passed; native dialog outcomes were scripted',
+    nativeDialog
+      ? 'Real managed backend, native folder dialogs and IPC checks passed'
+      : 'Real managed backend and native-file IPC checks passed; native dialog outcomes were scripted',
   )
 } finally {
   await app.close()

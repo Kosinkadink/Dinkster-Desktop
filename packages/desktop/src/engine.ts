@@ -205,6 +205,23 @@ export class EngineRuntime extends EventEmitter {
     return this.current
   }
 
+  async ownsBackend(): Promise<boolean> {
+    const child = this.child
+    const instance = this.supervisorInstance
+    if (this.current.phase !== 'running' || !child?.pid || child.exitCode !== null || !instance || this.stopping) return false
+    try {
+      const response = await fetch(`http://127.0.0.1:${this.options.port ?? 3639}/supervisor/status`, {
+        signal: AbortSignal.timeout(5000), redirect: 'error',
+      })
+      if (!response.ok) return false
+      const status = await response.json() as { state?: string; instance?: string }
+      return this.child === child && child.exitCode === null && this.supervisorInstance === instance
+        && !this.stopping && this.current.phase === 'running' && status.state === 'ready' && status.instance === instance
+    } catch {
+      return false
+    }
+  }
+
   private update(status: LifecycleStatus): void {
     this.current = status
     this.emit('status', status)

@@ -305,6 +305,14 @@ function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
   }
 }
 
+async function requireManagedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unknown): Promise<void> {
+  trustedIpc(event)
+  requireLocalFiles(backendUrl, webHost?.url, runtime.status.phase === 'running')
+  const current = runtime
+  if (!await current.ownsBackend() || runtime !== current) throw new Error('The shell-managed backend is no longer available')
+  trustedIpc(event)
+}
+
 async function gpuCheck(): Promise<SystemCheck['gpu']> {
   try {
     const { stdout } = await executeFile('nvidia-smi', [
@@ -884,23 +892,26 @@ ipcMain.handle('desktop:install-update', (event) => serializeLifecycle(async () 
   tray?.destroy()
   autoUpdater.quitAndInstall(false, true)
 }))
-ipcMain.handle('desktop:file-capabilities', (event, backendUrl: unknown) => {
+ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) => {
   trustedIpc(event)
-  return fileCapabilities(backendUrl, webHost?.url, runtime.status.phase === 'running')
+  const current = runtime
+  const eligible = fileCapabilities(backendUrl, webHost?.url, current.status.phase === 'running')
+  const owned = eligible.nativeFolderChoice && await current.ownsBackend() && runtime === current
+  trustedIpc(event)
+  return fileCapabilities(backendUrl, webHost?.url, owned)
 })
 ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) => {
-  trustedIpc(event)
-  requireLocalFiles(backendUrl, webHost?.url, runtime.status.phase === 'running')
+  await requireManagedFiles(event, backendUrl)
+  const current = runtime
   const parent = BrowserWindow.fromWebContents(event.sender)
   if (!parent) throw new Error('The requesting window is no longer available')
   const result = await dialog.showOpenDialog(parent, { title: 'Choose an existing asset folder', properties: ['openDirectory'] })
-  trustedIpc(event)
-  requireLocalFiles(backendUrl, webHost?.url, runtime.status.phase === 'running')
+  if (runtime !== current) throw new Error('The shell-managed backend changed during folder selection')
+  await requireManagedFiles(event, backendUrl)
   return result.canceled ? undefined : result.filePaths[0]
 })
-ipcMain.handle('desktop:reveal-file', (event, backendUrl: unknown) => {
-  trustedIpc(event)
-  requireLocalFiles(backendUrl, webHost?.url, runtime.status.phase === 'running')
+ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown) => {
+  await requireManagedFiles(event, backendUrl)
   throw new Error('This backend cannot authorize exact file reveal; copy the server path instead')
 })
 ipcMain.handle('desktop:export-snapshot', (event) => serializeLifecycle(async () => {

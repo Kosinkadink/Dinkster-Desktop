@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { createServer, type Server } from 'node:http'
 import * as childProcess from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EngineRuntime, supervisorArguments, waitForSupervisorReady, type EngineRuntimeOptions } from '../src/engine.js'
+import { availableLoopbackPort, EngineRuntime, supervisorArguments, waitForSupervisorReady, type EngineRuntimeOptions } from '../src/engine.js'
 import * as release from '../src/release.js'
 import { ENGINE_RELEASE } from '../src/release.js'
 import * as io from '../src/io.js'
@@ -91,6 +91,40 @@ function waitForPhase(runtime: EngineRuntime, phase: string): Promise<void> {
 }
 
 describe('EngineRuntime lifecycle', () => {
+  it('confirms live supervisor identity rather than trusting a cached running state', async () => {
+    const { data, source } = await cachedFixture()
+    await writeFile(join(source, 'run'), '')
+    const responsePath = join(source, 'supervisor-response.json')
+    await writeFile(responsePath, JSON.stringify({ state: 'ready' }))
+    const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
+    vi.mocked(childProcess.spawn).mockImplementation((command, args, options) => {
+      if (!command.includes('dinkster-supervisor')) return actual.spawn(command, args!, options!)
+      const port = args![args!.indexOf('--port') + 1]
+      const instance = args![args!.indexOf('--instance') + 1]
+      return actual.spawn(process.execPath, ['-e', `
+        const fs = require('node:fs')
+        const http = require('node:http')
+        http.createServer((request, response) => {
+          response.writeHead(200, {'content-type': 'application/json'})
+          response.end(JSON.stringify({instance: process.argv[2], ...JSON.parse(fs.readFileSync(process.argv[3], 'utf8'))}))
+        }).listen(Number(process.argv[1]), '127.0.0.1')
+      `, port!, instance!, responsePath], options!)
+    })
+    const runtime = createRuntime({ dataDirectory: data, uvExecutable: process.execPath, variant: 'cpu', port: await availableLoopbackPort() })
+    expect(await runtime.ownsBackend()).toBe(false)
+    await runtime.start()
+    expect(await runtime.ownsBackend()).toBe(true)
+    await writeFile(responsePath, JSON.stringify({ state: 'ready', instance: 'a different process' }))
+    expect(runtime.status.phase).toBe('running')
+    expect(await runtime.ownsBackend()).toBe(false)
+    await writeFile(responsePath, JSON.stringify({ state: 'starting' }))
+    expect(await runtime.ownsBackend()).toBe(false)
+    await writeFile(responsePath, JSON.stringify({ state: 'ready' }))
+    expect(await runtime.ownsBackend()).toBe(true)
+    await runtime.stop()
+    expect(await runtime.ownsBackend()).toBe(false)
+  })
+
   it('installs the verified bundled wheel after sync and before catalog preparation', async () => {
     const { data, source } = await fixture(
       `const assert = require('node:assert/strict')

@@ -10,6 +10,7 @@ import { _electron as electron } from '@playwright/test'
 const source = process.env.DINKSTER_ENGINE_SOURCE
 const commit = process.env.DINKSTER_REF
 const directory = process.env.DINKSTER_DESKTOP_VERIFY_ROOT
+const nativeDialog = process.env.DINKSTER_DESKTOP_VERIFY_NATIVE_DIALOG === '1'
 assert.ok(
   source && directory,
   'Set DINKSTER_ENGINE_SOURCE and a fresh DINKSTER_DESKTOP_VERIFY_ROOT',
@@ -119,10 +120,26 @@ try {
   })
   assert.deepEqual(refused, [true, true])
 
-  // Script dialog outcomes, not the IPC bridge or backend: cancellation and
-  // raw native paths must survive the real renderer/main transport unchanged.
   const chosen = join(root, 'local folder with spaces')
   await mkdir(chosen)
+  if (nativeDialog) {
+    console.log(`Select this folder in the native dialog: ${chosen}`)
+    assert.equal(
+      await page.evaluate(() =>
+        window.dinksterDesktop.chooseDirectory(location.origin),
+      ),
+      chosen,
+    )
+    console.log('Cancel the next native folder dialog')
+    assert.equal(
+      await page.evaluate(() =>
+        window.dinksterDesktop.chooseDirectory(location.origin),
+      ),
+      undefined,
+    )
+  }
+  // Script dialog outcomes, not the IPC bridge or backend: cancellation and
+  // raw native paths must survive the real renderer/main transport unchanged.
   await app.evaluate(({ dialog }, path) => {
     globalThis.originalOpenDialog = dialog.showOpenDialog
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] })
@@ -176,9 +193,18 @@ try {
       try {
         await child.loadURL(origin)
         return await child.webContents.executeJavaScript(`(async () => {
-        try { await window.dinksterDesktop.fileCapabilities(location.origin); return 'accepted' }
-        catch (error) { return String(error) }
-      })()`)
+          const bridge = window.dinksterDesktop
+          const results = []
+          for (const action of [
+            () => bridge.fileCapabilities(location.origin),
+            () => bridge.chooseDirectory(location.origin),
+            () => bridge.revealFile(location.origin, '/ungranted'),
+          ]) {
+            try { await action(); results.push('accepted') }
+            catch (error) { results.push(String(error)) }
+          }
+          return results
+        })()`)
       } finally {
         child.destroy()
       }
@@ -189,12 +215,15 @@ try {
     join(root, 'untrusted-sender.json'),
     JSON.stringify(untrusted),
   )
-  assert.match(untrusted, /untrusted renderer/)
+  assert.equal(untrusted.length, 3)
+  for (const rejection of untrusted)
+    assert.match(rejection, /untrusted renderer/)
   await writeFile(
     join(root, 'local-files.json'),
     JSON.stringify(
       {
         backendCommit: commit,
+        nativeFolderDialogVerified: nativeDialog,
         scriptedDialogOutcomes: true,
         nativeNetworkPathsVerified: false,
         nativeFolderChoice: true,

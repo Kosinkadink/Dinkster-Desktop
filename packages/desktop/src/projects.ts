@@ -5,7 +5,7 @@ import { validProjectId } from './window-layout.js'
 import type { EnvironmentChannel } from './environment.js'
 
 export type ProjectEngine =
-  | { readonly id: string; readonly name: string; readonly kind: 'local'; readonly gpus: readonly string[] }
+  | { readonly id: string; readonly name: string; readonly kind: 'local'; readonly gpus: readonly string[]; readonly port?: number }
   | { readonly id: string; readonly name: string; readonly kind: 'remote'; readonly url: string }
 
 export interface DesktopProject {
@@ -47,11 +47,17 @@ export function parseProject(value: unknown): DesktopProject {
     if (engine['kind'] === 'local' && Array.isArray(engine['gpus'])
       && engine['gpus'].every((id: unknown) => typeof id === 'string' && id.length > 0 && id.length < 512)
       && new Set(engine['gpus']).size === engine['gpus'].length) {
-      return { ...common, kind: 'local', gpus: [...engine['gpus']] as string[] }
+      const port = engine['port']
+      if (port !== undefined && (!Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535)) throw new Error('invalid engine port')
+      return { ...common, kind: 'local', gpus: [...engine['gpus']] as string[], ...(port === undefined ? {} : { port: port as number }) }
     }
     throw new Error('invalid engine binding')
   })
   if (new Set(engines.map((engine) => engine.id)).size !== engines.length) throw new Error('duplicate engine id')
+  const localEngines = engines.filter((engine) => engine.kind === 'local')
+  if (localEngines.slice(1).some((engine) => engine.port === undefined)) throw new Error('additional local engines need explicit ports')
+  const ports = localEngines.flatMap((engine) => engine.port === undefined ? [] : [engine.port])
+  if (new Set(ports).size !== ports.length) throw new Error('local engine ports must be distinct')
   const hasLocal = engines.some((engine) => engine.kind === 'local')
   if (hasLocal && (typeof row['root'] !== 'string' || !isAbsolute(row['root']))) throw new Error('a local project needs an absolute install root')
   if (!hasLocal && row['root'] !== undefined) throw new Error('a remote-only project has no local install root')

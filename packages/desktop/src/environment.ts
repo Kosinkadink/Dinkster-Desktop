@@ -4,7 +4,7 @@ import { promisify } from 'node:util'
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc'
+export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'start' | 'stop' | 'status'
 export type EnvironmentChannel = 'stable' | 'main'
 
 export interface EnvironmentRequest {
@@ -17,6 +17,15 @@ export interface EnvironmentRequest {
   readonly port?: number
   readonly destination?: string
   readonly repair?: boolean
+  readonly engine?: string
+  readonly gpus?: readonly string[]
+}
+
+export interface EnvironmentEngine {
+  readonly name: string
+  readonly generation: number
+  readonly state: 'starting' | 'ready' | 'failed' | 'stopped'
+  readonly url?: string
 }
 
 /** The command owner's dinkster.environment-result/1 response, unchanged. */
@@ -28,13 +37,14 @@ export interface EnvironmentResult {
   readonly current: number | null
   readonly plan: readonly string[]
   readonly url?: string
-  readonly changes?: unknown
+  readonly changes?: readonly string[]
   readonly error?: string
+  readonly engines?: readonly EnvironmentEngine[]
 }
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
-  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc'].includes(request.operation)) throw new Error('unsupported environment operation')
+  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'start', 'stop', 'status'].includes(request.operation)) throw new Error('unsupported environment operation')
   if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'main') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
   if (request.operation === 'move') {
@@ -59,8 +69,16 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     args.push('--port', String(request.port))
   }
   if (request.repair) args.push('--repair')
+  if (request.engine !== undefined) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(request.engine)) throw new Error('invalid engine name')
+    args.push('--engine', request.engine)
+  }
+  for (const gpu of request.gpus ?? []) {
+    if (!/^(?:\d+|GPU-[a-fA-F0-9-]+)$/.test(gpu)) throw new Error('invalid GPU device')
+    args.push('--gpu', gpu)
+  }
   args.push('--json')
-  if (request.operation !== 'doctor' || request.repair) args.push(confirmed ? '--yes' : '--plan')
+  if (request.operation !== 'status' && (request.operation !== 'doctor' || request.repair)) args.push(confirmed ? '--yes' : '--plan')
   return args
 }
 
@@ -74,6 +92,14 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     || !(row['current'] === null || (Number.isInteger(row['current']) && Number(row['current']) > 0))
     || !Array.isArray(row['plan']) || !row['plan'].every((line) => typeof line === 'string')
     || (row['url'] !== undefined && typeof row['url'] !== 'string')
+    || (row['changes'] !== undefined && (!Array.isArray(row['changes']) || !row['changes'].every((line) => typeof line === 'string')))
+    || (row['engines'] !== undefined && (!Array.isArray(row['engines']) || !row['engines'].every((engine: unknown) => {
+      if (!engine || typeof engine !== 'object') return false
+      const entry = engine as Record<string, unknown>
+      return typeof entry['name'] === 'string' && Number.isInteger(entry['generation']) && Number(entry['generation']) > 0
+        && ['starting', 'ready', 'failed', 'stopped'].includes(String(entry['state']))
+        && (entry['url'] === undefined || typeof entry['url'] === 'string')
+    })))
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
   }
@@ -83,8 +109,8 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
 /** Desktop owns no generation, current, store or journal writes. */
 export class EnvironmentClient {
   constructor(
-    private readonly executable = process.env['DINKSTER_ENV'] ?? 'dinkster-env',
-    private readonly prefix: readonly string[] = [],
+    private readonly executable = process.env['DINKSTER_TOOLS_PYTHON'] ?? process.env['DINKSTER_ENV'] ?? 'dinkster-env',
+    private readonly prefix: readonly string[] = process.env['DINKSTER_TOOLS_PYTHON'] ? ['-m', 'dinkster_supervisor.environment'] : [],
   ) {}
 
   async run(request: EnvironmentRequest, confirmed = false): Promise<EnvironmentResult> {
@@ -101,7 +127,7 @@ export class EnvironmentClient {
       const failure = error as NodeJS.ErrnoException & { stdout?: string }
       if (failure.stdout) {
         const result = resultFrom(failure.stdout, request.operation)
-        if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))
+        throw new Error(result.error ?? ([...result.plan, ...(result.changes ?? [])].join('\n') || `dinkster-env ${request.operation} failed`))
       }
       if (failure.code === 'ENOENT') throw new Error('dinkster-env is not installed. Install the Dinkster environment tools or select their executable.')
       throw new Error(`dinkster-env ${request.operation} did not complete; inspect the project journal.`)

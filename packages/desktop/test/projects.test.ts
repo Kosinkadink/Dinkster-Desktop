@@ -40,6 +40,11 @@ describe('Desktop project bindings', () => {
     expect(next.projects).toHaveLength(1)
     expect(next.projects[0]).toMatchObject({ channel: 'main', root: join(root, 'install'), engines: project.engines })
     expect(() => saveProject(next, { ...project, id: 'duplicate-root' })).toThrow('already belongs')
+    const first = { id: 'first', name: 'First', kind: 'local', gpus: ['1'], port: 44001 }
+    const second = { id: 'second', name: 'Second', kind: 'local', gpus: ['0'], port: 44002 }
+    expect(parseProject({ ...project, engines: [first, second] }).engines).toEqual([first, second])
+    expect(() => parseProject({ ...project, engines: [first, { ...second, port: undefined }] })).toThrow('explicit ports')
+    expect(() => parseProject({ ...project, engines: [first, { ...second, port: first.port }] })).toThrow('distinct')
     expect(await readdir(root)).toEqual(['projects.json'])
   })
 

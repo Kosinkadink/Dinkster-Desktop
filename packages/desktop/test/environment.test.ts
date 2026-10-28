@@ -20,7 +20,9 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
     console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,
       status:error ? 'error' : args.includes('--plan') ? 'planned' : operation === 'doctor' ? 'clean' : 'applied',
       root, current: 2, plan: ['reuse the shared wheel store'],
-      url: 'http://127.0.0.1:44001', ...(error ? {error} : {})}));
+      url: operation === 'update' ? 'http://127.0.0.1:44002' : 'http://127.0.0.1:44001',
+      engines: [{name:'main',generation:2,state:operation === 'stop' ? 'stopped' : 'ready',
+        url:operation === 'update' ? 'http://127.0.0.1:44002' : 'http://127.0.0.1:44001'}], ...(error ? {error} : {})}));
     if (error) process.exitCode = 1;
   `)
   return { root, client: new EnvironmentClient(process.execPath, [script]) }
@@ -57,6 +59,35 @@ describe('Desktop dinkster-env command client', () => {
       if (operation === 'move') expect(args[3]).toBe(join(root, 'moved project'))
     }
     await expect(client.run({ root, operation: 'doctor', repair: true }, true)).rejects.toThrow('generation drift needs offline repair')
+  })
+
+  it('starts and stops named engines with scoped devices and consumes new supervisor URLs', async () => {
+    const { root, client } = await commandFixture()
+    const started = await client.run({ root, operation: 'start', engine: 'main', port: 44000, gpus: ['1', 'GPU-1234-abcd'] }, true)
+    expect(started.engines).toEqual([{ name: 'main', generation: 2, state: 'ready', url: 'http://127.0.0.1:44001' }])
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+      '--root', root, 'start', '--port', '44000', '--engine', 'main', '--gpu', '1', '--gpu', 'GPU-1234-abcd', '--json', '--yes',
+    ])
+    const updated = await client.run({ root, operation: 'update' }, true)
+    expect(updated.url).toBe('http://127.0.0.1:44002')
+    expect(updated.engines?.[0]?.url).toBe('http://127.0.0.1:44002')
+    await client.run({ root, operation: 'status' })
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'status', '--json'])
+    const stopped = await client.run({ root, operation: 'stop', engine: 'main' }, true)
+    expect(stopped.engines?.[0]?.state).toBe('stopped')
+    await expect(client.run({ root, operation: 'start', engine: '--other' }, true)).rejects.toThrow('invalid engine name')
+    await expect(client.run({ root, operation: 'start', gpus: ['display adapter'] }, true)).rejects.toThrow('invalid GPU device')
+  })
+
+  it('rejects nonzero responses even when their status claims success, and surfaces drift details', async () => {
+    const { root } = await commandFixture()
+    for (const status of ['applied', 'drift']) {
+      const client = new EnvironmentClient(process.execPath, ['-e', `console.log(JSON.stringify({
+        format:'dinkster.environment-result/1',operation:'doctor',status:'${status}',
+        root:${JSON.stringify(root)},current:2,plan:[],changes:['constraints.txt has drifted']
+      }));process.exitCode=1;`, '--'])
+      await expect(client.run({ root, operation: 'doctor' })).rejects.toThrow('constraints.txt has drifted')
+    }
   })
 
   it('rejects unsafe requests and malformed responses instead of treating them as applied', async () => {

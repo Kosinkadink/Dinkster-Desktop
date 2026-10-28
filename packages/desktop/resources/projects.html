@@ -18,16 +18,22 @@
     section, article { border: 1px solid #3c3c3c; border-radius: 10px; padding: 20px; background: #202020; }
     article { margin: 0 0 12px; }
     label { display: grid; gap: 7px; margin-bottom: 16px; color: #d0d0d0; }
-    input, select, button { font: inherit; border-radius: 6px; padding: 10px 12px; }
-    input, select { min-width: 0; width: 100%; border: 1px solid #555; background: #171717; color: inherit; }
-    input:focus, select:focus, button:focus-visible { outline: 2px solid #8be9fd; outline-offset: 2px; }
+    input, select, textarea, button { font: inherit; border-radius: 6px; padding: 10px 12px; }
+    input, select, textarea { min-width: 0; width: 100%; border: 1px solid #555; background: #171717; color: inherit; }
+    input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid #8be9fd; outline-offset: 2px; }
     button { cursor: pointer; border: 1px solid #555; background: #303030; color: #ededed; -webkit-app-region: no-drag; }
     button.primary { background: #8be9fd; color: #111; border-color: #8be9fd; font-weight: 600; }
     button:disabled { opacity: .5; cursor: wait; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
     .endpoint { overflow-wrap: anywhere; font-size: 12px; }
+    details { margin-top: 20px; border: 1px solid #3c3c3c; border-radius: 10px; padding: 20px; background: #202020; }
+    #local { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
+    #local p, #local .actions { grid-column: 1 / -1; }
+    summary { cursor: pointer; font-weight: 600; margin-bottom: 16px; }
+    .plan { margin-top: 24px; border-color: #8be9fd; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.5; }
     #message { min-height: 24px; white-space: pre-wrap; color: #bdeef9; }
-    @media (max-width: 700px) { .columns { grid-template-columns: 1fr; } main { padding: 20px; } }
+    @media (max-width: 700px) { .columns, #local { grid-template-columns: 1fr; } main { padding: 20px; } }
   </style>
 </head>
 <body>
@@ -51,6 +57,34 @@
         </form>
       </section>
     </div>
+        <details id="local-settings">
+          <summary>Manage a local installation</summary>
+          <form id="local">
+            <label>Saved project<select id="local-project"><option value="">New local project</option></select></label>
+            <label>Project name<input id="local-name" required maxlength="128" placeholder="Local studio"></label>
+            <label>Install root<input id="local-root" required placeholder="Absolute project directory"></label>
+            <label>Channel<select id="local-channel"><option value="stable">Stable</option><option value="main">Main</option></select></label>
+            <label>Operation<select id="local-operation">
+              <option value="setup">Install</option><option value="update">Update / change variant</option>
+              <option value="rollback">Rollback</option><option value="move">Move</option>
+              <option value="doctor">Check drift</option><option value="gc">Garbage collection</option>
+            </select></label>
+            <label>Variant (explicit choice)<input id="local-variant" placeholder="For example win-cpu or win-nvidia"></label>
+            <label>Mirrors, in order (one per line)<textarea id="local-mirrors" rows="2" placeholder="Local mirror directory or HTTPS URL"></textarea></label>
+            <label>Wheel store (optional)<input id="local-data" placeholder="Use the registered store for this volume"></label>
+            <label>Move destination<input id="local-destination" placeholder="Absolute destination directory"></label>
+            <label>Engine name<input id="local-engine" required value="main" maxlength="128"></label>
+            <label>Assigned NVIDIA devices (comma-separated)<input id="local-gpus" placeholder="For example 0,1; empty for explicit CPU"></label>
+            <label>Supervisor port<input id="local-port" type="number" min="1" max="65535" required value="3639"></label>
+            <p>Environment operations run through dinkster-env. Review its plan before any install, update, rollback, move or collection. CPU is never selected automatically.</p>
+            <div class="actions"><button type="submit">Review environment plan</button><button id="bind-local" type="button">Save existing binding</button></div>
+          </form>
+        </details>
+    <section id="plan-panel" class="plan" hidden aria-labelledby="plan-title">
+      <h2 id="plan-title">Environment plan</h2>
+      <pre id="plan"></pre>
+      <div class="actions"><button id="apply" class="primary" type="button" hidden>Confirm and apply</button><button id="cancel-plan" type="button">Dismiss</button></div>
+    </section>
     <p id="message" role="status" aria-live="polite"></p>
   </main>
   <script type="module" src="../dist/project-dialog.js"></script>

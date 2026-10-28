@@ -407,11 +407,12 @@ describe('desktop package inputs', () => {
     expect(webCli).toContain('acquireLifecycleLease(dataDirectory)')
   })
 
-  it('requires explicit confirmation before a downloaded update installs', async () => {
+  it('routes shell updates only through the bounded startup controller', async () => {
     const main = await readFile(resolve(root, 'packages/desktop/src/main.ts'), 'utf8')
-    expect(main).toContain('autoUpdater.autoInstallOnAppQuit = false')
-    expect(main).toContain("update.state !== 'ready'")
-    expect(main).toContain('autoUpdater.quitAndInstall(false, true)')
+    expect(main).toContain('await shellUpdater.start()')
+    expect(main).not.toContain('autoUpdater.checkForUpdates(')
+    expect(main).not.toContain('autoUpdater.quitAndInstall(')
+    expect(main.match(/return shellUpdater.manualStatus\(\)/g)).toHaveLength(2)
   })
 
   it('validates the updater files entry against the release artifact', async () => {

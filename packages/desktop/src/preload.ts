@@ -77,5 +77,7 @@ const projects: ProjectDialogBridge = {
   save: (project) => ipcRenderer.invoke('desktop:projects-save', project) as Promise<void>,
   remove: (projectId) => ipcRenderer.invoke('desktop:projects-remove', projectId) as Promise<void>,
   open: (projectId, engineId) => ipcRenderer.invoke('desktop:projects-open', projectId, engineId) as Promise<void>,
+  plan: (project, request) => ipcRenderer.invoke('desktop:projects-plan', project, request),
+  apply: (token) => ipcRenderer.invoke('desktop:projects-apply', token),
 }
 contextBridge.exposeInMainWorld('dinksterProjects', projects)

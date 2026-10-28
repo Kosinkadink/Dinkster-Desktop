@@ -5,6 +5,8 @@ name: Windows signed package
 # Signing setup and gives testers a signed build without cutting a release.
 
 on:
+  push:
+    tags: ['v*.*.*']
   workflow_dispatch:
 
 permissions:
@@ -16,6 +18,7 @@ env:
 jobs:
   package:
     if: github.repository == 'Kosinkadink/Dinkster-Desktop'
+    environment: desktop-signing
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
     timeout-minutes: 60
     defaults:

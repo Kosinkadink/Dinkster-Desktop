@@ -21,6 +21,7 @@ jobs:
   release:
     needs: validation
     if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.ref == 'refs/heads/main'
+    environment: desktop-signing
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
     timeout-minutes: 90
     permissions:

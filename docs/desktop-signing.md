@@ -86,22 +86,50 @@ Follow Microsoft's [role assignment tutorial](https://learn.microsoft.com/en-us/
    (IAM) -> Add role assignment -> **Artifact Signing Certificate Profile
    Signer** -> assign to the app registration. Owner or Contributor on the
    subscription does not grant signing. Allow a few minutes to propagate.
-4. In the GitHub repository settings add Actions secrets `AZURE_TENANT_ID`,
-   `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. The
+4. In the GitHub repository settings add environment secrets `AZURE_TENANT_ID`,
+   `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` to `desktop-signing`, configured
+   below. Remove repository-level copies once the environment copies work, so
+   a job outside the approval environment cannot use the signing identity. The
    [release workflow](../.github/workflows/release-desktop.yml) and the
    [signed package workflow](../.github/workflows/signed-package.yml) pass
    them only to their packaging step.
 
+### Owner approval environment
+
+The repository owner applies these settings; workflows cannot create approval
+protection themselves. In `Kosinkadink/Dinkster-Desktop` -> Settings ->
+Environments -> New environment, use the exact name `desktop-signing`:
+
+- Required reviewers: the repository owner, `Kosinkadink`, only.
+- Leave "Prevent self-review" off: the owner must be able to approve a run
+  they started. Agents never approve a deployment.
+- Disable "Allow administrators to bypass configured protection rules".
+- Deployment branches and tags: selected branches and tags, branch `main`,
+  branch `desktop-env-client-556` for the acceptance run, and tag `v*.*.*`.
+- Store the three Azure values as environment secrets, never in source or
+  workflow inputs. Do not copy their values into an issue or build log.
+
+Both signing workflows name this environment at job level. The tag workflow
+keeps the signed installer as an artifact and does not publish a release. A
+manual run waits for the identical approval. Before approving, inspect the
+run's exact commit and its workflow source; stop if either differs from the
+reviewed head. After approving, require successful publisher-signature and
+installed-app checks and record the run link on the tracking issue. The
+approval pause and signed output require a real run and cannot be certified
+from the YAML alone.
+
 ### Sign in GitHub Actions without releasing
 
-The **Windows signed package** workflow (`signed-package.yml`) is manual and
-runs from any branch of this repository. It builds the pinned frontend,
+The **Windows signed package** workflow (`signed-package.yml`) runs on
+`vX.Y.Z` tag pushes and can also be started manually from an allowed branch.
+Its signing job pauses at `desktop-signing` for owner approval before gaining
+access to signing secrets. It builds the pinned frontend,
 packages with `package:win:signed`, verifies both signatures, installs into a
 scratch directory, exercises first launch, and keeps the installer plus its
 SHA256 as the `desktop-signed-installer` artifact for 14 days. It never
 creates a tag or release and does not run the main validation gate, so it is
 the fastest way to prove the signing setup or to hand testers a signed build.
-Actions -> Windows signed package -> Run workflow -> pick the branch.
+Actions -> Windows signed package -> Run workflow -> pick an allowed branch.
 
 The **Windows Desktop release** workflow adds the gate and the publication:
 it runs the full main validation first, then the same signing and

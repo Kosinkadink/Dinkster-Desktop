@@ -18,6 +18,7 @@ interface Step {
 }
 interface Job {
   if?: string
+  environment?: string
   needs?: string | string[]
   uses?: string
   secrets?: string
@@ -57,11 +58,16 @@ describe('desktop workflows', () => {
     )
   })
 
-  it('signs a branch build on demand without publishing it', () => {
-    expect(signed.on).toEqual({ workflow_dispatch: null })
+  it('gates tag and manual signing on the same owner-approved environment without publishing', () => {
+    expect(signed.on).toEqual({
+      push: { tags: ['v*.*.*'] },
+      workflow_dispatch: null,
+    })
     expect(signed.permissions).toEqual({ contents: 'read' })
     expect(Object.keys(signed.jobs)).toEqual(['package'])
     const job = signed.jobs['package']!
+    expect(job.environment).toBe('desktop-signing')
+    expect(release.jobs['release']!.environment).toBe(job.environment)
     expect(job.if).toBe("github.repository == 'Kosinkadink/Dinkster-Desktop'")
     expect(job.needs).toBeUndefined()
     const names = (steps: Step[] | undefined) =>

@@ -181,19 +181,10 @@ async function flushWindowLayout(): Promise<void> {
   await persistWindowLayout()
 }
 
-const packagedEngine = app.isPackaged
-  ? join(process.resourcesPath, 'engine', ENGINE_RELEASE.sourceArchive)
-  : process.env['DINKSTER_ENGINE_ARCHIVE']
-const packagedAimdo = app.isPackaged
-  ? join(process.resourcesPath, 'engine', ENGINE_RELEASE.aimdo.archive)
-  : process.env['DINKSTER_AIMDO_WHEEL']
 function createRuntime(selected?: EngineSelection): EngineRuntime {
   return new EngineRuntime({
     dataDirectory,
-    ...(packagedEngine ? { sourceArchive: packagedEngine } : {}),
-    ...(packagedAimdo ? { aimdoWheel: packagedAimdo } : {}),
     ...(process.env['DINKSTER_ENGINE_SOURCE'] ? { sourceDirectory: process.env['DINKSTER_ENGINE_SOURCE'] } : {}),
-    ...(process.env['DINKSTER_UV'] ? { uvExecutable: process.env['DINKSTER_UV'] } : {}),
     port: backendPort,
     ...(selected
       ? { variant: selected.variant, releaseCommit: selected.commit }

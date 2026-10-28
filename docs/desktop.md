@@ -36,6 +36,12 @@ Alternatively, `DINKSTER_TOOLS_PYTHON` selects an interpreter containing the
 tools and runs `-m dinkster_supervisor.environment`. Desktop does not install
 missing tools by resolving packages at runtime.
 
+The separate checkout-development launcher (`DINKSTER_ENGINE_SOURCE` or
+`start:web`) requires a provisioned checkout with its `.venv` executables.
+It does not download tools, sync dependencies, install native overlays, or
+prepare catalogs. Prepare that checkout using Dinkster's development setup
+before launching it. This path is not used to install project generations.
+
 ## Shell updates
 
 Shell updates are separate from engine environment updates. The shell updater

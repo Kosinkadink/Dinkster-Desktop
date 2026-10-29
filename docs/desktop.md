@@ -1,5 +1,21 @@
 # Desktop engine boundaries
 
+## Packaged backend
+
+Desktop transitionally installs the checksum-pinned `dinkster-source-<version>.zip`
+from the backend's commit-named `main-<commit>` prerelease. The ZIP has workspace
+files at its root. Packaging verifies its size, SHA-256, Git-free dependency
+manifests and Windows native profile before embedding it. Runtime installation
+continues to use the source workspace's locked Python 3.12 environment; it does
+not install the release's wheels or apply `constraints.txt`.
+
+The backend's supported package contract is wheels plus `constraints.txt`.
+Source installation here is transitional. Main prereleases retain only the
+newest 50 commits. An existing Desktop package keeps its embedded inputs, but
+rebuilding after release pruning requires the exact release manifest and source
+commit to reconstruct and verify the recorded source checksum. Never substitute
+a newer release or an unchecked archive when a pinned input is unavailable.
+
 ## Release mirror
 
 Desktop treats the configured release mirror as a security boundary. Production

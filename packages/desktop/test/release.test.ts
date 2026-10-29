@@ -42,7 +42,7 @@ describe('engine release selection', () => {
   it('uses one locked provisioning path for every accelerator', () => {
     for (const accelerator of ['cpu', 'cuda', 'mps', 'rocm', 'xpu'] as const) {
       expect(syncArguments(accelerator)).toEqual([
-        'sync', '--python', '3.12', '--locked', '--no-dev', '--all-packages',
+        'sync', '--python', '3.12', '--frozen', '--no-dev', '--all-packages',
       ])
     }
   })

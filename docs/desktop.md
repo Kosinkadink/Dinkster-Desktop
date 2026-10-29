@@ -19,6 +19,8 @@ and Linux and the monochrome template with Retina representation on macOS.
 Open "About Dinkster Desktop" from the tray menu to see the accepted wordmark
 and installed shell version. The about surface follows live OS-theme changes.
 The first-run renderer and its installation controls remain Frontend-owned.
+Managed windows retain the native title "Dinkster Desktop" rather than adopting
+the embedded web page's browser title.
 
 ## Release mirror
 

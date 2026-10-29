@@ -382,6 +382,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
     backgroundColor: windowBackground(),
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
+  managed.on('page-title-updated', (event) => event.preventDefault())
   windows.set(id, managed)
   if (id === 'primary') window = managed
   denyRendererPermissions(managed.webContents.session)

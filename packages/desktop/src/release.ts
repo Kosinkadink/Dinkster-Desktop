@@ -43,7 +43,8 @@ export function supportedPlatform(platform = process.platform, arch = process.ar
 }
 
 export function syncArguments(_accelerator: EngineAccelerator): readonly string[] {
-  return ['sync', '--python', '3.12', '--locked', '--no-dev', '--all-packages']
+  // The checksum-verified release carries its lock; avoid resolving metadata for other platforms.
+  return ['sync', '--python', '3.12', '--frozen', '--no-dev', '--all-packages']
 }
 
 export function torchBackend(accelerator: EngineAccelerator, platform = process.platform, arch = process.arch): string | undefined {

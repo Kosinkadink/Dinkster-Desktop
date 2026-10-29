@@ -453,7 +453,13 @@ try {
             args[1]?.method === 'POST'
           ) {
             window.fetch = originalFetch
-            response.clone().json().then(resolve, reject)
+            // The caller aborts its signal after consuming the original body.
+            // Finish observing the clone before handing the response back.
+            try {
+              resolve(await response.clone().json())
+            } catch (error) {
+              reject(error)
+            }
           }
           return response
         }

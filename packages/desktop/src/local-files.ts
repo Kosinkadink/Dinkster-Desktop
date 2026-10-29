@@ -55,7 +55,27 @@ export async function assetLocations(backendUrl: string, input: unknown, project
   })
 }
 
-/** Probe support without a path; only the resolver's explicit refusal permits fallback. */
+/** The operator capability response stays in main; only its boolean is public. */
+export async function dropResolutionSupported(backendUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(new URL('/api/mounts/locations', backendUrl), {
+      redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
+    })
+    // Backends predating the local locations surface cannot resolve drops.
+    if (response.status === 404 || response.status === 405) return false
+    if (response.status !== 200) throw new Error()
+    const body = await response.json()
+    if (!body || !Array.isArray(body.mounts) || !Array.isArray(body.activeMounts)
+      || typeof body.restartRequired !== 'boolean' || !Array.isArray(body.pendingRemovals)
+      || (body.vault !== undefined && (typeof body.vault !== 'string' || !isAbsolute(body.vault)))
+      || (body.resolvePath !== undefined && typeof body.resolvePath !== 'boolean')) throw new Error()
+    return body.resolvePath === true
+  } catch {
+    throw new Error('Mounted file capability verification failed')
+  }
+}
+
+/** Only advertised support permits sending a native path to the resolver. */
 export async function resolveDroppedPath(backendUrl: string, path: unknown, project: string, authorize: () => Promise<void>): Promise<DesktopDroppedFileResult> {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || !validProjectId(project)) {
     throw new Error('Invalid native file resolution request')
@@ -63,15 +83,9 @@ export async function resolveDroppedPath(backendUrl: string, path: unknown, proj
   await authorize()
   const url = new URL('/api/mounts/resolve-path', backendUrl)
   try {
-    const probe = await fetch(url, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
-      redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
-    })
+    const supported = await dropResolutionSupported(backendUrl)
     await authorize()
-    if (probe.status === 404 || probe.status === 405) return { status: 'refused', reason: 'unsupported-backend' }
-    const support = await probe.json()
-    if (probe.status !== 400 || support?.error !== 'invalid-path-request' || Object.keys(support).length !== 1) throw new Error()
-    await authorize()
+    if (!supported) return { status: 'refused', reason: 'unsupported-backend' }
     const response = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, project, scope: 'local' }),

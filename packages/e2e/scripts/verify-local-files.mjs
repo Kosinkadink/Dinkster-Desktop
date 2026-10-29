@@ -134,7 +134,11 @@ try {
   const remote = await page.evaluate(() =>
     window.dinksterDesktop.fileCapabilities('https://remote.invalid'),
   )
-  assert.deepEqual(remote, { nativeFolderChoice: false, reveal: false })
+  assert.deepEqual(remote, {
+    nativeFolderChoice: false,
+    reveal: false,
+    resolvePath: false,
+  })
   const refused = await page.evaluate(async () => {
     const bridge = window.dinksterDesktop
     const failures = []

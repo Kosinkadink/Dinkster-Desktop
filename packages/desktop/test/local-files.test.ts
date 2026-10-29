@@ -73,7 +73,9 @@ describe('local file authority', () => {
   it('resolves mounted drops without exposing paths or confusing errors with upload refusal', async () => {
     const path = join(tmpdir(), 'read only mount', 'dropped file.txt')
     const asset = { digest: `blake3:${'a2'.repeat(32)}`, name: 'dropped file.txt', size: 17, mediaType: 'text/plain', virtualPath: 'mounts/input/dropped file.txt' }
-    let probeStatus = 400
+    let probeStatus = 200
+    const locations = { mounts: [], activeMounts: [], restartRequired: false, pendingRemovals: [] }
+    let capability: unknown = { ...locations, resolvePath: true }
     let status = 200
     let body: unknown = { status: 'resolved', asset }
     let authorized = true
@@ -81,19 +83,19 @@ describe('local file authority', () => {
     let request: unknown
     let receivedPath = false
     const server = createServer(async (incoming, response) => {
+      if (incoming.method === 'GET') {
+        expect(incoming.url).toBe('/api/mounts/locations')
+        response.writeHead(probeStatus, { 'content-type': 'application/json' }).end(JSON.stringify(capability))
+        return
+      }
       expect(incoming.method).toBe('POST')
       expect(incoming.url).toBe('/api/mounts/resolve-path')
       let text = ''
       for await (const chunk of incoming) text += chunk
-      const value = JSON.parse(text)
-      if (Object.keys(value).length === 0) {
-        response.writeHead(probeStatus, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid-path-request' }))
-      } else {
-        request = value
-        receivedPath = true
-        if (revoke) authorized = false
-        response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body))
-      }
+      request = JSON.parse(text)
+      receivedPath = true
+      if (revoke) authorized = false
+      response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body))
     })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const address = server.address()
@@ -103,6 +105,8 @@ describe('local file authority', () => {
     try {
       expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual({ status: 'resolved', asset })
       expect(request).toEqual({ path, project: 'work', scope: 'local' })
+      body = { status: 'resolved', asset: { ...asset, size: 0 } }
+      expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual(body)
       body = { status: 'refused', reason: 'not-resolvable' }
       expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual(body)
       for (const unsupported of [404, 405]) {
@@ -115,7 +119,20 @@ describe('local file authority', () => {
         probeStatus = denied
         await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
       }
-      probeStatus = 400
+      probeStatus = 200
+      for (const unsupported of [locations, { ...locations, resolvePath: false }]) {
+        capability = unsupported
+        receivedPath = false
+        expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual({ status: 'refused', reason: 'unsupported-backend' })
+        expect(receivedPath).toBe(false)
+      }
+      for (const malformed of [{}, { ...locations, resolvePath: 'true' }, { ...locations, resolvePath: null }, { resolvePath: true }]) {
+        capability = malformed
+        receivedPath = false
+        await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
+        expect(receivedPath).toBe(false)
+      }
+      capability = { ...locations, resolvePath: true }
       for (const denied of [400, 401, 403, 404, 405, 500]) {
         status = denied
         body = { error: path }
@@ -129,6 +146,7 @@ describe('local file authority', () => {
         { status: 'resolved', asset: { ...asset, virtualPath: path } },
         { status: 'resolved', asset: { ...asset, virtualPath: 'mounts/input/../secret' } },
         { status: 'resolved', asset: { ...asset, digest: 'blake3:bad' } },
+        ...[-1, true, '17', 1.5].map((size) => ({ status: 'resolved', asset: { ...asset, size } })),
       ]) {
         body = malformed
         const error = await resolveDroppedPath(url, path, 'work', authorize).catch((error: Error) => error)

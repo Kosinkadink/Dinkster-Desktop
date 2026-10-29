@@ -105,6 +105,7 @@ export interface DesktopRemoteWorkerSave extends DesktopRemoteWorker {
 export interface DesktopFileCapabilities {
   readonly nativeFolderChoice: boolean
   readonly reveal: boolean
+  readonly resolvePath?: boolean
 }
 
 export interface DesktopAssetIdentity {

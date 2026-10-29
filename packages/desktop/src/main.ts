@@ -28,7 +28,7 @@ import { changeEngineTransaction } from './engine-transaction.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
-import { assetLocations, fileCapabilities, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from './local-files.js'
+import { assetLocations, dropResolutionSupported, fileCapabilities, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from './local-files.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
 import { RotatingLog } from './rotating-log.js'
@@ -899,7 +899,9 @@ ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) =
   const owned = eligible.nativeFolderChoice && await current.ownsBackend() && runtime === current
   const project = windowProject(senderWindowId(event)) ?? 'default'
   let exactLookup = false
+  let resolvePath = false
   if (owned) {
+    resolvePath = await dropResolutionSupported(`http://127.0.0.1:${backendPort}`)
     try {
       await assetLocations(`http://127.0.0.1:${backendPort}`, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project)
       exactLookup = true
@@ -907,7 +909,8 @@ ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) =
   }
   const stillOwned = owned && runtime === current && await current.ownsBackend() && runtime === current
   trustedIpc(event)
-  return fileCapabilities(backendUrl, webHost?.url, stillOwned, exactLookup && (windowProject(senderWindowId(event)) ?? 'default') === project)
+  const sameProject = (windowProject(senderWindowId(event)) ?? 'default') === project
+  return { ...fileCapabilities(backendUrl, webHost?.url, stillOwned, exactLookup && sameProject), resolvePath: stillOwned && sameProject && resolvePath }
 })
 ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) => {
   await requireManagedFiles(event, backendUrl)

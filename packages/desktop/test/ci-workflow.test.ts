@@ -161,6 +161,12 @@ describe('desktop workflows', () => {
     )
     expect(smokeCommands).toContain('xvfb-run --auto-servernum node packages/e2e/scripts/verify-environment-client.mjs')
     expect(smokeCommands).toContain('pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never')
+    const client = full.jobs['desktop-smoke']!.steps?.find((step) => step.run?.includes('node packages/e2e/scripts/verify-environment-client.mjs'))
+    expect(client?.env).toEqual({
+      DINKSTER_ELECTRON_EXECUTABLE: 'packages/desktop/release/linux-unpacked/dinkster-desktop-smoke',
+    })
+    expect(smokeCommands!.indexOf('pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never'))
+      .toBeLessThan(smokeCommands!.indexOf(client!.run!))
     const installed = full.jobs['desktop-smoke']!.steps?.find((step) => step.run?.includes('node packages/e2e/scripts/verify-desktop-install.mjs'))
     expect(installed?.env).toEqual({
       DINKSTER_DESKTOP_EXECUTABLE: 'packages/desktop/release/linux-unpacked/dinkster-desktop-smoke',

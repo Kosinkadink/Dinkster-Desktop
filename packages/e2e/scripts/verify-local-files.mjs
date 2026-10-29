@@ -13,7 +13,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { finished } from 'node:stream/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { _electron as electron } from '@playwright/test'
+import { _electron as electron, expect } from '@playwright/test'
 
 const source = process.env.DINKSTER_ENGINE_SOURCE
 const commit = process.env.DINKSTER_REF
@@ -390,40 +390,52 @@ try {
     globalThis.originalOpenDialog = dialog.showOpenDialog
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] })
   }, chosen)
-  assert.equal(
-    await page.evaluate(() =>
-      window.dinksterDesktop.chooseDirectory(location.origin),
-    ),
-    chosen,
+  await page.getByTestId('desktop-management-button').click()
+  const chooser = page.getByRole('button', {
+    name: 'Choose folder',
+    exact: true,
+  })
+  const folderSection = page.locator('.desktop-management-section').filter({
+    has: page.getByRole('heading', {
+      name: 'Existing model folders',
+      exact: true,
+    }),
+  })
+  await expect(chooser).toBeEnabled()
+  await folderSection.screenshot({
+    path: join(root, 'folder-choice-ready.png'),
+  })
+  await chooser.click()
+  await expect(page.locator('.desktop-mount-form code')).toHaveText(chosen)
+  await expect(page.locator('#desktop-mount-id')).toHaveValue(
+    'local-folder-with-spaces',
   )
+  await folderSection.screenshot({
+    path: join(root, 'folder-choice-selected.png'),
+  })
   await app.evaluate(({ dialog }) => {
     dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
   })
-  assert.equal(
-    await page.evaluate(() =>
-      window.dinksterDesktop.chooseDirectory(location.origin),
-    ),
-    undefined,
-  )
+  await chooser.click()
+  await expect(chooser).toBeEnabled()
+  await expect(page.locator('.desktop-mount-form code')).toHaveText(chosen)
   await app.evaluate(({ dialog }) => {
     dialog.showOpenDialog = async () => {
       throw new Error('Native folder dialog failed')
     }
   })
-  assert.equal(
-    await page.evaluate(async () => {
-      try {
-        await window.dinksterDesktop.chooseDirectory(location.origin)
-        return false
-      } catch (error) {
-        return String(error).includes('Native folder dialog failed')
-      }
-    }),
-    true,
-  )
+  await chooser.click()
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Native folder dialog failed' }),
+  ).toBeVisible()
+  await folderSection.screenshot({
+    path: join(root, 'folder-choice-error.png'),
+  })
   await app.evaluate(({ dialog }) => {
     dialog.showOpenDialog = globalThis.originalOpenDialog
   })
+  await page.keyboard.press('Escape')
+  await expect(chooser).not.toBeVisible()
 
   const untrusted = await app.evaluate(
     async ({ BrowserWindow, app }, { origin, path }) => {

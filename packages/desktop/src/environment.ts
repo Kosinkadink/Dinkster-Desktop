@@ -140,6 +140,8 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
 /** Desktop owns no generation, current, store or journal writes. */
 export class EnvironmentClient {
   private tools: ReturnType<typeof acquireEnvironmentTools> | undefined
+  private readonly active = new Set<Promise<EnvironmentResult>>()
+  private closed = false
 
   constructor(
     private readonly executable = process.env['DINKSTER_TOOLS_PYTHON'] ?? process.env['DINKSTER_ENV'] ?? 'dinkster-env',
@@ -152,12 +154,23 @@ export class EnvironmentClient {
   ) {}
 
   async dispose(): Promise<void> {
+    this.closed = true
+    await Promise.allSettled([...this.active])
     const tools = await this.tools?.catch(() => undefined)
     if (tools) await rm(tools.directory, { recursive: true, force: true })
     this.tools = undefined
   }
 
-  async run(request: EnvironmentRequest, confirmed = false): Promise<EnvironmentResult> {
+  run(request: EnvironmentRequest, confirmed = false): Promise<EnvironmentResult> {
+    if (this.closed) return Promise.reject(new Error('the environment client is closed'))
+    const pending = this.executeRequest(request, confirmed)
+    this.active.add(pending)
+    const finished = (): void => { this.active.delete(pending) }
+    void pending.then(finished, finished)
+    return pending
+  }
+
+  private async executeRequest(request: EnvironmentRequest, confirmed: boolean): Promise<EnvironmentResult> {
     const commandArgs = argumentsFor(request, confirmed)
     let executable = this.executable
     let prefix = this.prefix

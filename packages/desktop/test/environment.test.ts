@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { createServer, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setImmediate } from 'node:timers/promises'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EnvironmentClient, type EnvironmentOperation } from '../src/environment.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
@@ -31,6 +33,37 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('drains a running command before disposal and refuses commands after closing', async () => {
+    const { root } = await commandFixture()
+    let release!: ServerResponse
+    let entered!: () => void
+    const started = new Promise<void>((resolve) => { entered = resolve })
+    const server = createServer((_request, response) => { release = response; entered() })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('command fixture did not bind')
+    const client = new EnvironmentClient(process.execPath, ['-e', `fetch('http://127.0.0.1:${address.port}').then(r=>r.text()).then(console.log)`, '--'])
+    const pending = client.run({ root, operation: 'status' })
+    try {
+      await started
+      let disposed = false
+      const closing = client.dispose().then(() => { disposed = true })
+      await setImmediate()
+      expect(disposed).toBe(false)
+      await expect(client.run({ root, operation: 'status' })).rejects.toThrow('client is closed')
+      release.end(JSON.stringify({ format: 'dinkster.environment-result/1', operation: 'status', status: 'clean', root, current: null, plan: [] }))
+      expect((await pending).status).toBe('clean')
+      await closing
+      expect(disposed).toBe(true)
+    } finally {
+      release?.end()
+      await pending.catch(() => undefined)
+      await client.dispose()
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
   it('extracts only the size/hash-pinned native tools row and retains executable permissions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'desktop-tools-'))
     roots.push(root)

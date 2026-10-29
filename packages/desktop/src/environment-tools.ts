@@ -18,10 +18,12 @@ function source(location: string): URL | string {
   return url
 }
 
-async function acquire(location: string, target: string): Promise<void> {
+async function acquire(location: string, target: string, maximumBytes: number): Promise<void> {
   const input = source(location)
-  if (typeof input === 'string') await copyFile(input, target)
-  else await download(input.href, target)
+  if (typeof input === 'string') {
+    if ((await stat(input)).size > maximumBytes) throw new Error('tools input exceeds the declared size')
+    await copyFile(input, target)
+  } else await download(input.href, target, undefined, maximumBytes)
 }
 
 export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Promise<{ python: string; directory: string }> {
@@ -29,7 +31,7 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
   const directory = await mkdtemp(join(tmpdir(), 'dinkster-tools-'))
   try {
     const manifestPath = join(directory, 'engine.json')
-    await acquire(input.manifest, manifestPath)
+    await acquire(input.manifest, manifestPath, 8 * 1024 * 1024)
     await verifyFile(manifestPath, input.sha256)
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { format?: string; artifacts?: { name: string; size: number; sha256: string }[] }
     const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
@@ -41,7 +43,7 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
     if (rows.length !== 1 || !row || !Number.isSafeInteger(row.size) || row.size <= 0 || !/^[a-f0-9]{64}$/.test(row.sha256)) throw new Error('engine manifest has no unique pinned native tools archive')
     const release = source(input.release)
     const archive = join(directory, name)
-    await acquire(typeof release === 'string' ? join(release, name) : new URL(name, `${release.href.replace(/\/$/, '')}/`).href, archive)
+    await acquire(typeof release === 'string' ? join(release, name) : new URL(name, `${release.href.replace(/\/$/, '')}/`).href, archive, row.size)
     if ((await stat(archive)).size !== row.size) throw new Error('tools archive size mismatch')
     await verifyFile(archive, row.sha256)
     const payload = join(directory, 'payload')

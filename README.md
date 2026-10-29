@@ -39,7 +39,8 @@ project development, set `DINKSTER_TOOLS_PYTHON` to an explicit environment-tool
 interpreter with `dinkster-supervisor` installed, or set `DINKSTER_ENV` to its
 `dinkster-env` executable. Desktop does not install tools with pip or uv as a
 fallback. Interpreter launches use `-I` and a child-only PATH containing the
-bundled scripts directory, not host Python or package managers.
+bundled scripts directory, not host Python or package managers. Inherited
+`PYTHON*` configuration is removed from that child and its engine descendants.
 
 The release-owned standalone tools pin is a declared input, not a latest lookup:
 `DINKSTER_TOOLS_MANIFEST` identifies the immutable `dinkster.engine/1` manifest,
@@ -49,7 +50,10 @@ credential-free HTTPS. Desktop selects the existing native tools artifact row,
 verifies its size and SHA256 before standard ZIP extraction into a new owned
 directory, and preserves executable modes while rejecting links and escaping
 paths. Tools are acquired only for a local command, reused during that session,
-and removed after stopping local engines on normal shutdown. Explicit development
+and removed after draining commands and stopping local engines on normal shutdown.
+A failed stop retains the tools and records a diagnostic. Downloads reject TLS
+downgrades and stop at the artifact's declared size; engine metadata is bounded
+to 8 MiB. Explicit development
 interpreter/command overrides take precedence. Production publication supplies
 the pin; no production pin or separate tools manifest is invented here.
 

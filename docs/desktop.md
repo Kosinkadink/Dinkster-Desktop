@@ -44,8 +44,11 @@ recovery, and retention are responsibilities of the environment tools.
 
 For development, `DINKSTER_ENV` selects an installed environment executable.
 Alternatively, `DINKSTER_TOOLS_PYTHON` selects an interpreter containing the
-tools and runs `-m dinkster_supervisor.environment`. Desktop does not install
-missing tools by resolving packages at runtime.
+tools and runs `-I -m dinkster_supervisor.environment` with bundled-only child
+PATH and no inherited Python configuration. The release-owned manifest inputs
+in [README](../README.md#environment-client-development) enable extraction-only
+bootstrap without a host interpreter. Desktop does not install missing tools
+by resolving packages at runtime.
 
 The separate checkout-development launcher (`DINKSTER_ENGINE_SOURCE` or
 `start:web`) requires a provisioned checkout with its `.venv` executables.

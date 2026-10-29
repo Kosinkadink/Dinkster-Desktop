@@ -306,6 +306,7 @@ function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
 const projectDialogPath = join(app.getAppPath(), 'resources', 'projects.html')
 
 function trustedProjectIpc(event: Electron.IpcMainInvokeEvent): void {
+  if (quitting) throw new Error('Desktop is shutting down')
   if (!projectWindow || event.sender !== projectWindow.webContents
     || event.senderFrame !== projectWindow.webContents.mainFrame
     || event.senderFrame.url !== pathToFileURL(projectDialogPath).href) {
@@ -343,7 +344,7 @@ ipcMain.handle('desktop:projects-remove', (event, projectId: unknown) => seriali
   const projects = await readProjects(dataDirectory)
   await writeProjects(dataDirectory, { ...projects, projects: projects.projects.filter((project) => project.id !== projectId) })
 }))
-ipcMain.handle('desktop:projects-inspect', async (event, input: EnvironmentRequest) => {
+ipcMain.handle('desktop:projects-inspect', (event, input: EnvironmentRequest) => serializeLifecycle(async () => {
   trustedProjectIpc(event)
   const request: EnvironmentRequest = { root: input.root, operation: 'catalog',
     ...(input.channel === undefined ? {} : { channel: input.channel }),
@@ -352,7 +353,7 @@ ipcMain.handle('desktop:projects-inspect', async (event, input: EnvironmentReque
   const hardware = await detectNvidiaGpus()
   const plan = planVariant((result.variants ?? []).map((entry) => entry.manifest), hardware, input.gpus ?? [], process.platform)
   return { result, hardware, plan }
-})
+}))
 
 function localEngineUrl(project: DesktopProject, engineId: string, result: EnvironmentResult): string {
   const engine = result.engines?.find((candidate) => candidate.name === engineId)
@@ -486,12 +487,14 @@ async function shutdown(): Promise<void> {
   if (quitting) return
   quitting = true
   await windowQueue.run(async () => {})
-  await Promise.allSettled([
+  const stopped = await Promise.allSettled([
     runtime.stop(),
     ...[...localEngines.values()].map(({ root, engine }) => environmentClient.run({ root, operation: 'stop', engine }, true)),
     Promise.resolve().then(() => webHost?.close()),
   ])
   try {
+    if (stopped.every((result) => result.status === 'fulfilled')) await environmentClient.dispose()
+    else await shellLog.append('Retaining environment tools because shutdown did not stop every local service.')
     window = undefined
     await flushWindowLayout()
     projectWindow?.destroy()

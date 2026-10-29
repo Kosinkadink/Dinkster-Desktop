@@ -18,9 +18,21 @@ export async function verifyFile(path: string, expected: string): Promise<void> 
 }
 
 export async function download(url: string, destination: string, signal?: AbortSignal): Promise<void> {
-  const response = await fetch(url, { redirect: 'follow', ...(signal ? { signal } : {}) })
+  signal ??= AbortSignal.timeout(10 * 60_000)
+  let response: Response
+  for (let redirects = 0; ; redirects++) {
+    const location = new URL(url)
+    const loopback = location.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(location.hostname)
+    if ((!loopback && location.protocol !== 'https:') || location.username || location.password) throw new Error('downloads require credential-free HTTPS or loopback HTTP')
+    response = await fetch(location, { redirect: 'manual', signal })
+    if (![301, 302, 303, 307, 308].includes(response.status)) break
+    await response.body?.cancel()
+    const target = response.headers.get('location')
+    if (!target || redirects >= 5) throw new Error('invalid download redirect')
+    url = new URL(target, location).href
+  }
   if (!response.ok || response.body === null) {
-    throw new Error(`download failed (${response.status}) for ${url}`)
+    throw new Error(`download failed (${response.status})`)
   }
   await mkdir(dirname(destination), { recursive: true })
   const temporary = `${destination}.part`

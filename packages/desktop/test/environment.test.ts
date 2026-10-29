@@ -1,8 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EnvironmentClient, type EnvironmentOperation } from '../src/environment.js'
+import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
@@ -29,6 +31,52 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('extracts only the size/hash-pinned native tools row and retains executable permissions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop-tools-'))
+    roots.push(root)
+    // Ordinary stored ZIP with python/bin/python3 and python/python.exe, both mode 0755.
+    const archive = Buffer.from('UEsDBBQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAcHl0aG9uL2Jpbi9weXRob24zZml4dHVyZVBLAwQUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAHB5dGhvbi9weXRob24uZXhlZml4dHVyZVBLAQIUAxQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAAAAAAAAAAADtgQAAAABweXRob24vYmluL3B5dGhvbjNQSwECFAMUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAAAAAAAAAAAA7YE3AAAAcHl0aG9uL3B5dGhvbi5leGVQSwUGAAAAAAIAAgB/AAAAbQAAAAAA', 'base64')
+    const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
+    const name = `dinkster-tools-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}.zip`
+    const row = { name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }
+    await writeFile(join(root, name), archive)
+    const manifest = join(root, 'engine.json')
+    async function input(artifacts = [row]) {
+      const bytes = JSON.stringify({ format: 'dinkster.engine/1', artifacts })
+      await writeFile(manifest, bytes)
+      return { manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root }
+    }
+    const pin = await input()
+    const tools = await acquireEnvironmentTools(pin)
+    roots.push(tools.directory)
+    expect(await readFile(tools.python, 'utf8')).toBe('fixture')
+    if (process.platform !== 'win32') expect((await stat(tools.python)).mode & 0o777).toBe(0o755)
+    await expect(acquireEnvironmentTools({ ...pin, sha256: 'a'.repeat(64) })).rejects.toThrow('checksum mismatch')
+    await expect(acquireEnvironmentTools(await input([{ ...row, size: row.size + 1 }]))).rejects.toThrow('size mismatch')
+    await expect(acquireEnvironmentTools(await input([{ ...row, sha256: 'b'.repeat(64) }]))).rejects.toThrow('checksum mismatch')
+    await expect(acquireEnvironmentTools(await input([row, row]))).rejects.toThrow('unique pinned native tools')
+    expect(await readFile(tools.python, 'utf8')).toBe('fixture')
+  })
+
+  it('refuses traversal and links in an otherwise correctly pinned tools ZIP', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop-tools-'))
+    roots.push(root)
+    const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
+    const name = `dinkster-tools-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}.zip`
+    for (const encoded of [
+      'UEsDBBQAAAAAAAAAIQDuQOUFBwAAAAcAAAATAAAAcHl0aG9uLy4uLy4uL2VzY2FwZWZpeHR1cmVQSwECFAMUAAAAAAAAACEA7kDlBQcAAAAHAAAAEwAAAAAAAAAAAAAApIEAAAAAcHl0aG9uLy4uLy4uL2VzY2FwZVBLBQYAAAAAAQABAEEAAAA4AAAAAAA=',
+      'UEsDBBQAAAAAAAAAIQDuQOUFBwAAAAcAAAALAAAAcHl0aG9uL2xpbmtmaXh0dXJlUEsBAhQDFAAAAAAAAAAhAO5A5QUHAAAABwAAAAsAAAAAAAAAAAAAAP+hAAAAAHB5dGhvbi9saW5rUEsFBgAAAAABAAEAOQAAADAAAAAAAA==',
+    ]) {
+      const archive = Buffer.from(encoded, 'base64')
+      await writeFile(join(root, name), archive)
+      const bytes = JSON.stringify({ format: 'dinkster.engine/1', artifacts: [{ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }] })
+      const manifest = join(root, 'engine.json')
+      await writeFile(manifest, bytes)
+      await expect(acquireEnvironmentTools({ manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root })).rejects.toThrow(/invalid relative path|unsafe tools ZIP/)
+    }
+    await expect(stat(join(root, 'escape'))).rejects.toThrow()
+  })
+
   it('plans by default and passes explicit confirmation without changing artifact formats', async () => {
     const { root, client } = await commandFixture()
     const request = { root, operation: 'setup' as const, channel: 'main' as const, variant: 'win-nvidia-cu126', mirrors: [join(root, 'offline mirror'), 'https://releases.dinkster.org'], data: join(root, 'wheel store'), port: 44000, engine: 'compute', gpus: ['1'] }

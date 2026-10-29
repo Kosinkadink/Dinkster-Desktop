@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process'
-import { isAbsolute } from 'node:path'
+import { rm } from 'node:fs/promises'
+import { dirname, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { VariantHardware } from './hardware.js'
+import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
 
 const execute = promisify(execFile)
 
@@ -137,16 +139,45 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
 
 /** Desktop owns no generation, current, store or journal writes. */
 export class EnvironmentClient {
+  private tools: ReturnType<typeof acquireEnvironmentTools> | undefined
+
   constructor(
     private readonly executable = process.env['DINKSTER_TOOLS_PYTHON'] ?? process.env['DINKSTER_ENV'] ?? 'dinkster-env',
-    private readonly prefix: readonly string[] = process.env['DINKSTER_TOOLS_PYTHON'] ? ['-m', 'dinkster_supervisor.environment'] : [],
+    private readonly prefix: readonly string[] = process.env['DINKSTER_TOOLS_PYTHON'] ? ['-I', '-m', 'dinkster_supervisor.environment'] : [],
+    private readonly toolsInput: EnvironmentToolsInput | undefined = !process.env['DINKSTER_TOOLS_PYTHON'] && !process.env['DINKSTER_ENV'] && process.env['DINKSTER_TOOLS_MANIFEST'] ? {
+      manifest: process.env['DINKSTER_TOOLS_MANIFEST'],
+      sha256: process.env['DINKSTER_TOOLS_MANIFEST_SHA256'] ?? '',
+      release: process.env['DINKSTER_TOOLS_RELEASE'] ?? '',
+    } : undefined,
   ) {}
 
+  async dispose(): Promise<void> {
+    const tools = await this.tools?.catch(() => undefined)
+    if (tools) await rm(tools.directory, { recursive: true, force: true })
+    this.tools = undefined
+  }
+
   async run(request: EnvironmentRequest, confirmed = false): Promise<EnvironmentResult> {
-    const args = [...this.prefix, ...argumentsFor(request, confirmed)]
+    const commandArgs = argumentsFor(request, confirmed)
+    let executable = this.executable
+    let prefix = this.prefix
+    if (this.toolsInput) {
+      this.tools ??= acquireEnvironmentTools(this.toolsInput).catch((error: unknown) => { this.tools = undefined; throw error })
+      executable = (await this.tools).python
+      prefix = ['-I', '-m', 'dinkster_supervisor.environment']
+    }
+    const args = [...prefix, ...commandArgs]
+    const environment = { ...process.env }
+    if (prefix[0] === '-I') {
+      if (!isAbsolute(executable)) throw new Error('the tools interpreter must be absolute')
+      // Engine descendants must not inherit host Python configuration either.
+      for (const key of Object.keys(environment)) if (key.toLowerCase() === 'path' || /^PYTHON/i.test(key)) delete environment[key]
+      environment['PATH'] = process.platform === 'win32' ? join(dirname(executable), 'Scripts') : dirname(executable)
+    }
     let stdout: string
     try {
-      const result = await execute(this.executable, args, {
+      const result = await execute(executable, args, {
+        env: environment,
         windowsHide: true,
         timeout: 30 * 60_000,
         maxBuffer: 4 * 1024 * 1024,

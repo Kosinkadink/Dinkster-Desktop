@@ -22,6 +22,7 @@
   "dependencies": {
     "@decimalturn/toml-patch": "3.0.4",
     "electron-updater": "^6.6.2",
+    "extract-zip": "2.0.1",
     "http-proxy": "^1.18.1"
   },
   "devDependencies": {

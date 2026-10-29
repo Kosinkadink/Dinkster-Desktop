@@ -28,7 +28,7 @@ import { changeEngineTransaction } from './engine-transaction.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
-import { assetLocations, fileCapabilities, requireLocalFiles, revealGrantedFile } from './local-files.js'
+import { assetLocations, fileCapabilities, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from './local-files.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
 import { RotatingLog } from './rotating-log.js'
@@ -918,6 +918,17 @@ ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) =>
   if (runtime !== current) throw new Error('The shell-managed backend changed during folder selection')
   await requireManagedFiles(event, backendUrl)
   return result.canceled ? undefined : result.filePaths[0]
+})
+ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown, path: unknown) => {
+  await requireManagedFiles(event, backendUrl)
+  const current = runtime
+  const project = windowProject(senderWindowId(event)) ?? 'default'
+  return resolveDroppedPath(`http://127.0.0.1:${backendPort}`, path, project, async () => {
+    await requireManagedFiles(event, backendUrl)
+    if (runtime !== current || (windowProject(senderWindowId(event)) ?? 'default') !== project) {
+      throw new Error('The shell-managed backend or project changed during file resolution')
+    }
+  })
 })
 ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: unknown) => {
   await requireManagedFiles(event, backendUrl)

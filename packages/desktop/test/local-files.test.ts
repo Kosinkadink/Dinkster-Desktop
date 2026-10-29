@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, revealGrantedFile } from '../src/local-files.js'
+import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from '../src/local-files.js'
 
 describe('local file authority', () => {
   it('binds capabilities and requests to the running managed connection only', () => {
@@ -65,6 +65,82 @@ describe('local file authority', () => {
       }
       body = { vault, locations: [{ storage: 'vault', path: join(vault, 'blob') }], activeMounts: [] }
       expect(await assetLocations(url, asset, 'work')).toEqual([{ root: vault, path: join(vault, 'blob') }])
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('resolves mounted drops without exposing paths or confusing errors with upload refusal', async () => {
+    const path = join(tmpdir(), 'read only mount', 'dropped file.txt')
+    const asset = { digest: `blake3:${'a2'.repeat(32)}`, name: 'dropped file.txt', size: 17, mediaType: 'text/plain', virtualPath: 'mounts/input/dropped file.txt' }
+    let probeStatus = 400
+    let status = 200
+    let body: unknown = { status: 'resolved', asset }
+    let authorized = true
+    let revoke = false
+    let request: unknown
+    let receivedPath = false
+    const server = createServer(async (incoming, response) => {
+      expect(incoming.method).toBe('POST')
+      expect(incoming.url).toBe('/api/mounts/resolve-path')
+      let text = ''
+      for await (const chunk of incoming) text += chunk
+      const value = JSON.parse(text)
+      if (Object.keys(value).length === 0) {
+        response.writeHead(probeStatus, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid-path-request' }))
+      } else {
+        request = value
+        receivedPath = true
+        if (revoke) authorized = false
+        response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body))
+      }
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('server unavailable')
+    const url = `http://127.0.0.1:${address.port}`
+    const authorize = async () => { if (!authorized) throw new Error('project or backend changed') }
+    try {
+      expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual({ status: 'resolved', asset })
+      expect(request).toEqual({ path, project: 'work', scope: 'local' })
+      body = { status: 'refused', reason: 'not-resolvable' }
+      expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual(body)
+      for (const unsupported of [404, 405]) {
+        probeStatus = unsupported
+        receivedPath = false
+        expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual({ status: 'refused', reason: 'unsupported-backend' })
+        expect(receivedPath).toBe(false)
+      }
+      for (const denied of [401, 403, 500]) {
+        probeStatus = denied
+        await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
+      }
+      probeStatus = 400
+      for (const denied of [400, 401, 403, 404, 405, 500]) {
+        status = denied
+        body = { error: path }
+        await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
+      }
+      status = 200
+      for (const malformed of [
+        null, { status: 'refused', reason: 'other' },
+        { status: 'refused', reason: 'not-resolvable', path },
+        { status: 'resolved', asset: { ...asset, path } },
+        { status: 'resolved', asset: { ...asset, virtualPath: path } },
+        { status: 'resolved', asset: { ...asset, virtualPath: 'mounts/input/../secret' } },
+        { status: 'resolved', asset: { ...asset, digest: 'blake3:bad' } },
+      ]) {
+        body = malformed
+        const error = await resolveDroppedPath(url, path, 'work', authorize).catch((error: Error) => error)
+        expect(error).toBeInstanceOf(Error)
+        expect(String(error)).not.toContain(path)
+      }
+      body = { status: 'resolved', asset }
+      revoke = true
+      await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
+      authorized = true
+      await expect(resolveDroppedPath(url, '../relative', 'work', authorize)).rejects.toThrow('Invalid')
+      await expect(resolveDroppedPath(url, path, '../project', authorize)).rejects.toThrow('Invalid')
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     }

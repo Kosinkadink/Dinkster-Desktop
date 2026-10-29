@@ -153,6 +153,56 @@ try {
   })
   assert.deepEqual(refused, [true, true])
 
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.dinksterDesktop.resolveDroppedFile(
+        location.origin,
+        new File(['memory'], 'memory.txt'),
+      ),
+    ),
+    { status: 'refused', reason: 'not-native-file' },
+  )
+  const droppedPath = join(root, 'native drop with spaces.txt')
+  await writeFile(droppedPath, 'native file bytes')
+  await page.evaluate(() => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.id = 'native-drop-test'
+    input.hidden = true
+    document.body.append(input)
+  })
+  await page.locator('#native-drop-test').setInputFiles(droppedPath)
+  const droppedFile = await page.evaluate(async () => {
+    const file = document.getElementById('native-drop-test').files[0]
+    const result = await window.dinksterDesktop.resolveDroppedFile(
+      location.origin,
+      file,
+    )
+    let remoteDenied = false
+    try {
+      await window.dinksterDesktop.resolveDroppedFile(
+        'https://remote.invalid',
+        file,
+      )
+    } catch {
+      remoteDenied = true
+    }
+    return { result, remoteDenied, rendererHasPath: 'path' in file }
+  })
+  assert.equal(droppedFile.result.status, 'refused')
+  assert.ok(
+    ['not-resolvable', 'unsupported-backend'].includes(
+      droppedFile.result.reason,
+    ),
+  )
+  assert.equal(droppedFile.remoteDenied, true)
+  assert.equal(droppedFile.rendererHasPath, false)
+  assert.equal(JSON.stringify(droppedFile).includes(root), false)
+  await writeFile(join(root, 'native-drop.json'), JSON.stringify(droppedFile))
+  await page.evaluate(() =>
+    document.getElementById('native-drop-test').remove(),
+  )
+
   const chosen = join(root, 'local folder with spaces')
   await mkdir(chosen)
   if (nativeDialog) {
@@ -222,7 +272,7 @@ try {
   })
 
   const untrusted = await app.evaluate(
-    async ({ BrowserWindow, app }, origin) => {
+    async ({ BrowserWindow, app }, { origin, path }) => {
       const child = new BrowserWindow({
         show: false,
         webPreferences: {
@@ -234,6 +284,22 @@ try {
       })
       try {
         await child.loadURL(origin)
+        await child.webContents.executeJavaScript(`{
+          const input = document.createElement('input');
+          input.type = 'file'; input.id = 'untrusted-drop-test';
+          document.body.append(input);
+        }`)
+        child.webContents.debugger.attach('1.3')
+        const document =
+          await child.webContents.debugger.sendCommand('DOM.getDocument')
+        const input = await child.webContents.debugger.sendCommand(
+          'DOM.querySelector',
+          { nodeId: document.root.nodeId, selector: '#untrusted-drop-test' },
+        )
+        await child.webContents.debugger.sendCommand('DOM.setFileInputFiles', {
+          nodeId: input.nodeId,
+          files: [path],
+        })
         return await child.webContents.executeJavaScript(`(async () => {
           const bridge = window.dinksterDesktop
           const results = []
@@ -241,6 +307,7 @@ try {
             () => bridge.fileCapabilities(location.origin),
             () => bridge.chooseDirectory(location.origin),
             () => bridge.revealFile(location.origin, '/ungranted'),
+            () => bridge.resolveDroppedFile(location.origin, document.getElementById('untrusted-drop-test').files[0]),
           ]) {
             try { await action(); results.push('accepted') }
             catch (error) { results.push(String(error)) }
@@ -251,13 +318,13 @@ try {
         child.destroy()
       }
     },
-    page.url(),
+    { origin: page.url(), path: droppedPath },
   )
   await writeFile(
     join(root, 'untrusted-sender.json'),
     JSON.stringify(untrusted),
   )
-  assert.equal(untrusted.length, 3)
+  assert.equal(untrusted.length, 4)
   for (const rejection of untrusted)
     assert.match(rejection, /untrusted renderer/)
 

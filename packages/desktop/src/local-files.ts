@@ -1,7 +1,7 @@
 import { realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { DesktopAssetIdentity, DesktopFileCapabilities } from './types.js'
+import type { DesktopAssetIdentity, DesktopDroppedFileResult, DesktopFileCapabilities } from './types.js'
 import { validProjectId } from './window-layout.js'
 
 export function fileCapabilities(backendUrl: unknown, managedUrl: string | undefined, running: boolean, exactLookup = false): DesktopFileCapabilities {
@@ -53,6 +53,51 @@ export async function assetLocations(backendUrl: string, input: unknown, project
     }
     return { path: location.path, root }
   })
+}
+
+/** Probe support without a path; only the resolver's explicit refusal permits fallback. */
+export async function resolveDroppedPath(backendUrl: string, path: unknown, project: string, authorize: () => Promise<void>): Promise<DesktopDroppedFileResult> {
+  if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || !validProjectId(project)) {
+    throw new Error('Invalid native file resolution request')
+  }
+  await authorize()
+  const url = new URL('/api/mounts/resolve-path', backendUrl)
+  try {
+    const probe = await fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
+    })
+    await authorize()
+    if (probe.status === 404 || probe.status === 405) return { status: 'refused', reason: 'unsupported-backend' }
+    const support = await probe.json()
+    if (probe.status !== 400 || support?.error !== 'invalid-path-request' || Object.keys(support).length !== 1) throw new Error()
+    await authorize()
+    const response = await fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path, project, scope: 'local' }),
+      redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
+    })
+    await authorize()
+    if (response.status !== 200) throw new Error()
+    const body = await response.json()
+    await authorize()
+    if (!body || Object.keys(body).length !== 2) throw new Error()
+    if (body.status === 'refused' && body.reason === 'not-resolvable') return { status: 'refused', reason: 'not-resolvable' }
+    const asset = body.asset
+    if (body.status !== 'resolved' || !asset || Object.keys(asset).length !== 5
+      || Object.keys(asset).some((key) => !['digest', 'name', 'size', 'mediaType', 'virtualPath'].includes(key))
+      || typeof asset.digest !== 'string' || !/^blake3:[a-f0-9]{64}$/.test(asset.digest)
+      || typeof asset.name !== 'string' || !asset.name || /[/\\\0]/.test(asset.name)
+      || !Number.isSafeInteger(asset.size) || asset.size < 0
+      || typeof asset.mediaType !== 'string' || !asset.mediaType
+      || typeof asset.virtualPath !== 'string' || !/^mounts\/[^/]+\/.+/.test(asset.virtualPath)
+      || asset.virtualPath.includes('\\') || asset.virtualPath.includes('\0')
+      || asset.virtualPath.split('/').some((part: string) => !part || part === '.' || part === '..')) throw new Error()
+    return { status: 'resolved', asset: { digest: asset.digest, name: asset.name, size: asset.size, mediaType: asset.mediaType, virtualPath: asset.virtualPath } }
+  } catch {
+    // Network and backend diagnostics may contain the native path.
+    throw new Error('Mounted file resolution failed; no upload fallback was authorized')
+  }
 }
 
 /** Resolve both sides: a granted directory does not authorize links outside it. */

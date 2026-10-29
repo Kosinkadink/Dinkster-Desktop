@@ -21,7 +21,15 @@ pnpm typecheck
 pnpm test
 ```
 
-`pnpm --filter @dinkster/desktop package:win` produces an unsigned shell installer without backend source or native wheel inputs. The release workflow uses `package:win:signed`, which signs through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before owner-approved signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release. Production local-project bootstrap remains incomplete until the standalone environment tools payload is packaged; a shell-only package is not a complete local installation.
+`pnpm --filter @dinkster/desktop package:win` produces an unsigned shell installer without backend source or native wheel inputs. The release workflow uses `package:win:signed`, which signs through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release. Production local-project bootstrap remains incomplete until the standalone environment tools payload is packaged; a shell-only package is not a complete local installation.
+
+Both signing workflows reference the `desktop-signing` GitHub environment. Its
+approval gate is off while the program is being established: no required
+reviewers, wait timer or deployment-branch restrictions. Signing uses the
+existing repository-level `AZURE_*` secrets without moving them. To enable the
+approval gate later, the owner adds themselves as a required reviewer under
+Settings -> Environments -> desktop-signing; no workflow change is needed.
+The desk pushes a version tag only after the user's approval on the issue.
 
 ## Environment client development
 

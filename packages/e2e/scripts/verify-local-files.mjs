@@ -152,7 +152,12 @@ try {
   const initialLocations = await page.evaluate(async () => {
     const response = await fetch('/api/mounts/locations?project=default')
     if (!response.ok) throw new Error('Initial locations lookup failed')
-    return response.json()
+    const project = await fetch('/api/mounts?project=default')
+    if (!project.ok) throw new Error('Initial project folders lookup failed')
+    return {
+      ...(await response.json()),
+      outputMount: (await project.json()).outputMount,
+    }
   })
   const visibleDefaults = Object.hasOwn(initialLocations, 'importMount')
   if (visibleDefaults) {
@@ -299,9 +304,7 @@ try {
     assert.equal(JSON.stringify(mounted).includes(root), false)
     // Remove project membership, not the input or grant, to prove live scope.
     await page.evaluate(async () => {
-      const current = await (
-        await fetch('/api/mounts/locations?project=default')
-      ).json()
+      const current = await (await fetch('/api/mounts?project=default')).json()
       const response = await fetch('/api/mounts/projects/default', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
@@ -514,6 +517,16 @@ try {
         body: JSON.stringify({ id: 'custom-output' }),
       })
       if (!selected.ok) throw new Error('Custom output selection failed')
+      const current = await (await fetch('/api/mounts?project=default')).json()
+      const project = await fetch('/api/mounts/projects/default', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          mounts: current.mounts.map((mount) => mount.id),
+          outputMount: 'custom-output',
+        }),
+      })
+      if (!project.ok) throw new Error('Custom project output selection failed')
     }, configuredOutput)
   }
   // Restart the real backend while the dialog is pending. Cached shell status
@@ -578,7 +591,13 @@ try {
     const restartedLocations = await page.evaluate(async () => {
       const response = await fetch('/api/mounts/locations?project=default')
       if (!response.ok) throw new Error('Restarted locations lookup failed')
-      return response.json()
+      const project = await fetch('/api/mounts?project=default')
+      if (!project.ok)
+        throw new Error('Restarted project folders lookup failed')
+      return {
+        ...(await response.json()),
+        outputMount: (await project.json()).outputMount,
+      }
     })
     assert.equal(restartedLocations.outputMount, 'custom-output')
     const output = restartedLocations.activeMounts.find(

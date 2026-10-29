@@ -1,5 +1,24 @@
 # Desktop engine boundaries
 
+## Packaged backend
+
+Desktop installs the checksum-pinned `dinkster-source-<version>.zip` from the
+backend's commit-named `main-<commit>` prerelease. The ZIP has workspace files
+at its root. Packaging verifies size, SHA-256, Git-free dependency manifests
+and the Windows native profile before embedding it. Runtime consumes the
+shipped immutable Python 3.12 lock with `uv sync --frozen`; it does not
+re-resolve the project or validate its lock against `pyproject.toml`.
+
+Backend prereleases before `13a07e2e10867eb6279fbed5abaa3033acdad77d` reference
+deleted OpenTimelineIO wheel assets. Do not use those locks. The pinned
+`2cedcbfb4ab631eaf8af823cd010893f549d9dbc` release uses
+`dinkster-opentimelineio` from PyPI instead. Frozen installation cannot fix a
+deleted dependency asset; moving the backend pin removes those dead URLs.
+
+The backend's supported package contract is wheels plus `constraints.txt`;
+source installation is transitional. Main prereleases retain the newest 50
+commits. Never substitute an unchecked archive when a pinned input is absent.
+
 ## Release mirror
 
 Desktop treats the configured release mirror as a security boundary. Production

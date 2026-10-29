@@ -111,7 +111,7 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     await mkdir(resolve(scratch, 'published/packages/desktop/src'), { recursive: true })
     await writeFile(resolve(scratch, 'published/packages/desktop/src/backend-release.json'), JSON.stringify({
       commit: '69130cdd6c00ffac7430c1564b5da30ec91db051',
-      releaseTag: 'backend-69130cdd6c00ffac7430c1564b5da30ec91db051',
+      releaseTag: 'main-69130cdd6c00ffac7430c1564b5da30ec91db051',
     }))
   })
   afterEach(async () => { await rm(scratch, { recursive: true, force: true }) })
@@ -152,7 +152,7 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     await writeFile(resolve(scripts, 'published-desktop.json'), JSON.stringify({ ...desktop, ...digest }))
     await writeFile(resolve(scratch, 'src/backend-release.json'), 'invalid moving-main pin')
     await writeFile(resolve(scratch, 'published/packages/desktop/src/backend-release.json'), JSON.stringify({
-      ...backend, ...digest, commit: desktop.backendCommit, releaseTag: `backend-${desktop.backendCommit}`,
+      ...backend, ...digest, commit: desktop.backendCommit, releaseTag: `main-${desktop.backendCommit}`,
       desktopWindowsRuntime: {
         ...backend.desktopWindowsRuntime,
         aimdo: { ...backend.desktopWindowsRuntime.aimdo, ...digest },

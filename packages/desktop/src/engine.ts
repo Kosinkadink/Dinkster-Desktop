@@ -371,8 +371,7 @@ export class EngineRuntime extends EventEmitter {
     await extract(this.options.sourceArchive, { dir: staging })
     await mkdir(dirname(destination), { recursive: true })
     await rm(destination, { recursive: true, force: true })
-    await rename(join(staging, `dinkster-backend-${commit}`), destination)
-    await rm(staging, { recursive: true, force: true })
+    await rename(staging, destination)
     try {
       this.assertStarting(signal)
       await this.sync(destination, variant, signal)

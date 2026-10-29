@@ -7,8 +7,10 @@ import { unzipSync } from 'fflate'
 import backend from '../src/backend-release.json' with { type: 'json' }
 
 if (backend.repository !== 'Kosinkadink/Dinkster' || !/^[a-f0-9]{40}$/.test(backend.commit) ||
-  backend.releaseTag !== `backend-${backend.commit}` ||
-  backend.archive !== `dinkster-backend-${backend.commit}.zip` || !/^[a-f0-9]{64}$/.test(backend.sha256) ||
+  backend.releaseTag !== `main-${backend.commit}` ||
+  !/^\d+\.\d+\.\d+\.dev\d+\+g[a-f0-9]{40}$/.test(backend.version) ||
+  !backend.version.endsWith(`+g${backend.commit}`) ||
+  backend.archive !== `dinkster-source-${backend.version}.zip` || !/^[a-f0-9]{64}$/.test(backend.sha256) ||
   !Number.isSafeInteger(backend.workerProtocol) || backend.workerProtocol < 1) {
   throw new Error('Invalid pinned backend release metadata')
 }
@@ -59,14 +61,12 @@ for (const payload of payloads) {
   if (size !== pin.size) throw new Error(`${pin.archive} size mismatch: expected ${pin.size}, got ${size}`)
 }
 // Inspect dependency manifests as well as the native profile without extracting unrelated assets.
-const prefix = `dinkster-backend-${backend.commit}/`
-const profile = `${prefix}scripts/desktop_windows_runtime.json`
+const profile = 'scripts/desktop_windows_runtime.json'
 let declared
 let files
 try {
   files = unzipSync(await readFile(payloads[0].source), {
-    filter: ({ name }) => name.startsWith(prefix) &&
-      (name === profile || /\/(?:uv\.lock|pyproject\.toml|[^/]*-pack\.toml)$/.test(name)),
+    filter: ({ name }) => name === profile || /(?:^|\/)(?:uv\.lock|pyproject\.toml|[^/]*-pack\.toml)$/.test(name),
   })
   declared = JSON.parse(Buffer.from(files[profile] ?? []).toString('utf8'))
 } catch (cause) {
@@ -78,7 +78,7 @@ if (!isDeepStrictEqual(declared, { aimdo, cudaTorch })) {
 for (const [name, bytes] of Object.entries(files)) {
   const source = Buffer.from(bytes).toString('utf8').replace(/^\s*#.*$/gm, '')
   if (/\bgit\+|\bgit\s*=/i.test(source)) {
-    throw new Error(`Backend ZIP requires Git in ${name.slice(prefix.length)}`)
+    throw new Error(`Backend ZIP requires Git in ${name}`)
   }
 }
 await rm(directory, { recursive: true, force: true })

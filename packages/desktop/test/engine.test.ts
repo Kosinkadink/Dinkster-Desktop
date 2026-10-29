@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createServer, type Server } from 'node:http'
 import * as childProcess from 'node:child_process'
+import { zipSync } from 'fflate'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EngineRuntime, supervisorArguments, waitForSupervisorReady, type EngineRuntimeOptions } from '../src/engine.js'
 import * as release from '../src/release.js'
@@ -91,6 +92,28 @@ function waitForPhase(runtime: EngineRuntime, phase: string): Promise<void> {
 }
 
 describe('EngineRuntime lifecycle', () => {
+  it('installs flat release source files at the generation root before preparing catalogs', async () => {
+    const { data, source } = await fixture('', 'console.error("catalog fixture"); process.exit(1)')
+    const archive = join(source, 'release.zip')
+    const bin = process.platform === 'win32' ? '.venv/Scripts/dinkster-supervisor.exe' : '.venv/bin/dinkster-supervisor'
+    const content = Buffer.from(zipSync({
+      'sync': Buffer.from(''),
+      'run': Buffer.from(await readFile(join(source, 'run'))),
+      'pyproject.toml': Buffer.from('[project]\nname = "flat-source-fixture"\n'),
+      [bin]: Buffer.from('not an executable'),
+    }))
+    await writeFile(archive, content)
+    vi.spyOn(io, 'verifyFile').mockResolvedValue(undefined)
+    const runtime = createRuntime({ dataDirectory: data, sourceArchive: archive, uvExecutable: process.execPath, variant: 'cpu' })
+    await expect(runtime.start()).rejects.toThrow('catalog fixture')
+    const installed = join(data, 'engine', 'releases', `${ENGINE_RELEASE.commit}-cpu`)
+    expect(await readFile(join(installed, 'pyproject.toml'), 'utf8')).toContain('flat-source-fixture')
+    expect(JSON.parse(await readFile(join(installed, '.dinkster-desktop-release.json'), 'utf8')))
+      .toEqual({ commit: ENGINE_RELEASE.commit, variant: 'cpu' })
+    expect(existsSync(`${installed}.installing`)).toBe(false)
+    expect(await readFile(archive)).toEqual(content)
+  })
+
   it('installs the verified bundled wheel after sync and before catalog preparation', async () => {
     const { data, source } = await fixture(
       `const assert = require('node:assert/strict')

@@ -7,8 +7,9 @@ describe('engine release selection', () => {
     expect(backend.repository).toBe('Kosinkadink/Dinkster')
     expect(backend.commit).toMatch(/^[a-f0-9]{40}$/)
     expect(backend.sha256).toMatch(/^[a-f0-9]{64}$/)
-    expect(backend.archive).toBe(`dinkster-backend-${backend.commit}.zip`)
-    expect(backend.releaseTag).toBe(`backend-${backend.commit}`)
+    expect(backend.archive).toBe(`dinkster-source-${backend.version}.zip`)
+    expect(backend.version).toMatch(new RegExp(`^\\d+\\.\\d+\\.\\d+\\.dev\\d+\\+g${backend.commit}$`))
+    expect(backend.releaseTag).toBe(`main-${backend.commit}`)
     expect(backend.bootstrap.requiresGit).toBe(false)
     expect(backend).not.toHaveProperty('identityCommit')
     expect(backend).not.toHaveProperty('install')
@@ -41,7 +42,7 @@ describe('engine release selection', () => {
   it('uses one locked provisioning path for every accelerator', () => {
     for (const accelerator of ['cpu', 'cuda', 'mps', 'rocm', 'xpu'] as const) {
       expect(syncArguments(accelerator)).toEqual([
-        'sync', '--python', '3.12', '--locked', '--no-dev', '--all-packages',
+        'sync', '--python', '3.12', '--frozen', '--no-dev', '--all-packages',
       ])
     }
   })

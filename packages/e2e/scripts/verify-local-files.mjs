@@ -442,6 +442,23 @@ try {
     await page.screenshot({
       path: join(root, 'native-ingress-confirm-copy.png'),
     })
+    // Clone the real response before Electron's inspector can evict its body.
+    await page.evaluate(() => {
+      const originalFetch = window.fetch
+      window.__nativeUploadBody = new Promise((resolve, reject) => {
+        window.fetch = async (...args) => {
+          const response = await originalFetch(...args)
+          if (
+            new URL(response.url).pathname === '/api/assets/media' &&
+            args[1]?.method === 'POST'
+          ) {
+            window.fetch = originalFetch
+            response.clone().json().then(resolve, reject)
+          }
+          return response
+        }
+      })
+    })
     const response = page.waitForResponse(
       (response) =>
         response.request().method() === 'POST' &&
@@ -450,7 +467,9 @@ try {
     await confirmation.click()
     const uploadResponse = await response
     assert.equal(uploadResponse.status(), 201)
-    const { asset: uploadedImage } = await uploadResponse.json()
+    const { asset: uploadedImage } = await page.evaluate(
+      () => window.__nativeUploadBody,
+    )
     await expect
       .poll(() =>
         page.evaluate(() => {

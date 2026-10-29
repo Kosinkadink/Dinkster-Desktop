@@ -1,5 +1,20 @@
 # Desktop engine boundaries
 
+## Native identity
+
+`pnpm prepare:frontend` copies native branding from the workflow-pinned
+`.frontend/branding` source into generated Desktop resources. Windows and NSIS
+use its ICO, macOS uses its ICNS, and Linux uses its color PNG. Do not maintain
+or edit a second set of icons in Desktop. The accepted 16 and 24 px frames are
+the exact-source renders without hand edits.
+
+Window backgrounds follow the operating system's light or dark theme using
+the same source's palette tokens. The tray uses the color symbol on Windows
+and Linux and the monochrome template with Retina representation on macOS.
+Open "About Dinkster Desktop" from the tray menu to see the accepted wordmark
+and installed shell version. The about surface follows live OS-theme changes.
+The first-run renderer and its installation controls remain Frontend-owned.
+
 ## Release mirror
 
 Desktop treats the configured release mirror as a security boundary. Production

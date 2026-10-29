@@ -57,6 +57,10 @@
         "from": "resources/engine",
         "to": "engine",
         "filter": ["*.zip", "*.whl"]
+      },
+      {
+        "from": "resources/branding",
+        "to": "branding"
       }
     ],
     "directories": {
@@ -64,7 +68,7 @@
     },
     "publish": [{ "provider": "generic", "url": "https://updates.dinkster.invalid/desktop" }],
     "win": {
-      "icon": "resources/icon.ico",
+      "icon": "resources/branding/platform/dinkster.ico",
       "target": [
         {
           "target": "nsis",
@@ -77,10 +81,22 @@
       "artifactName": "Dinkster-Desktop-${version}-Setup.${ext}"
     },
     "nsis": {
+      "installerIcon": "resources/branding/platform/dinkster.ico",
+      "uninstallerIcon": "resources/branding/platform/dinkster.ico",
+      "installerHeaderIcon": "resources/branding/platform/dinkster.ico",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
+    },
+    "mac": {
+      "icon": "resources/branding/platform/dinkster.icns",
+      "category": "public.app-category.graphics-design"
+    },
+    "linux": {
+      "icon": "resources/branding/raster/color/512.png",
+      "executableName": "dinkster-desktop",
+      "category": "Graphics"
     }
   }
 }

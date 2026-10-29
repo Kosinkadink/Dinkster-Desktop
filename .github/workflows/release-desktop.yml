@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 env:
-  DINKSTER_FRONTEND_REF: 08deab9ce537bc8d567cd96ad4a11e014a33d2ff
+  DINKSTER_FRONTEND_REF: 0e899d900810e2504c3018d3923f39dfa79872b3
 
 concurrency:
   group: private-desktop-release

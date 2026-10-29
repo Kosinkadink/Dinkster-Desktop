@@ -113,24 +113,6 @@ describe('Desktop dinkster-env command client', () => {
     }
   })
 
-  it('supplies an executable bundled 7-Zip to the environment command', async () => {
-    const { root } = await commandFixture()
-    const script = join(root, 'seven-zip.cjs')
-    await writeFile(script, `
-      const fs = require('node:fs'); const path = require('node:path');
-      const binary = process.env.DINKSTER_7ZIP;
-      if (!path.isAbsolute(binary)) throw new Error('7-Zip path is not absolute');
-      const result = require('node:child_process').execFileSync(binary, ['-h'], {encoding:'utf8'});
-      if (!result.includes('7-Zip')) throw new Error('7-Zip did not execute');
-      fs.writeFileSync(${JSON.stringify(join(root, 'seven-zip.txt'))}, binary);
-      console.log(JSON.stringify({format:'dinkster.environment-result/1',operation:'doctor',
-        status:'clean',root:${JSON.stringify(root)},current:null,plan:[]}));
-    `)
-    const result = await new EnvironmentClient(process.execPath, [script]).run({ root, operation: 'doctor' })
-    expect(result.status).toBe('clean')
-    expect(await readFile(join(root, 'seven-zip.txt'), 'utf8')).toMatch(/7zip-bin/)
-  })
-
   it('rejects unsafe requests and malformed responses instead of treating them as applied', async () => {
     const { root, client } = await commandFixture()
     await expect(client.run({ root: 'relative', operation: 'setup' })).rejects.toThrow('must be absolute')

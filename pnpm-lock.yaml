@@ -16,9 +16,6 @@ importers:
 
   packages/desktop:
     dependencies:
-      7zip-bin:
-        specifier: 5.2.0
-        version: 5.2.0
       '@decimalturn/toml-patch':
         specifier: 3.0.4
         version: 3.0.4
@@ -70,12 +67,6 @@ importers:
         version: 5.9.3
 
 packages:
-  7zip-bin@5.2.0:
-    resolution:
-      {
-        integrity: sha512-ukTPVhqG4jNzMro2qA9HSCSSVJN3aN7tlb+hfqYCt3ER0yWroeA2VR38MNrOHLQ/cVj+DaIMad0kFCtWWowh/A==,
-      }
-
   '@decimalturn/toml-patch@3.0.4':
     resolution:
       {
@@ -3088,8 +3079,6 @@ packages:
     engines: { node: '>=10' }
 
 snapshots:
-  7zip-bin@5.2.0: {}
-
   '@decimalturn/toml-patch@3.0.4': {}
 
   '@electron/asar@3.4.1':

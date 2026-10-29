@@ -40,12 +40,6 @@ interpreter with `dinkster-supervisor` installed, or set `DINKSTER_ENV` to its
 `dinkster-env` executable. Desktop does not install tools with pip or uv as a
 fallback. The production standalone tools payload is not yet packaged.
 
-Desktop bundles `7zip-bin` as an unpacked native resource. Environment commands
-receive its absolute executable path through `DINKSTER_7ZIP`; packaged paths
-use `app.asar.unpacked`, with execute permission restored on non-Windows hosts.
-The environment command owns archive preflight and extraction; Desktop does
-not decode archives or ignore extraction errors.
-
 Local operations review the command's plan before confirmation. A saved engine
 binding starts the existing generation through `dinkster-env start`; updates
 and rollbacks route open windows to the newly returned supervisor URL, not the

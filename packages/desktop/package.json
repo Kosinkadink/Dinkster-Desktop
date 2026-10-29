@@ -20,7 +20,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "7zip-bin": "5.2.0",
     "@decimalturn/toml-patch": "3.0.4",
     "electron-updater": "^6.6.2",
     "http-proxy": "^1.18.1"
@@ -48,9 +47,6 @@
       }
     ],
     "asar": true,
-    "asarUnpack": [
-      "node_modules/7zip-bin/**/*"
-    ],
     "files": [
       "dist/**/*",
       "resources/projects.html",

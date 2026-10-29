@@ -1,8 +1,6 @@
 import { execFile } from 'node:child_process'
-import { chmod } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
-import { path7za } from '7zip-bin'
 import type { VariantHardware } from './hardware.js'
 
 const execute = promisify(execFile)
@@ -146,14 +144,9 @@ export class EnvironmentClient {
 
   async run(request: EnvironmentRequest, confirmed = false): Promise<EnvironmentResult> {
     const args = [...this.prefix, ...argumentsFor(request, confirmed)]
-    const sevenZip = path7za.replace('app.asar', 'app.asar.unpacked')
-    if (!isAbsolute(sevenZip)) throw new Error('the bundled 7-Zip executable must have an absolute path')
-    // Read-only installations can already have executable native resources.
-    if (process.platform !== 'win32') await chmod(sevenZip, 0o755).catch(() => undefined)
     let stdout: string
     try {
       const result = await execute(this.executable, args, {
-        env: { ...process.env, DINKSTER_7ZIP: sevenZip },
         windowsHide: true,
         timeout: 30 * 60_000,
         maxBuffer: 4 * 1024 * 1024,

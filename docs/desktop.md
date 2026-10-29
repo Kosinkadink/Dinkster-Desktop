@@ -56,6 +56,12 @@ It does not download tools, sync dependencies, install native overlays, or
 prepare catalogs. Prepare that checkout using Dinkster's development setup
 before launching it. This path is not used to install project generations.
 
+The retained backend metadata pins the Git-free `main-<commit>` source release
+and `dinkster-source-<version>.zip` checksum for checkout release identity.
+Desktop does not embed or install that source archive. Environment tools own
+the wheel and constraints installation contract; a missing pinned artifact
+must not fall back to an unchecked archive or runtime package resolution.
+
 ## Shell updates
 
 Shell updates are separate from engine environment updates. The shell updater

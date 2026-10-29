@@ -69,6 +69,7 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
       'PATH',
       'HOME',
       'DISPLAY',
+      'XAUTHORITY',
       'XDG_RUNTIME_DIR',
       'SystemRoot',
       'TEMP',

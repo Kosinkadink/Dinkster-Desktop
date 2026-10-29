@@ -18,7 +18,7 @@ $aimdo = $backend.desktopWindowsRuntime.aimdo
 if ($desktop.published -ne $true -and $Action -ne 'Cleanup') {
     throw 'No Dinkster Desktop release has been published'
 }
-if ($desktop.published -eq $true -and ($backend.commit -cne $desktop.backendCommit -or $backend.releaseTag -cne "backend-$($desktop.backendCommit)")) {
+if ($desktop.published -eq $true -and ($backend.commit -cne $desktop.backendCommit -or $backend.releaseTag -cne "main-$($desktop.backendCommit)")) {
     throw 'The published Desktop verifier requires its original backend pin'
 }
 

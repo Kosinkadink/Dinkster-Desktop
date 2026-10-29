@@ -43,7 +43,7 @@ jobs:
         run: |
           $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
           if ($pin.repository -ne 'Kosinkadink/Dinkster' -or $pin.commit -notmatch '^[a-f0-9]{40}$') { throw 'Invalid backend pin' }
-          if ($pin.releaseTag -ne "backend-$($pin.commit)") { throw 'Invalid backend release tag' }
+          if ($pin.releaseTag -ne "main-$($pin.commit)") { throw 'Invalid backend release tag' }
           $destination = Join-Path $env:RUNNER_TEMP backend-artifact
           gh release download $pin.releaseTag --repo Kosinkadink/Dinkster --pattern $pin.archive --dir $destination
           if ($LASTEXITCODE -ne 0) { throw 'Pinned backend release download failed' }

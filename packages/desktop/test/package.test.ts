@@ -67,8 +67,9 @@ describe('desktop package inputs', () => {
     const wheelContent = Buffer.from('pinned wheel fixture')
     const pin = {
       repository: 'Kosinkadink/Dinkster', commit: 'a'.repeat(40),
-      releaseTag: `backend-${'a'.repeat(40)}`,
-      archive: `dinkster-backend-${'a'.repeat(40)}.zip`,
+      releaseTag: `main-${'a'.repeat(40)}`,
+      version: `0.0.2.dev123+g${'a'.repeat(40)}`,
+      archive: `dinkster-source-0.0.2.dev123+g${'a'.repeat(40)}.zip`,
       sha256: '', size: 0, workerProtocol: 8,
       desktopWindowsRuntime: {
         aimdo: {
@@ -88,10 +89,10 @@ describe('desktop package inputs', () => {
     const { aimdo, cudaTorch } = pin.desktopWindowsRuntime
 
     async function writeArchive(profile: string | null = JSON.stringify({ aimdo, cudaTorch }),
-      path = `dinkster-backend-${pin.commit}/scripts/desktop_windows_runtime.json`,
+      path = 'scripts/desktop_windows_runtime.json',
       manifests: Record<string, string> = {}): Promise<void> {
       const entries = Object.fromEntries(Object.entries(manifests).map(([name, text]) =>
-        [`dinkster-backend-${pin.commit}/${name}`, Buffer.from(text)]))
+        [name, Buffer.from(text)]))
       content = Buffer.from(zipSync({ ...entries, ...(profile === null ? {} : { [path]: Buffer.from(profile) }) }))
       pin.sha256 = createHash('sha256').update(content).digest('hex')
       pin.size = content.length
@@ -156,10 +157,9 @@ describe('desktop package inputs', () => {
     })
 
     it('validates the profile when the source ZIP contains large stored assets', async () => {
-      const prefix = `dinkster-backend-${pin.commit}`
       content = Buffer.from(zipSync({
-        [`${prefix}/assets/image.bin`]: [new Uint8Array(512 * 1024), { level: 0 }],
-        [`${prefix}/scripts/desktop_windows_runtime.json`]: Buffer.from(JSON.stringify({ aimdo, cudaTorch })),
+        'assets/image.bin': [new Uint8Array(512 * 1024), { level: 0 }],
+        'scripts/desktop_windows_runtime.json': Buffer.from(JSON.stringify({ aimdo, cudaTorch })),
       }))
       pin.sha256 = createHash('sha256').update(content).digest('hex')
       pin.size = content.length

@@ -53,9 +53,18 @@ await mkdir(join(data, 'engine'), { recursive: true })
 const mountedDirectory = join(root, 'read only input with spaces')
 const mountedPath = join(mountedDirectory, 'native drop with spaces.txt')
 const mountedBytes = 'mounted original bytes, not the outside same-name file'
+const imagePath = join(mountedDirectory, 'native ingress.png')
+const imageBytes = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGNUqzzzn4GBgQEADlQCbLCpUUgAAAAASUVORK5CYII=',
+  'base64',
+)
 await mkdir(mountedDirectory)
 await writeFile(mountedPath, mountedBytes)
-if (process.platform !== 'win32') await chmod(mountedPath, 0o444)
+await writeFile(imagePath, imageBytes)
+if (process.platform !== 'win32') {
+  await chmod(mountedPath, 0o444)
+  await chmod(imagePath, 0o444)
+}
 await mkdir(join(data, 'library'), { recursive: true })
 await writeFile(
   join(data, 'library', 'mounts.toml'),
@@ -302,6 +311,78 @@ try {
       rendererHasPath: false,
     })
     assert.equal(JSON.stringify(mounted).includes(root), false)
+    const imageBefore = await stat(imagePath)
+    const imageDigest = execFileSync(
+      process.platform === 'win32'
+        ? join(source, '.venv', 'Scripts', 'python.exe')
+        : join(source, '.venv', 'bin', 'python'),
+      [
+        '-c',
+        'import blake3,sys; print("blake3:"+blake3.blake3(open(sys.argv[1],"rb").read()).hexdigest())',
+        imagePath,
+      ],
+      { encoding: 'utf8' },
+    ).trim()
+    const expectedImage = {
+      digest: imageDigest,
+      name: 'native ingress.png',
+      size: imageBytes.length,
+      mediaType: 'image/png',
+      virtualPath: 'mounts/drop-input/native ingress.png',
+    }
+    const preferencesBefore = await page.evaluate(() =>
+      Object.fromEntries(
+        Object.entries(localStorage).filter(([key]) =>
+          /upload|destination/i.test(key),
+        ),
+      ),
+    )
+    await page.locator('#native-drop-test').setInputFiles(imagePath)
+    const dropOriginalFile = async () => {
+      await page.getByTestId('graph-canvas').evaluate((canvas) => {
+        const file = document.getElementById('native-drop-test').files[0]
+        const transfer = new DataTransfer()
+        transfer.items.add(file)
+        const bounds = canvas.getBoundingClientRect()
+        canvas.dispatchEvent(
+          new DragEvent('drop', {
+            bubbles: true,
+            cancelable: true,
+            clientX: bounds.left + 180,
+            clientY: bounds.top + 140,
+            dataTransfer: transfer,
+          }),
+        )
+      })
+    }
+    await dropOriginalFile()
+    const surface = page.getByTestId('canvas-file-drop-surface')
+    await expect(surface).toContainText('Using existing file; no copy made.')
+    await expect(page.getByTestId('canvas-import-confirm')).toHaveCount(0)
+    const insertedImage = await page.evaluate(() => {
+      const doc = window.__dinksterTest.app.activeTab().store.doc
+      return Object.values(doc.graphs[doc.root].nodes).map(
+        (node) => node.values.image,
+      )
+    })
+    assert.deepEqual(insertedImage, [expectedImage])
+    assert.equal(JSON.stringify(insertedImage).includes(root), false)
+    assert.deepEqual(
+      await page.evaluate(() =>
+        Object.fromEntries(
+          Object.entries(localStorage).filter(([key]) =>
+            /upload|destination/i.test(key),
+          ),
+        ),
+      ),
+      preferencesBefore,
+    )
+    await page.screenshot({ path: join(root, 'native-ingress-no-copy.png') })
+    const imageAfter = await stat(imagePath)
+    assert.equal(imageAfter.ino, imageBefore.ino)
+    assert.equal(imageAfter.mtimeMs, imageBefore.mtimeMs)
+    assert.deepEqual(await readFile(imagePath), imageBytes)
+    await page.locator('#native-drop-test').setInputFiles(mountedPath)
     // Remove project membership, not the input or grant, to prove live scope.
     await page.evaluate(async () => {
       const current = await (await fetch('/api/mounts?project=default')).json()
@@ -347,6 +428,53 @@ try {
           assetUploadRequests: uploads.length,
           inputUnchanged: true,
           vaultAndImportsUnchanged: true,
+        },
+        null,
+        2,
+      ),
+    )
+    await page.locator('#native-drop-test').setInputFiles(imagePath)
+    page.on('request', recordUpload)
+    await dropOriginalFile()
+    const confirmation = page.getByTestId('canvas-import-confirm')
+    await expect(confirmation).toBeVisible()
+    assert.deepEqual(uploads, [])
+    await page.screenshot({
+      path: join(root, 'native-ingress-confirm-copy.png'),
+    })
+    const response = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname === '/api/assets/media',
+    )
+    await confirmation.click()
+    const uploadResponse = await response
+    assert.equal(uploadResponse.status(), 201)
+    const { asset: uploadedImage } = await uploadResponse.json()
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const doc = window.__dinksterTest.app.activeTab().store.doc
+          return Object.values(doc.graphs[doc.root].nodes).map(
+            (node) => node.values.image,
+          )
+        }),
+      )
+      .toEqual([expectedImage, uploadedImage])
+    page.off('request', recordUpload)
+    assert.equal(uploads.length, 1)
+    assert.deepEqual(await readFile(imagePath), imageBytes)
+    await writeFile(
+      join(root, 'native-ingress.json'),
+      JSON.stringify(
+        {
+          backendCommit: commit,
+          resolved: expectedImage,
+          grantedUploadRequests: 0,
+          excludedConfirmedUploadRequests: uploads.length,
+          resolvedPreferencesUnchanged: true,
+          originalBytesUnchanged: true,
+          rendererDocumentHasNativePath: false,
         },
         null,
         2,

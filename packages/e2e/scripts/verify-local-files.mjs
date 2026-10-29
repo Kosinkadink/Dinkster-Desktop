@@ -149,6 +149,25 @@ try {
     window.dinksterDesktop.fileCapabilities(location.origin),
   )
   assert.equal(local.nativeFolderChoice, true)
+  const initialLocations = await page.evaluate(async () => {
+    const response = await fetch('/api/mounts/locations?project=default')
+    if (!response.ok) throw new Error('Initial locations lookup failed')
+    return response.json()
+  })
+  const visibleDefaults = Object.hasOwn(initialLocations, 'importMount')
+  if (visibleDefaults) {
+    const output = initialLocations.activeMounts.find(
+      (mount) => mount.id === initialLocations.outputMount,
+    )
+    const imports = initialLocations.activeMounts.find(
+      (mount) => mount.id === initialLocations.importMount,
+    )
+    assert.equal(output?.path, join(data, 'library', 'output'))
+    assert.equal(output.mode, 'readwrite')
+    assert.equal((await stat(output.path)).isDirectory(), true)
+    assert.equal(imports?.path, join(data, 'library', 'imports'))
+    assert.equal((await stat(imports.path)).isDirectory(), true)
+  }
   const remote = await page.evaluate(() =>
     window.dinksterDesktop.fileCapabilities('https://remote.invalid'),
   )
@@ -478,6 +497,25 @@ try {
     document.getElementById('native-capability-frame').remove(),
   )
 
+  const configuredOutput = join(root, 'existing custom output')
+  if (visibleDefaults) {
+    await mkdir(configuredOutput)
+    await writeFile(join(configuredOutput, 'keep.txt'), 'existing output bytes')
+    await page.evaluate(async (path) => {
+      const added = await fetch('/api/mounts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 'custom-output', path, mode: 'readwrite' }),
+      })
+      if (!added.ok) throw new Error('Custom output grant failed')
+      const selected = await fetch('/api/mounts/output', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 'custom-output' }),
+      })
+      if (!selected.ok) throw new Error('Custom output selection failed')
+    }, configuredOutput)
+  }
   // Restart the real backend while the dialog is pending. Cached shell status
   // remains running, but the returned path must lose native authority.
   await app.evaluate(
@@ -536,6 +574,36 @@ try {
     join(root, 'restart-during-choice.json'),
     JSON.stringify({ rejection: restartRejection, recovered }),
   )
+  if (visibleDefaults) {
+    const restartedLocations = await page.evaluate(async () => {
+      const response = await fetch('/api/mounts/locations?project=default')
+      if (!response.ok) throw new Error('Restarted locations lookup failed')
+      return response.json()
+    })
+    assert.equal(restartedLocations.outputMount, 'custom-output')
+    const output = restartedLocations.activeMounts.find(
+      (mount) => mount.id === restartedLocations.outputMount,
+    )
+    assert.equal(output?.path, configuredOutput)
+    assert.equal(
+      await readFile(join(configuredOutput, 'keep.txt'), 'utf8'),
+      'existing output bytes',
+    )
+    await writeFile(
+      join(root, 'managed-output.json'),
+      JSON.stringify(
+        {
+          backendCommit: commit,
+          freshVisibleOutput: true,
+          namedImportTargetVerified: true,
+          configuredOutputPreserved: true,
+          existingBytesPreserved: true,
+        },
+        null,
+        2,
+      ),
+    )
+  }
   await writeFile(
     join(root, 'local-files.json'),
     JSON.stringify(

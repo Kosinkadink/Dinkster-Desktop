@@ -1,5 +1,7 @@
 {
   "name": "@dinkster/desktop",
+  "productName": "Dinkster Desktop",
+  "desktopName": "dinkster-desktop.desktop",
   "version": "0.2.0",
   "private": true,
   "type": "module",
@@ -41,7 +43,6 @@
   },
   "build": {
     "appId": "com.dinkster.desktop",
-    "productName": "Dinkster Desktop",
     "protocols": [{ "name": "Dinkster", "schemes": ["dinkster"] }],
     "asar": true,
     "files": [
@@ -96,7 +97,10 @@
     "linux": {
       "icon": "resources/branding/raster/color/512.png",
       "executableName": "dinkster-desktop",
-      "category": "Graphics"
+      "category": "Graphics",
+      "desktop": {
+        "entry": { "StartupWMClass": "Dinkster Desktop" }
+      }
     }
   }
 }

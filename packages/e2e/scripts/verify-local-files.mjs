@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { closeSync, createWriteStream, openSync } from 'node:fs'
-import { mkdir, stat, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdir,
+  readFile,
+  readdir,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { finished } from 'node:stream/promises'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -43,6 +50,17 @@ const root = resolve(directory)
 await mkdir(root, { recursive: false })
 const data = join(root, 'data')
 await mkdir(join(data, 'engine'), { recursive: true })
+const mountedDirectory = join(root, 'read only input with spaces')
+const mountedPath = join(mountedDirectory, 'native drop with spaces.txt')
+const mountedBytes = 'mounted original bytes, not the outside same-name file'
+await mkdir(mountedDirectory)
+await writeFile(mountedPath, mountedBytes)
+if (process.platform !== 'win32') await chmod(mountedPath, 0o444)
+await mkdir(join(data, 'library'), { recursive: true })
+await writeFile(
+  join(data, 'library', 'mounts.toml'),
+  `[mounts.drop-input]\npath = ${JSON.stringify(mountedDirectory)}\n`,
+)
 // An explicit development source is not the packaged catalog release.
 await writeFile(
   join(data, 'engine', 'selection.json'),
@@ -203,6 +221,116 @@ try {
   assert.equal(droppedFile.rendererHasPath, false)
   assert.equal(JSON.stringify(droppedFile).includes(root), false)
   await writeFile(join(root, 'native-drop.json'), JSON.stringify(droppedFile))
+  if (local.resolvePath) {
+    assert.deepEqual(droppedFile.result, {
+      status: 'refused',
+      reason: 'not-resolvable',
+    })
+    const before = await stat(mountedPath)
+    const copiesBefore = {}
+    for (const name of ['vault', 'imports']) {
+      copiesBefore[name] = await readdir(join(data, 'library', name), {
+        recursive: true,
+      })
+    }
+    const expectedDigest = execFileSync(
+      process.platform === 'win32'
+        ? join(source, '.venv', 'Scripts', 'python.exe')
+        : join(source, '.venv', 'bin', 'python'),
+      [
+        '-c',
+        'import blake3,sys; print("blake3:"+blake3.blake3(sys.argv[1].encode()).hexdigest())',
+        mountedBytes,
+      ],
+      { encoding: 'utf8' },
+    ).trim()
+    const uploads = []
+    const recordUpload = (request) => {
+      if (
+        request.method() === 'POST' &&
+        new URL(request.url()).pathname.startsWith('/api/assets')
+      )
+        uploads.push(request.url())
+    }
+    page.on('request', recordUpload)
+    await page.locator('#native-drop-test').setInputFiles(mountedPath)
+    const mounted = await page.evaluate(async () => {
+      const file = document.getElementById('native-drop-test').files[0]
+      return {
+        result: await window.dinksterDesktop.resolveDroppedFile(
+          location.origin,
+          file,
+        ),
+        rendererHasPath: 'path' in file,
+      }
+    })
+    assert.deepEqual(mounted, {
+      result: {
+        status: 'resolved',
+        asset: {
+          digest: expectedDigest,
+          name: 'native drop with spaces.txt',
+          size: Buffer.byteLength(mountedBytes),
+          mediaType: 'text/plain',
+          virtualPath: 'mounts/drop-input/native drop with spaces.txt',
+        },
+      },
+      rendererHasPath: false,
+    })
+    assert.equal(JSON.stringify(mounted).includes(root), false)
+    // Remove project membership, not the input or grant, to prove live scope.
+    await page.evaluate(async () => {
+      const current = await (
+        await fetch('/api/mounts/locations?project=default')
+      ).json()
+      const response = await fetch('/api/mounts/projects/default', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          mounts: current.mounts
+            .filter((mount) => mount.id !== 'drop-input')
+            .map((mount) => mount.id),
+          outputMount: current.outputMount ?? null,
+        }),
+      })
+      if (!response.ok) throw new Error('Project exclusion failed')
+    })
+    const excluded = await page.evaluate(() =>
+      window.dinksterDesktop.resolveDroppedFile(
+        location.origin,
+        document.getElementById('native-drop-test').files[0],
+      ),
+    )
+    assert.deepEqual(excluded, { status: 'refused', reason: 'not-resolvable' })
+    page.off('request', recordUpload)
+    assert.deepEqual(uploads, [])
+    const after = await stat(mountedPath)
+    assert.equal(after.ino, before.ino)
+    assert.equal(after.size, before.size)
+    assert.equal(after.mtimeMs, before.mtimeMs)
+    assert.equal(await readFile(mountedPath, 'utf8'), mountedBytes)
+    for (const name of ['vault', 'imports']) {
+      assert.deepEqual(
+        await readdir(join(data, 'library', name), { recursive: true }),
+        copiesBefore[name],
+      )
+    }
+    await writeFile(
+      join(root, 'mounted-native-drop.json'),
+      JSON.stringify(
+        {
+          backendCommit: commit,
+          mounted,
+          excluded,
+          assetUploadRequests: uploads.length,
+          inputUnchanged: true,
+          vaultAndImportsUnchanged: true,
+        },
+        null,
+        2,
+      ),
+    )
+  }
   await page.evaluate(() =>
     document.getElementById('native-drop-test').remove(),
   )

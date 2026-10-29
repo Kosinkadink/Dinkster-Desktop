@@ -42,9 +42,12 @@ try {
   const { stdout } = await promisify(execFile)(python, ['-c', [
     'import importlib.metadata as m, importlib.util as u, json',
     'assert u.find_spec("dinkster_inference") is not None',
-    'print(json.dumps({"inference": m.version("dinkster-inference"), "aimdo": m.version("comfy-aimdo")}))',
+    'assert u.find_spec("torch") is None, "CPU host must remain Torch-free"',
+    'assert u.find_spec("torchvision") is None, "CPU host must remain torchvision-free"',
+    'print(json.dumps({"inference": m.version("dinkster-inference"), "aimdo": m.version("comfy-aimdo"), "hostTorchFree": True}))',
   ].join('\n')], { timeout: 60_000, windowsHide: true })
   report.installed = JSON.parse(stdout)
+  assert.equal(report.installed.hostTorchFree, true)
   assert.equal(report.installed.aimdo, backend.desktopWindowsRuntime.aimdo.version)
   report.result = 'PASS'
 } catch (error) {

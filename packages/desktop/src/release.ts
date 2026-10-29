@@ -42,9 +42,13 @@ export function supportedPlatform(platform = process.platform, arch = process.ar
   return key as SupportedPlatform
 }
 
-export function syncArguments(_accelerator: EngineAccelerator): readonly string[] {
+export function syncArguments(accelerator: EngineAccelerator): readonly string[] {
   // The checksum-verified release carries its lock; avoid resolving metadata for other platforms.
-  return ['sync', '--python', '3.12', '--frozen', '--no-dev', '--all-packages']
+  return [
+    'sync', '--python', '3.12', '--frozen', '--no-dev', '--all-packages',
+    // Inference is locked for isolated packs; CPU host discovery must stay Torch-free.
+    ...(accelerator === 'cpu' ? ['--no-install-package', 'torch', '--no-install-package', 'torchvision'] : []),
+  ]
 }
 
 export function torchBackend(accelerator: EngineAccelerator, platform = process.platform, arch = process.arch): string | undefined {

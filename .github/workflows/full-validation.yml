@@ -3,6 +3,13 @@ name: Full validation
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - '.github/workflows/full-validation.yml'
+      - 'packages/desktop/src/release.ts'
+      - 'packages/desktop/src/backend-release.json'
+      - 'packages/desktop/src/engine.ts'
+      - 'packages/e2e/scripts/verify-desktop-install.mjs'
   schedule:
     - cron: '31 11 * * *'
   workflow_dispatch:

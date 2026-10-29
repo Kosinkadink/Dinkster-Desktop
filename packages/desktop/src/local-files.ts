@@ -61,8 +61,6 @@ export async function dropResolutionSupported(backendUrl: string): Promise<boole
     const response = await fetch(new URL('/api/mounts/locations', backendUrl), {
       redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
     })
-    // Backends predating the local locations surface cannot resolve drops.
-    if (response.status === 404 || response.status === 405) return false
     if (response.status !== 200) throw new Error()
     const body = await response.json()
     if (!body || !Array.isArray(body.mounts) || !Array.isArray(body.activeMounts)

@@ -109,15 +109,11 @@ describe('local file authority', () => {
       expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual(body)
       body = { status: 'refused', reason: 'not-resolvable' }
       expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual(body)
-      for (const unsupported of [404, 405]) {
-        probeStatus = unsupported
-        receivedPath = false
-        expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual({ status: 'refused', reason: 'unsupported-backend' })
-        expect(receivedPath).toBe(false)
-      }
-      for (const denied of [401, 403, 500]) {
+      for (const denied of [401, 403, 404, 405, 500]) {
         probeStatus = denied
+        receivedPath = false
         await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
+        expect(receivedPath).toBe(false)
       }
       probeStatus = 200
       for (const unsupported of [locations, { ...locations, resolvePath: false }]) {

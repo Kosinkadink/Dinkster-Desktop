@@ -413,12 +413,31 @@ try {
   await folderSection.screenshot({
     path: join(root, 'folder-choice-selected.png'),
   })
+  const grantsBeforeCancel = await page.evaluate(async () =>
+    (await (await fetch('/api/mounts?project=default')).json()).mounts.map(
+      (mount) => mount.id,
+    ),
+  )
   await app.evaluate(({ dialog }) => {
-    dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
+    globalThis.folderDialogCanceled = false
+    dialog.showOpenDialog = async () => {
+      globalThis.folderDialogCanceled = true
+      return { canceled: true, filePaths: [] }
+    }
   })
   await chooser.click()
+  await expect
+    .poll(() => app.evaluate(() => globalThis.folderDialogCanceled))
+    .toBe(true)
   await expect(chooser).toBeEnabled()
-  await expect(page.locator('.desktop-mount-form code')).toHaveText(chosen)
+  assert.deepEqual(
+    await page.evaluate(async () =>
+      (await (await fetch('/api/mounts?project=default')).json()).mounts.map(
+        (mount) => mount.id,
+      ),
+    ),
+    grantsBeforeCancel,
+  )
   await app.evaluate(({ dialog }) => {
     dialog.showOpenDialog = async () => {
       throw new Error('Native folder dialog failed')

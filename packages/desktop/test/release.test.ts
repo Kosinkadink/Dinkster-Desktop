@@ -39,8 +39,12 @@ describe('engine release selection', () => {
     })
   })
 
-  it('uses one locked provisioning path for every accelerator', () => {
-    for (const accelerator of ['cpu', 'cuda', 'mps', 'rocm', 'xpu'] as const) {
+  it('keeps CPU host Torch out of the locked provisioning path', () => {
+    expect(syncArguments('cpu')).toEqual([
+      'sync', '--python', '3.12', '--frozen', '--no-dev', '--all-packages',
+      '--no-install-package', 'torch', '--no-install-package', 'torchvision',
+    ])
+    for (const accelerator of ['cuda', 'mps', 'rocm', 'xpu'] as const) {
       expect(syncArguments(accelerator)).toEqual([
         'sync', '--python', '3.12', '--frozen', '--no-dev', '--all-packages',
       ])

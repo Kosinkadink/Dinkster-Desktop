@@ -76,7 +76,7 @@ import type {
 const { autoUpdater } = updater
 let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
-const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; folderProject?: string; document: number }>()
+const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; folderProject: string | undefined; document: number }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
 const environmentClient = new EnvironmentClient()
 let pendingProjectPlan: { token: string; project: DesktopProject; request: EnvironmentRequest } | undefined

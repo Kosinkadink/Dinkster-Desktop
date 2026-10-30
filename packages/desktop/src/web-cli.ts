@@ -19,7 +19,6 @@ try {
     dataDirectory,
     sourceDirectory: source,
     port,
-    ...(process.env['DINKSTER_UV'] ? { uvExecutable: process.env['DINKSTER_UV'] } : {}),
     ...(configuredAccelerator.accelerator ? { variant: configuredAccelerator.accelerator } : {}),
   })
 

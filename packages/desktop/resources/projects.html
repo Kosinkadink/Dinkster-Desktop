@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+  <title>Dinkster projects</title>
+  <style>
+    :root { color-scheme: dark; font: 14px system-ui, sans-serif; background: #171717; color: #ededed; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { height: 54px; display: flex; align-items: center; padding: 0 24px; border-bottom: 1px solid #383838; -webkit-app-region: drag; }
+    main { max-width: 1000px; margin: auto; padding: 28px; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    h2 { font-size: 16px; margin: 0 0 18px; }
+    p { line-height: 1.5; color: #b8b8b8; }
+    .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px; }
+    section, article { border: 1px solid #3c3c3c; border-radius: 10px; padding: 20px; background: #202020; }
+    article { margin: 0 0 12px; }
+    label { display: grid; gap: 7px; margin-bottom: 16px; color: #d0d0d0; }
+    input, select, textarea, button { font: inherit; border-radius: 6px; padding: 10px 12px; }
+    input, select, textarea { min-width: 0; width: 100%; border: 1px solid #555; background: #171717; color: inherit; }
+    input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid #8be9fd; outline-offset: 2px; }
+    button { cursor: pointer; border: 1px solid #555; background: #303030; color: #ededed; -webkit-app-region: no-drag; }
+    button.primary { background: #8be9fd; color: #111; border-color: #8be9fd; font-weight: 600; }
+    button:disabled { opacity: .5; cursor: wait; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .endpoint { overflow-wrap: anywhere; font-size: 12px; }
+    details { margin-top: 20px; border: 1px solid #3c3c3c; border-radius: 10px; padding: 20px; background: #202020; }
+    #local { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
+    #local p, #local .actions { grid-column: 1 / -1; }
+    summary { cursor: pointer; font-weight: 600; margin-bottom: 16px; }
+    .plan { margin-top: 24px; border-color: #8be9fd; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.5; }
+    #message { min-height: 24px; white-space: pre-wrap; color: #bdeef9; }
+    @media (max-width: 700px) { .columns, #local { grid-template-columns: 1fr; } main { padding: 20px; } }
+  </style>
+</head>
+<body>
+  <header>Dinkster Desktop</header>
+  <main>
+    <h1>Projects</h1>
+    <p>Choose an installation or connect to a remote engine. Remote projects do not install a local environment.</p>
+    <div class="columns">
+      <section aria-labelledby="saved-title">
+        <h2 id="saved-title">Your projects</h2>
+        <div id="projects"></div>
+      </section>
+      <section aria-labelledby="create-title">
+        <h2 id="create-title">Connect a remote project</h2>
+        <form id="create">
+          <label>Project name<input id="name" required maxlength="128" placeholder="Remote studio"></label>
+          <label>Server URL<input id="url" required type="url" placeholder="https://your-server.example"></label>
+          <label>Channel<select id="channel"><option value="stable">Stable</option><option value="main">Main</option></select></label>
+          <p>Uses the frontend served by this engine. No local generation, wheel store or update journal is created.</p>
+          <button class="primary" type="submit">Save remote project</button>
+        </form>
+      </section>
+    </div>
+        <details id="local-settings">
+          <summary>Manage a local installation</summary>
+          <form id="local">
+            <label>Saved project<select id="local-project"><option value="">New local project</option></select></label>
+            <label>Project name<input id="local-name" required maxlength="128" placeholder="Local studio"></label>
+            <label>Install root<input id="local-root" required placeholder="Absolute project directory"></label>
+            <label>Channel<select id="local-channel"><option value="stable">Stable</option><option value="main">Main</option></select></label>
+            <label>Operation<select id="local-operation">
+              <option value="setup">Install</option><option value="update">Update / change variant</option>
+              <option value="rollback">Rollback</option><option value="move">Move</option>
+              <option value="doctor">Check drift</option><option value="gc">Garbage collection</option>
+            </select></label>
+            <label>Variant (override available)<select id="local-variant"><option value="">Keep current / inspect before installing</option></select></label>
+            <label>Mirrors, in order (one per line)<textarea id="local-mirrors" rows="2" placeholder="Local mirror directory or HTTPS URL"></textarea></label>
+            <label>Wheel store (optional)<input id="local-data" placeholder="Use the registered store for this volume"></label>
+            <label>Move destination<input id="local-destination" placeholder="Absolute destination directory"></label>
+            <label>Engine name<input id="local-engine" required value="main" maxlength="128"></label>
+            <label>Assigned NVIDIA devices (comma-separated)<input id="local-gpus" placeholder="For example 0,1; empty for explicit CPU"></label>
+            <label>Supervisor port<input id="local-port" type="number" min="1" max="65535" required value="3639"></label>
+            <div class="actions"><button id="inspect-hardware" type="button">Inspect hardware and variants</button></div>
+            <p id="detected-gpus" style="white-space:pre-wrap"></p>
+            <p id="hardware-reason" style="white-space:pre-wrap" aria-live="polite">Inspect the catalog and assigned GPUs before choosing a variant. CPU is never selected automatically.</p>
+            <p>Environment operations run through dinkster-env. Review its plan before any install, update, rollback, move or collection. CPU is never selected automatically.</p>
+            <div class="actions"><button type="submit">Review environment plan</button><button id="bind-local" type="button">Save existing binding</button></div>
+          </form>
+        </details>
+    <section id="plan-panel" class="plan" hidden aria-labelledby="plan-title">
+      <h2 id="plan-title">Environment plan</h2>
+      <pre id="plan"></pre>
+      <div class="actions"><button id="apply" class="primary" type="button" hidden>Confirm and apply</button><button id="cancel-plan" type="button">Dismiss</button></div>
+    </section>
+    <p id="message" role="status" aria-live="polite"></p>
+  </main>
+  <script type="module" src="../dist/project-dialog.js"></script>
+</body>
+</html>

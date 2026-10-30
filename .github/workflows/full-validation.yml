@@ -3,6 +3,13 @@ name: Full validation
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - '.github/workflows/full-validation.yml'
+      - 'packages/desktop/src/release.ts'
+      - 'packages/desktop/src/backend-release.json'
+      - 'packages/desktop/src/engine.ts'
+      - 'packages/e2e/scripts/verify-desktop-install.mjs'
   schedule:
     - cron: '31 11 * * *'
   workflow_dispatch:
@@ -16,8 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DINKSTER_FRONTEND_REF: 44a2744c821996d00d011e67f696abe2270dd446
-  DINKSTER_REF: 2cedcbfb4ab631eaf8af823cd010893f549d9dbc
+  DINKSTER_FRONTEND_REF: 54b24ecd8a7a7a079863cb751b14988f29047c46
 
 jobs:
   linux:
@@ -71,13 +77,6 @@ jobs:
           repository: Kosinkadink/Dinkster-Frontend
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
           path: .frontend
-      - uses: actions/checkout@v4
-        with:
-          clean: true
-          persist-credentials: false
-          repository: Kosinkadink/Dinkster
-          ref: ${{ env.DINKSTER_REF }}
-          path: .dinkster
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -89,24 +88,25 @@ jobs:
           cache-dependency-path: |
             pnpm-lock.yaml
             .frontend/pnpm-lock.yaml
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: '3.12'
-          enable-cache: false
       - run: pnpm --dir .frontend install --frozen-lockfile
       - run: pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: node scripts/prepare-smoke-backend.mjs
       - run: pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
-      - run: xvfb-run --auto-servernum node scripts/smoke-desktop.mjs
+      - run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-environment-client.mjs
+        env:
+          DINKSTER_ELECTRON_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
+      - run: mkdir -p test-results/desktop-smoke && xvfb-run --auto-servernum node packages/e2e/scripts/verify-desktop-install.mjs
+        env:
+          DINKSTER_DESKTOP_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
+          DINKSTER_DESKTOP_VERIFY_ROOT: test-results/desktop-smoke/installed
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: desktop-smoke
           path: |
             test-results/desktop-smoke/**/*.png
-            test-results/desktop-smoke/**/logs/*.log
+            test-results/desktop-smoke/**/*.json
           retention-days: 7
 
   windows-package:
@@ -128,22 +128,6 @@ jobs:
           repository: Kosinkadink/Dinkster-Frontend
           ref: ${{ env.DINKSTER_FRONTEND_REF }}
           path: .frontend
-      - name: Download pinned backend and Aimdo
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
-          if ($pin.repository -ne 'Kosinkadink/Dinkster' -or $pin.commit -notmatch '^[a-f0-9]{40}$') { throw 'Invalid backend pin' }
-          if ($pin.releaseTag -ne "main-$($pin.commit)") { throw 'Invalid backend release tag' }
-          $destination = Join-Path $env:RUNNER_TEMP backend-artifact
-          gh release download $pin.releaseTag --repo Kosinkadink/Dinkster --pattern $pin.archive --dir $destination
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned backend release download failed' }
-          "DINKSTER_ENGINE_ARCHIVE=$(Join-Path $destination $pin.archive)" >> $env:GITHUB_ENV
-          $aimdo = $pin.desktopWindowsRuntime.aimdo
-          if ($aimdo.url -notlike 'https://files.pythonhosted.org/packages/*') { throw 'Invalid Aimdo wheel URL' }
-          $wheel = Join-Path $destination $aimdo.archive
-          Invoke-WebRequest -Uri $aimdo.url -OutFile $wheel
-          "DINKSTER_AIMDO_WHEEL=$wheel" >> $env:GITHUB_ENV
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8

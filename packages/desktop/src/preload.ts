@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { ProjectDialogBridge } from './project-dialog.js'
+import type { DesktopProjects } from './projects.js'
 import type {
   DesktopBridge,
   DesktopConnectionCredentials,
@@ -79,4 +81,21 @@ const bridge: DesktopBridge = {
   },
 }
 
-contextBridge.exposeInMainWorld('dinksterDesktop', bridge)
+const localFilesOnly = process.argv.includes('--dinkster-local-files')
+contextBridge.exposeInMainWorld('dinksterDesktop', localFilesOnly ? {
+  fileCapabilities: bridge.fileCapabilities,
+  chooseDirectory: bridge.chooseDirectory,
+  revealFile: bridge.revealFile,
+  resolveDroppedFile: bridge.resolveDroppedFile,
+} : bridge)
+
+const projects: ProjectDialogBridge = {
+  list: () => ipcRenderer.invoke('desktop:projects-list') as Promise<DesktopProjects>,
+  save: (project) => ipcRenderer.invoke('desktop:projects-save', project) as Promise<void>,
+  remove: (projectId) => ipcRenderer.invoke('desktop:projects-remove', projectId) as Promise<void>,
+  open: (projectId, engineId) => ipcRenderer.invoke('desktop:projects-open', projectId, engineId) as Promise<void>,
+  inspect: (request) => ipcRenderer.invoke('desktop:projects-inspect', request),
+  plan: (project, request) => ipcRenderer.invoke('desktop:projects-plan', project, request),
+  apply: (token) => ipcRenderer.invoke('desktop:projects-apply', token),
+}
+if (!localFilesOnly) contextBridge.exposeInMainWorld('dinksterProjects', projects)

@@ -1,17 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, delimiter, dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { join } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
-import extract from 'extract-zip'
-import * as tar from 'tar'
-import { download, verifyFile } from './io.js'
-import { ENGINE_RELEASE, supportedPlatform, syncArguments, torchBackend } from './release.js'
+import { ENGINE_RELEASE, torchBackend } from './release.js'
 import {
   decodeEngineAccelerator,
   detectEngineAccelerator,
@@ -22,10 +18,7 @@ import type { LifecycleStatus } from './types.js'
 
 export interface EngineRuntimeOptions {
   readonly dataDirectory: string
-  readonly sourceArchive?: string
   readonly sourceDirectory?: string
-  readonly aimdoWheel?: string
-  readonly uvExecutable?: string
   readonly variant?: EngineAccelerator
   readonly releaseCommit?: string
   readonly port?: number
@@ -145,48 +138,7 @@ export async function waitForSupervisorReady(options: {
   throw new Error('Dinkster engine did not become ready within 10 minutes')
 }
 
-async function run(
-  command: string,
-  args: readonly string[],
-  cwd: string,
-  onLine: (line: string) => void,
-  onSpawn: (child: ChildProcess) => void,
-  signal: AbortSignal,
-  env?: NodeJS.ProcessEnv,
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, [...args], {
-      cwd,
-      windowsHide: true,
-      detached: process.platform !== 'win32',
-      ...(env ? { env } : {}),
-    })
-    onSpawn(child)
-    const abort = () => {
-      if (child.exitCode === null) child.kill()
-    }
-    signal.addEventListener('abort', abort, { once: true })
-    let stderr = ''
-    const consume = (chunk: Buffer) => {
-      const text = chunk.toString()
-      stderr = `${stderr}${text}`.slice(-8000)
-      for (const line of text.split(/\r?\n/)) if (line.trim()) onLine(line.trim())
-    }
-    child.stdout?.on('data', consume)
-    child.stderr?.on('data', consume)
-    child.once('error', reject)
-    child.once('exit', (code) => {
-      signal.removeEventListener('abort', abort)
-      if (signal.aborted) {
-        reject(new Error('Dinkster startup was cancelled'))
-        return
-      }
-      if (code === 0) resolve()
-      else reject(new Error(`${basename(command)} exited with code ${String(code)}${stderr ? `: ${stderr.trim()}` : ''}`))
-    })
-  })
-}
-
+/** Launches an already provisioned checkout; project environments use dinkster-env. */
 export class EngineRuntime extends EventEmitter {
   private current: LifecycleStatus = { phase: 'idle', detail: 'Waiting to start' }
   private child: ChildProcess | undefined
@@ -281,25 +233,21 @@ export class EngineRuntime extends EventEmitter {
 
     const library = join(this.options.dataDirectory, 'library')
     await mkdir(library, { recursive: true })
-    const uv = this.options.uvExecutable ?? await this.ensureUv(signal)
-    const env = this.environment(source, uv, variant)
+    const env = engineProcessEnvironment(variant)
+    env['DINKSTER_EXECUTION_PYTHON'] = executable(source, 'python')
+    env['UV_PROJECT_ENVIRONMENT'] = join(source, '.venv')
+    delete env['UV_CONSTRAINT']
+    delete env['UV_TORCH_BACKEND']
     const constraints = join(source, '.dinkster-native', 'constraints.txt')
     if (torchBackend(variant) !== undefined && existsSync(constraints)) {
       env['UV_CONSTRAINT'] = constraints
       env['UV_TORCH_BACKEND'] = await readFile(join(source, '.dinkster-native', 'torch-backend'), 'utf8')
     }
     this.assertStarting(signal)
-    if ((this.options.releaseCommit ?? ENGINE_RELEASE.commit) === ENGINE_RELEASE.commit) {
-      this.update({ phase: 'installing', detail: 'Preparing the default node catalogs', variant })
-      await run(uv, ['run', '--no-sync', 'dinkster-pack', 'prepare-catalogs', '--defaults', '--library-root', library], source, (detail) => {
-        this.update({ phase: 'installing', detail, variant })
-      }, (child) => this.track(child), signal, env)
-    }
-    this.assertStarting(signal)
     this.update({ phase: 'starting', detail: 'Starting the local Dinkster engine', variant })
     this.assertStarting(signal)
     const instance = randomUUID()
-    // Another process may acquire the port during environment setup.
+    // Another process may acquire the port while the checkout is inspected.
     await assertLoopbackPortAvailable(port)
     this.assertStarting(signal)
     this.child = spawn(supervisor, supervisorArguments(source, library, port, instance), {
@@ -347,7 +295,7 @@ export class EngineRuntime extends EventEmitter {
 
   private async ensureSource(variant: EngineAccelerator, signal: AbortSignal): Promise<string> {
     if (this.options.sourceDirectory) {
-      await this.sync(this.options.sourceDirectory, variant, signal)
+      this.assertStarting(signal)
       return this.options.sourceDirectory
     }
 
@@ -355,13 +303,12 @@ export class EngineRuntime extends EventEmitter {
     const commit = this.options.releaseCommit ?? ENGINE_RELEASE.commit
     const legacyDestination = join(releases, commit)
     const destination = join(releases, `${commit}-${variant}`)
-    const nativePins = this.nativePins(variant)
     const candidates = variant === 'cuda'
       ? [legacyDestination, join(releases, `${commit}-nvidia`), destination]
       : [legacyDestination, destination]
     for (const candidate of candidates) {
       const marker = join(candidate, '.dinkster-desktop-release.json')
-      let installed: { commit?: string; variant?: string; nativeProfile?: string }
+      let installed: { commit?: string; variant?: string }
       try {
         installed = JSON.parse(await readFile(marker, 'utf8')) as typeof installed
       } catch {
@@ -369,151 +316,10 @@ export class EngineRuntime extends EventEmitter {
         continue
       }
       if (installed?.commit === commit && decodeEngineAccelerator(installed.variant) === variant) {
-        if (commit === ENGINE_RELEASE.commit && nativePins.nativeProfile && installed.nativeProfile !== nativePins.nativeProfile) {
-          throw new Error('The installed backend has a different native runtime profile. This Desktop release must pin a new backend revision; the existing environment has not been changed.')
-        }
         return candidate
       }
     }
-    if (commit !== ENGINE_RELEASE.commit) {
-      throw new Error(`the selected Dinkster release ${commit.slice(0, 12)} is no longer installed`)
-    }
-    const marker = join(destination, '.dinkster-desktop-release.json')
-    if (!this.options.sourceArchive) throw new Error('no packaged Dinkster engine source was found')
-    this.update({ phase: 'installing', detail: 'Preparing the locked Dinkster release', variant })
-    await verifyFile(this.options.sourceArchive, ENGINE_RELEASE.sourceSha256)
-    const staging = `${destination}.installing`
-    await rm(staging, { recursive: true, force: true })
-    await mkdir(staging, { recursive: true })
-    await extract(this.options.sourceArchive, { dir: staging })
-    await mkdir(dirname(destination), { recursive: true })
-    await rm(destination, { recursive: true, force: true })
-    await rename(staging, destination)
-    try {
-      this.assertStarting(signal)
-      await this.sync(destination, variant, signal)
-      await writeFile(marker, JSON.stringify({
-        commit,
-        variant,
-        ...nativePins,
-      }, null, 2))
-    } catch (error) {
-      await rm(destination, { recursive: true, force: true })
-      throw error
-    }
-    return destination
-  }
-
-  private async sync(source: string, variant: EngineAccelerator, signal: AbortSignal): Promise<void> {
-    const uv = this.options.uvExecutable ?? await this.ensureUv(signal)
-    this.assertStarting(signal)
-    this.update({ phase: 'installing', detail: `Installing the locked ${variant.toUpperCase()} environment`, variant })
-    await run(uv, syncArguments(variant), source, (detail) => {
-      this.update({ phase: 'installing', detail, variant })
-    }, (child) => this.track(child), signal, this.environment(source, uv, variant))
-    await this.installNative(source, uv, variant, signal)
-  }
-
-  private nativePins(variant: EngineAccelerator) {
-    const enabled = this.options.aimdoWheel && torchBackend(variant) !== undefined
-    return {
-      nativeProfile: enabled ? ENGINE_RELEASE.nativeProfile : undefined,
-      aimdoSha256: enabled ? ENGINE_RELEASE.aimdo.sha256 : undefined,
-      cudaTorchSha256: enabled && variant === 'cuda'
-        ? ENGINE_RELEASE.cudaTorch.sha256 : undefined,
-    }
-  }
-
-  private async installNative(source: string, uv: string, variant: EngineAccelerator, signal: AbortSignal): Promise<void> {
-    const backend = torchBackend(variant)
-    if (!this.options.aimdoWheel || backend === undefined) return
-    this.assertStarting(signal)
-    await verifyFile(this.options.aimdoWheel, ENGINE_RELEASE.aimdo.sha256)
-    const wheels = [this.options.aimdoWheel]
-    if (this.nativePins(variant).cudaTorchSha256) {
-      const pin = ENGINE_RELEASE.cudaTorch
-      const wheel = join(this.options.dataDirectory, 'engine', 'native', pin.sha256, pin.archive)
-      if (!existsSync(wheel)) {
-        this.update({ phase: 'downloading', detail: `Downloading Windows CUDA Torch ${pin.version}`, variant })
-        await download(pin.url, wheel, signal)
-      }
-      try {
-        await verifyFile(wheel, pin.sha256)
-      } catch (error) {
-        await rm(wheel, { force: true })
-        throw error
-      }
-      wheels.push(wheel)
-    }
-    this.assertStarting(signal)
-    this.update({ phase: 'installing', detail: 'Installing the pinned native runtime', variant })
-    await run(uv, [
-      'pip', 'install', '--python', executable(source, 'python'),
-      '--reinstall', '--no-index', '--no-deps', ...wheels,
-    ], source, (detail) => {
-      this.update({ phase: 'installing', detail, variant })
-    }, (child) => this.track(child), signal, this.environment(source, uv, variant))
-    if (this.nativePins(variant).cudaTorchSha256) {
-      await run(uv, ['run', '--no-sync', 'python', '-c',
-        `import torch; assert torch.__version__ == ${JSON.stringify(ENGINE_RELEASE.cudaTorch.version)}, torch.__version__; assert torch.version.cuda == ${JSON.stringify(ENGINE_RELEASE.cudaTorch.cudaVersion)}, torch.version.cuda`,
-      ], source, (detail) => {
-        this.update({ phase: 'installing', detail, variant })
-      }, (child) => this.track(child), signal, this.environment(source, uv, variant))
-    }
-    const native = join(source, '.dinkster-native')
-    await mkdir(native, { recursive: true })
-    const aimdo = join(native, ENGINE_RELEASE.aimdo.archive)
-    await copyFile(this.options.aimdoWheel, aimdo)
-    await writeFile(join(native, 'constraints.txt'), [
-      `torch==${ENGINE_RELEASE.cudaTorch.version.split('+')[0]}+${backend}`,
-      `torchvision==${ENGINE_RELEASE.cudaTorch.torchvisionVersion}+${backend}`,
-      `comfy-aimdo @ ${pathToFileURL(aimdo).href}`,
-      '',
-    ].join('\n'))
-    await writeFile(join(native, 'torch-backend'), backend)
-  }
-
-  private environment(source: string, uv: string, variant: EngineAccelerator): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = {
-      ...engineProcessEnvironment(variant),
-      UV_CACHE_DIR: join(this.options.dataDirectory, 'cache', 'uv'),
-      UV_PROJECT_ENVIRONMENT: join(source, '.venv'),
-      DINKSTER_EXECUTION_PYTHON: executable(source, 'python'),
-    }
-    delete env['UV_CONSTRAINT']
-    delete env['UV_TORCH_BACKEND']
-    const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
-    env[pathKey] = [dirname(uv), env[pathKey]].filter(Boolean).join(delimiter)
-    return env
-  }
-
-  private async ensureUv(signal: AbortSignal): Promise<string> {
-    const platform = supportedPlatform()
-    const release = ENGINE_RELEASE.uv[platform]
-    const root = join(this.options.dataDirectory, 'tools', `uv-${ENGINE_RELEASE.uvVersion}`)
-    const result = join(root, release.executable)
-    if (existsSync(result)) {
-      try {
-        await verifyFile(result, release.executableSha256)
-        return result
-      } catch {
-        // A changed tool is replaced from the pinned release archive.
-      }
-    }
-    const archive = join(root, release.archive)
-    this.update({ phase: 'downloading', detail: `Downloading uv ${ENGINE_RELEASE.uvVersion}` })
-    await download(
-      `https://releases.astral.sh/github/uv/releases/download/${ENGINE_RELEASE.uvVersion}/${release.archive}`,
-      archive,
-      signal,
-    )
-    this.assertStarting(signal)
-    await verifyFile(archive, release.sha256)
-    if (archive.endsWith('.zip')) await extract(archive, { dir: root })
-    else await tar.x({ file: archive, cwd: root, strict: true })
-    if (!existsSync(result)) throw new Error(`uv archive did not contain ${release.executable}`)
-    await verifyFile(result, release.executableSha256)
-    return result
+    throw new Error('No provisioned checkout is available. Use the project manager and dinkster-env to install an environment, or prepare DINKSTER_ENGINE_SOURCE before launching development mode.')
   }
 
   async stop(): Promise<void> {

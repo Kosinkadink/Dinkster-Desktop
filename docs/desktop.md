@@ -1,85 +1,124 @@
-# Desktop engine boundaries
+# Desktop environment boundaries
 
-## Packaged backend
+## Native identity
 
-Desktop transitionally installs the checksum-pinned `dinkster-source-<version>.zip`
-from the backend's commit-named `main-<commit>` prerelease. The ZIP has workspace
-files at its root. Packaging verifies its size, SHA-256, Git-free dependency
-manifests and Windows native profile before embedding it. Runtime installation
-continues to use the source workspace's locked Python 3.12 environment; it does
-not install the release's wheels or apply `constraints.txt`.
+`pnpm prepare:frontend` copies native branding from the workflow-pinned
+`.frontend/branding` source into generated Desktop resources. Windows and NSIS
+use its ICO, macOS uses its ICNS, and Linux uses its color PNG. Do not maintain
+or edit a second set of icons in Desktop. The accepted 16 and 24 px frames are
+the exact-source renders without hand edits.
 
-The backend's supported package contract is wheels plus `constraints.txt`.
-Source installation here is transitional. Main prereleases retain only the
-newest 50 commits. An existing Desktop package keeps its embedded inputs, but
-rebuilding after release pruning requires the exact release manifest and source
-commit to reconstruct and verify the recorded source checksum. Never substitute
-a newer release or an unchecked archive when a pinned input is unavailable.
+The packaged product name also sets Electron's application identity. Linux
+uses `dinkster-desktop.desktop` for Wayland association and explicitly matches
+`StartupWMClass` to Electron 37's X11 class, `Dinkster Desktop`, so running
+windows associate with the installed desktop entry and its icon.
 
-## Release mirror
+Window backgrounds follow the operating system's light or dark theme using
+the same source's palette tokens. The tray uses the color symbol on Windows
+and Linux and the monochrome template with Retina representation on macOS.
+Open "About Dinkster Desktop" from the tray menu to see the accepted wordmark
+and installed shell version. The about surface follows live OS-theme changes.
+The first-run renderer and its installation controls remain Frontend-owned.
+Managed windows retain the native title "Dinkster Desktop" rather than adopting
+the embedded web page's browser title.
 
-Desktop treats the configured release mirror as a security boundary. Production
-mirror URLs use HTTPS, contain no credentials, and have no query string or
-fragment. Loopback HTTP is accepted only for local tests. Release requests use
-paths relative to that base URL; redirects are followed only while they remain
-on the same origin and under the same base path.
+## Projects and engines
 
-The mirror client parses JSON without defining the engine document schema and
-verifies downloaded bytes against a caller-supplied SHA-256 digest. The engine
-release layer owns the channel and manifest schemas and supplies the expected
-digests. Desktop also compares the running shell version with a numeric minimum
-version before an update can proceed.
+Desktop stores its project names and engine bindings in `projects.json` under
+the shell data directory. A local project binds one absolute install root and
+a `stable` or `main` channel to one or more named engines. Additional local
+engines need distinct explicit ports. Each engine records its assigned GPUs.
+Two projects cannot bind the same install root.
 
-## Projects
-
-Each Desktop project id, including `default`, binds to one absolute Dinkster
-install root and one channel: `stable` or `github-live`. Two projects cannot
-bind the same install root. The registry is stored atomically under the Desktop
-shell data directory and rejects malformed documents, duplicate project ids,
-relative roots, unsupported channels, and roots assigned more than once.
-
-The registry does not own models, outputs, history, settings, generation files,
-or install commands. Those remain outside this Desktop metadata boundary.
+A remote-only project stores server URLs and no install root. Opening it loads
+the server's frontend in an isolated window without a Desktop preload or Node
+capabilities. It does not invoke environment commands or create a generation.
 
 ## Native asset files
 
-`fileCapabilities(backendUrl)` reports folder choice and exact-file reveal for
-the running shell-managed connection. Unsupported or denied exact lookup does
-not disable folder choice. Remote connections have neither capability.
+Local engine windows receive only the file-capability, directory-choice,
+asset-reveal and native-drop methods, not project-manager, credential or shell
+lifecycle privileges. Each request checks the saved local binding and the
+environment tools' observed ready generation and URL. Requests from child
+frames, remote engines and unrelated connections have no native authority.
+Asynchronous file operations recheck ownership before returning a path or
+opening a file manager; changing generation invalidates an outstanding request.
 
-`revealFile(backendUrl, {digest, scope, project})` accepts a BLAKE3 identity,
-`local` scope, and the requesting window's project. It never accepts renderer
-host paths or roots. The main process asks its backend for verified exact
-locations, checks canonical containment under active grants, and rechecks
-authorization before opening the file manager. Windows and macOS select the
-file; other platforms open its containing folder. Missing copies and denied
-or unsupported lookups reject rather than opening an unverified directory.
+The frontend supplies an asset identity, not a filesystem path, for reveal.
+The backend returns the exact location and active mount or vault grant. Both
+the file and grant are canonicalized; an escaping symlink is rejected. Windows
+and macOS select the file; Linux opens its containing folder. Native drops use
+Electron's File lookup and the backend's advertised mounted-path resolver,
+without treating transport failures as permission to upload instead.
 
-This requires the backend's scoped/project exact-location route. A successful
-empty result is distinct from missing support or a failed request. Output
-files without retained project observations are not reveal targets merely
-because an output directory is granted.
+Desktop bindings are not environment state. The environment tools own
+`project.json`, generation records, `current`, `store`, journals, dependency
+constraints, and private supervisor runtime metadata. Desktop never writes
+those files or defines substitute formats for them.
 
-## Generation swap
+## Environment commands
 
-Desktop coordinates an update through injected engine operations so it does not
-duplicate the engine install implementation. For one project, it:
+The project manager delegates setup, update, rollback, move, doctor, garbage
+collection, and named engine start/stop to `dinkster-env`. Mutations show the
+command's read-only plan first and require confirmation. The confirmation
+token applies to exactly that request; it cannot authorize a changed root,
+variant, channel, or destination.
 
-1. Writes a durable operation journal and builds the target generation while
-   the previous supervisor continues serving.
-2. Takes a pre-update snapshot, records the switching stage, and stops the
-   previous supervisor.
-3. Activates the target and starts that generation's supervisor on the
-   project's port with a new instance id.
-4. Persists the new selection and clears the journal only after readiness is
-   reported for that exact instance id.
+Before setup or a variant change, select the project root, mirrors and assigned
+GPU indexes, then use **Inspect hardware and variants**. Desktop calls the
+read-only catalog command for that prospective root and compares the returned
+base manifests with detected hardware. It displays the choice, reason and
+reported download size. Every platform variant remains available as an explicit
+override; CPU is never selected automatically. Editing the root, channel,
+mirrors or assigned GPUs clears the choice and requires another inspection.
+Setup passes the selected engine name, port and assigned devices to dinkster-env
+so it starts only that binding. Changing a running binding's devices or port
+requires stopping it first; the environment tools enforce that rule.
 
-If build fails, the previous supervisor remains running. If activation, startup,
-or readiness fails after the previous supervisor stops, Desktop stops the failed
-candidate, reactivates the previous generation, starts its supervisor with
-another new instance id, waits for readiness, and persists the previous
-selection. The failed journal is retained for support diagnostics. A target
-generation is not deleted by the coordinator.
+The client consumes `dinkster.environment-result/1`. An update may start a new
+supervisor on a different port, so open local engine windows follow the ready
+URL returned by the command rather than reconstructing it from saved ports.
+Mirror discovery, artifact verification, generation construction, activation,
+recovery, and retention are responsibilities of the environment tools.
 
-Projects use separate coordinators, supervisors, and ports. Updating one project
-does not stop or change another project's supervisor.
+For development, `DINKSTER_ENV` selects an installed environment executable.
+Alternatively, `DINKSTER_TOOLS_PYTHON` selects an interpreter containing the
+tools and runs `-I -m dinkster_supervisor.environment` with bundled-only child
+PATH and no inherited Python configuration. The release-owned manifest inputs
+in [README](../README.md#environment-client-development) enable extraction-only
+bootstrap without a host interpreter. Desktop does not install missing tools
+by resolving packages at runtime.
+
+The separate checkout-development launcher (`DINKSTER_ENGINE_SOURCE` or
+`start:web`) requires a provisioned checkout with its `.venv` executables.
+It does not download tools, sync dependencies, install native overlays, or
+prepare catalogs. Prepare that checkout using Dinkster's development setup
+before launching it. This path is not used to install project generations.
+
+The retained backend metadata pins the Git-free `main-<commit>` source release
+and `dinkster-source-<version>.zip` checksum for checkout release identity.
+Desktop does not embed or install that source archive. Environment tools own
+the wheel and constraints installation contract; a missing pinned artifact
+must not fall back to an unchecked archive or runtime package resolution.
+
+## Shell updates
+
+Shell updates are separate from engine environment updates. The shell updater
+checks only during startup, downloads without installing on quit, and records
+the downloaded version for installation on the next startup. It records each
+installation attempt before handing control to the installer and stops after
+three unsuccessful launches for the same version. A successful launch at that
+version clears the pending attempts; a different update remains eligible.
+Corrupt attempt metadata fails closed. Previous installer files are retained.
+Manual update IPC calls report status only; they do not check or install.
+
+## Window controls
+
+Project, engine and managed workspace windows hide the separate native title
+bar. Windows and Linux retain native window controls over the application bar;
+macOS uses inset traffic lights. Desktop reserves the control area in the
+frontend's existing `.topbar` and the project manager's header and makes the
+remaining bar draggable. Bar controls remain interactive. Pages without an
+application bar receive a small host drag strip instead. Styling is reapplied
+after navigation, including generation updates, without giving remote pages
+a Desktop preload or Node access.

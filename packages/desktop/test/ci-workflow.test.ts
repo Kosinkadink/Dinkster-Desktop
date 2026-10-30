@@ -2,7 +2,6 @@ import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import backend from '../src/backend-release.json'
 
 const root = resolve(import.meta.dirname, '../../..')
 const yaml = createRequire(import.meta.url)('js-yaml') as {
@@ -10,6 +9,7 @@ const yaml = createRequire(import.meta.url)('js-yaml') as {
 }
 interface Step {
   id?: string
+  if?: string
   name?: string
   uses?: string
   run?: string
@@ -18,6 +18,7 @@ interface Step {
 }
 interface Job {
   if?: string
+  environment?: string
   needs?: string | string[]
   uses?: string
   secrets?: string
@@ -57,11 +58,17 @@ describe('desktop workflows', () => {
     )
   })
 
-  it('signs a branch build on demand without publishing it', () => {
+  it('gates tag and manual signing on the same owner-approved environment without publishing', () => {
+    expect(release.on).toEqual({
+      push: { tags: ['v*.*.*'] },
+      workflow_dispatch: null,
+    })
     expect(signed.on).toEqual({ workflow_dispatch: null })
     expect(signed.permissions).toEqual({ contents: 'read' })
     expect(Object.keys(signed.jobs)).toEqual(['package'])
     const job = signed.jobs['package']!
+    expect(job.environment).toBe('desktop-signing')
+    expect(release.jobs['release']!.environment).toBe(job.environment)
     expect(job.if).toBe("github.repository == 'Kosinkadink/Dinkster-Desktop'")
     expect(job.needs).toBeUndefined()
     const names = (steps: Step[] | undefined) =>
@@ -118,7 +125,6 @@ describe('desktop workflows', () => {
   })
 
   it('runs Linux build, packaged Desktop startup, and Windows package lanes on main', () => {
-    expect(full.env?.['DINKSTER_REF']).toBe(backend.commit)
     expect(full.on).toMatchObject({
       push: { branches: ['main'] },
       workflow_dispatch: null,
@@ -153,9 +159,20 @@ describe('desktop workflows', () => {
     const smokeCommands = full.jobs['desktop-smoke']!.steps?.flatMap(
       (step) => step.run ?? [],
     )
-    expect(smokeCommands).toContain('node scripts/prepare-smoke-backend.mjs')
+    expect(smokeCommands).toContain('xvfb-run --auto-servernum node packages/e2e/scripts/verify-environment-client.mjs')
     expect(smokeCommands).toContain('pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never')
-    expect(smokeCommands).toContain('xvfb-run --auto-servernum node scripts/smoke-desktop.mjs')
+    const client = full.jobs['desktop-smoke']!.steps?.find((step) => step.run?.includes('node packages/e2e/scripts/verify-environment-client.mjs'))
+    expect(client?.env).toEqual({
+      DINKSTER_ELECTRON_EXECUTABLE: 'packages/desktop/release/linux-unpacked/dinkster-desktop-smoke',
+    })
+    expect(smokeCommands!.indexOf('pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never'))
+      .toBeLessThan(smokeCommands!.indexOf(client!.run!))
+    const installed = full.jobs['desktop-smoke']!.steps?.find((step) => step.run?.includes('node packages/e2e/scripts/verify-desktop-install.mjs'))
+    expect(installed?.env).toEqual({
+      DINKSTER_DESKTOP_EXECUTABLE: 'packages/desktop/release/linux-unpacked/dinkster-desktop-smoke',
+      DINKSTER_DESKTOP_VERIFY_ROOT: 'test-results/desktop-smoke/installed',
+    })
+    expect(JSON.stringify(full)).not.toMatch(/prepare-smoke-backend|engine-source|setup-uv|DINKSTER_REF/)
     expect(JSON.stringify(full)).not.toContain('playwright.audit-assets.config.ts')
   })
 
@@ -220,7 +237,7 @@ describe('desktop workflows', () => {
     }
   })
 
-  it('downloads public release inputs with the workflow token', () => {
+  it('excludes backend downloads and scopes published shell acquisition', () => {
     for (const workflow of [full, release, signed, published]) {
       const downloadSteps = Object.values(workflow.jobs).flatMap((job) =>
         (job.steps ?? []).filter(
@@ -229,25 +246,26 @@ describe('desktop workflows', () => {
             step.run?.includes('gh release download'),
         ),
       )
-      expect(downloadSteps.length).toBeGreaterThan(0)
-      for (const step of downloadSteps) {
-        expect(step.env?.['GH_TOKEN']).toBe('${{ github.token }}')
-        expect(step.run).not.toContain('DINKSTER_RELEASE_READ_TOKEN')
-      }
+      expect(downloadSteps).toEqual([])
     }
+    const desktop = published.jobs['verify']!.steps?.find((step) => step.run?.includes('-Action DownloadDesktop'))
+    expect(desktop?.env?.['GH_TOKEN']).toBe('${{ github.token }}')
     expect(JSON.stringify([full, release, signed, published])).not.toContain(
       'DINKSTER_RELEASE_READ_TOKEN',
     )
   })
 
-  it('validates the exact Desktop main commit before publication', () => {
+  it('validates main and tag commits and keeps test-tag output without publishing', () => {
     expect(release.jobs['validation']).toEqual({
-      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && github.ref == 'refs/heads/main'",
+      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))",
       uses: './.github/workflows/full-validation.yml',
     })
     expect(release.jobs['release']!.needs).toBe('validation')
     expect(release.jobs['release']!.if).toBe(release.jobs['validation']!.if)
-    expect(release.jobs['release']!.steps).toBeDefined()
+    const steps = release.jobs['release']!.steps!
+    expect(steps.find((step) => step.name === 'Keep the signed installer')?.with?.['name']).toBe('desktop-signed-installer')
+    expect(steps.find((step) => step.name === 'Create release')?.if).toBe("github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')")
+    expect(steps.filter((step) => step.run?.includes('gh release create'))).toHaveLength(1)
   })
 
   it('keeps published verification disabled and read-only', () => {

@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, session, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, session, shell, Tray } from 'electron'
 import updater from 'electron-updater'
 import { applicationIcon, showAbout, trayIcon, windowBackground } from './branding.js'
 import {
@@ -30,6 +30,7 @@ import { changeEngineTransaction } from './engine-transaction.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
+import { assetLocations, dropResolutionSupported, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from './local-files.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
 import { RotatingLog } from './rotating-log.js'
@@ -75,7 +76,7 @@ import type {
 const { autoUpdater } = updater
 let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
-const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string }>()
+const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; folderProject: string | undefined; document: number }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
 const environmentClient = new EnvironmentClient()
 let pendingProjectPlan: { token: string; project: DesktopProject; request: EnvironmentRequest } | undefined
@@ -304,6 +305,67 @@ function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
   }
 }
 
+async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unknown): Promise<{
+  url: string; project: string; revalidate(): Promise<void>
+}> {
+  if (quitting) throw new Error('Desktop is shutting down')
+  const parent = BrowserWindow.fromWebContents(event.sender)
+  const binding = parent && remoteWindows.get(parent)
+  if (parent && binding) {
+    const { projectId, engineId, url, folderProject, document } = binding
+    const trusted = (): void => {
+      if (quitting || parent.isDestroyed() || remoteWindows.get(parent) !== binding || binding.url !== url
+        || binding.document !== document || !folderProject || binding.folderProject !== folderProject
+        || !isTrustedDesktopIpc(parent.webContents, parent.webContents.mainFrame, new URL(url).origin, event.sender, event.senderFrame)) {
+        throw new Error('Native file access requires the bound local engine window')
+      }
+    }
+    trusted()
+    if (!folderProject) throw new Error('Invalid folder-project context')
+    requireLocalFiles(backendUrl, url, true)
+    const projects = await readProjects(dataDirectory)
+    const project = projects.projects.find((entry) => entry.id === projectId)
+    const engine = project?.engines.find((entry) => entry.id === engineId)
+    if (!project?.root || engine?.kind !== 'local') throw new Error('Native file access requires a local engine')
+    const root = project.root
+    let generation: number | undefined
+    const checkBinding = async (): Promise<void> => {
+      const saved = (await readProjects(dataDirectory)).projects.find((entry) => entry.id === projectId)
+      if (saved?.root !== root || saved.engines.find((entry) => entry.id === engineId)?.kind !== 'local') {
+        throw new Error('The local project binding changed')
+      }
+      trusted()
+    }
+    const revalidate = async (): Promise<void> => {
+      trusted()
+      await checkBinding()
+      const status = await environmentClient.run({ root, operation: 'status' })
+      const active = status.engines?.find((entry) => entry.name === engineId)
+      if (status.status !== 'clean' || status.root !== root || !status.current || active?.state !== 'ready' || active.generation !== status.current
+        || active.url !== url || (generation !== undefined && generation !== active.generation)) {
+        throw new Error('The local engine is no longer the selected ready generation')
+      }
+      generation = active.generation
+      await checkBinding()
+    }
+    await revalidate()
+    return { url, project: folderProject, revalidate }
+  }
+  trustedIpc(event)
+  const current = runtime
+  const project = windowProject(senderWindowId(event)) ?? 'default'
+  const url = `http://127.0.0.1:${backendPort}`
+  const revalidate = async (): Promise<void> => {
+    trustedIpc(event)
+    requireLocalFiles(backendUrl, webHost?.url, current.status.phase === 'running')
+    if (quitting || runtime !== current || (windowProject(senderWindowId(event)) ?? 'default') !== project
+      || !await current.ownsBackend() || runtime !== current) throw new Error('The shell-managed backend changed')
+    trustedIpc(event)
+  }
+  await revalidate()
+  return { url, project, revalidate }
+}
+
 const projectDialogPath = join(app.getAppPath(), 'resources', 'projects.html')
 
 function trustedProjectIpc(event: Electron.IpcMainInvokeEvent): void {
@@ -451,12 +513,20 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
     ...windowChromeOptions(),
     width: 1440, height: 900, title: 'Dinkster Desktop',
     icon: applicationIcon(), backgroundColor: windowBackground(),
-    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
+    webPreferences: engine.kind === 'local'
+      ? { ...secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')), additionalArguments: ['--dinkster-local-files'] }
+      : { contextIsolation: true, sandbox: true, nodeIntegration: false },
   })
   installWindowChrome(remote)
   remote.on('page-title-updated', (event) => event.preventDefault())
-  const binding = { projectId, engineId, url }
+  const binding = { projectId, engineId, url, folderProject: undefined as string | undefined, document: 0 }
   remoteWindows.set(remote, binding)
+  remote.webContents.on('did-navigate', (_event, address) => {
+    // Match the frontend's immutable document scope, not later history.replaceState edits.
+    const project = new URL(address).searchParams.get('dinksterProject') ?? 'default'
+    binding.folderProject = validProjectId(project) ? project : undefined
+    binding.document++
+  })
   denyRendererPermissions(remote.webContents.session)
   remote.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   remote.webContents.on('will-navigate', (navigation, url) => {
@@ -1025,10 +1095,45 @@ ipcMain.handle('desktop:install-update', async (event) => {
   trustedIpc(event)
   return shellUpdater.manualStatus()
 })
-ipcMain.handle('desktop:choose-directory', async (event) => {
-  trustedIpc(event)
-  const result = await dialog.showOpenDialog(window!, { title: 'Choose an existing model folder', properties: ['openDirectory'] })
+ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) => {
+  let context: Awaited<ReturnType<typeof managedFiles>>
+  try { context = await managedFiles(event, backendUrl) }
+  catch { return { nativeFolderChoice: false, reveal: false, resolvePath: false } }
+  const { url, project, revalidate } = context
+  const resolvePath = await dropResolutionSupported(url)
+  let exact = false
+  try {
+    await assetLocations(url, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project)
+    exact = true
+  } catch { /* Folder choice does not depend on exact-file lookup support. */ }
+  await revalidate()
+  return { nativeFolderChoice: true, reveal: exact, resolvePath }
+})
+ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) => {
+  const context = await managedFiles(event, backendUrl)
+  const parent = BrowserWindow.fromWebContents(event.sender)
+  if (!parent) throw new Error('The requesting window is no longer available')
+  const result = await dialog.showOpenDialog(parent, { title: 'Choose an existing asset folder', properties: ['openDirectory'] })
+  await context.revalidate()
   return result.canceled ? undefined : result.filePaths[0]
+})
+ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown, path: unknown) => {
+  const context = await managedFiles(event, backendUrl)
+  return resolveDroppedPath(context.url, path, context.project, context.revalidate)
+})
+ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: unknown) => {
+  const context = await managedFiles(event, backendUrl)
+  const locations = await assetLocations(context.url, asset, context.project)
+  const location = locations[0]
+  if (!location) throw new Error('No verified local copy exists in this project; copy the server path instead')
+  return revealGrantedFile(location.path, [location.root], shell, async () => {
+    await context.revalidate()
+    const active = await assetLocations(context.url, asset, context.project)
+    if (!active.some((item) => item.path === location.path && item.root === location.root)) {
+      throw new Error('The local asset location is no longer authorized')
+    }
+    await context.revalidate()
+  })
 })
 ipcMain.handle('desktop:export-snapshot', (event) => serializeLifecycle(async () => {
   trustedIpc(event)

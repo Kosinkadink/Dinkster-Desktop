@@ -21,10 +21,27 @@ const scratch = await mkdtemp(join(tmpdir(), 'dinkster-desktop-client-'))
 const artifacts = process.env.DINKSTER_SMOKE_ARTIFACTS
 if (artifacts) await mkdir(artifacts, { recursive: true })
 const servers = []
+const locationRequests = []
 let app
 try {
   for (const heading of ['Original supervisor', 'Updated supervisor']) {
-    const server = createServer((_request, response) => {
+    const server = createServer((request, response) => {
+      if (request.url.startsWith('/api/mounts/locations')) {
+        locationRequests.push(new URL(request.url, 'http://localhost'))
+        response.setHeader('Content-Type', 'application/json')
+        response.end(
+          JSON.stringify({
+            vault: scratch,
+            locations: [],
+            activeMounts: [],
+            mounts: [],
+            pendingRemovals: [],
+            restartRequired: false,
+            resolvePath: false,
+          }),
+        )
+        return
+      }
       response.setHeader('Content-Type', 'text/html')
       response.end(
         `<!doctype html><title>${heading}</title><style>body{margin:0;background:#171717;color:#ededed;font:14px system-ui}.topbar{display:flex;align-items:center;justify-content:space-between;background:#202020}button{font:inherit;padding:8px 12px;color:inherit;background:#303030;border:1px solid #555;border-radius:6px}main{padding:24px}</style>
@@ -49,6 +66,12 @@ fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\n');
 const root = args[args.indexOf('--root') + 1];
 const operation = args[args.indexOf('--root') + 2];
 const planned = args.includes('--plan');
+const observed = ${JSON.stringify(join(scratch, 'observed.json'))};
+if (operation === 'status') {
+  const row = JSON.parse(fs.readFileSync(observed, 'utf8'));
+  console.log(JSON.stringify({...row, operation, status:'clean'}));
+  process.exit(0);
+}
 if (operation === 'catalog') {
   const base = 'sha256:' + 'a'.repeat(64);
   console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'clean',root,current:null,plan:[],channel:'stable',
@@ -57,10 +80,12 @@ if (operation === 'catalog') {
   process.exit(0);
 }
 const url = ${JSON.stringify(urls)}[operation === 'update' ? 1 : 0];
-console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,
+const row = {format:'dinkster.environment-result/1',operation,
 status:planned ? 'planned' : 'applied',root,current:operation === 'update' ? 2 : 1,
 plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current'],url,
-engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]}));
+engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]};
+if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
+console.log(JSON.stringify(row));
 `,
     { mode: 0o755 },
   )
@@ -171,6 +196,187 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
     await engine.evaluate(() => typeof window.dinksterProjects),
     'undefined',
   )
+  assert.deepEqual(
+    await engine.evaluate(() => Object.keys(window.dinksterDesktop).sort()),
+    ['chooseDirectory', 'fileCapabilities', 'resolveDroppedFile', 'revealFile'],
+  )
+  assert.deepEqual(
+    await engine.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      urls[0],
+    ),
+    { nativeFolderChoice: true, reveal: true, resolvePath: false },
+  )
+  assert.deepEqual(
+    await engine.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      urls[1],
+    ),
+    { nativeFolderChoice: false, reveal: false, resolvePath: false },
+  )
+  // Sharing the trusted origin does not grant an unrelated window file access.
+  const untrusted = await app.evaluate(
+    async ({ BrowserWindow, app, dialog }, url) => {
+      const child = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          preload: `${app.getAppPath()}/dist/preload.cjs`,
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      })
+      const original = dialog.showOpenDialog
+      dialog.showOpenDialog = async () => {
+        throw new Error('Untrusted request reached the dialog')
+      }
+      try {
+        await child.loadURL(url)
+        return await child.webContents.executeJavaScript(`(async () => {
+        const bridge = window.dinksterDesktop
+        const errors = []
+        for (const action of [
+          () => bridge.chooseDirectory(location.origin),
+          () => bridge.revealFile(location.origin, '/ungranted'),
+        ]) {
+          try { await action(); errors.push('accepted') }
+          catch (error) { errors.push(error.message) }
+        }
+        return { capabilities: await bridge.fileCapabilities(location.origin), errors }
+      })()`)
+      } finally {
+        dialog.showOpenDialog = original
+        child.destroy()
+      }
+    },
+    urls[0],
+  )
+  assert.deepEqual(untrusted.capabilities, {
+    nativeFolderChoice: false,
+    reveal: false,
+    resolvePath: false,
+  })
+  assert.equal(untrusted.errors.length, 2)
+  for (const error of untrusted.errors)
+    assert.match(error, /untrusted renderer/)
+  // A cached window binding is insufficient after the environment loses readiness.
+  const observedFile = join(scratch, 'observed.json')
+  const observed = JSON.parse(await readFile(observedFile, 'utf8'))
+  await writeFile(
+    observedFile,
+    JSON.stringify({
+      ...observed,
+      engines: [{ ...observed.engines[0], state: 'failed' }],
+    }),
+  )
+  assert.deepEqual(
+    await engine.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      urls[0],
+    ),
+    { nativeFolderChoice: false, reveal: false, resolvePath: false },
+  )
+  await writeFile(observedFile, JSON.stringify(observed))
+  const projectsFile = join(env.DINKSTER_DESKTOP_DATA, 'projects.json')
+  const savedProjects = await readFile(projectsFile, 'utf8')
+  for (const change of ['none', 'generation', 'binding']) {
+    await app.evaluate(({ dialog }) => {
+      globalThis.originalFolderDialog = dialog.showOpenDialog
+      globalThis.folderDialogEntered = false
+      dialog.showOpenDialog = () =>
+        new Promise((done) => {
+          globalThis.finishFolderDialog = done
+          globalThis.folderDialogEntered = true
+        })
+    })
+    const chosen = engine.evaluate(async (url) => {
+      try {
+        return { path: await window.dinksterDesktop.chooseDirectory(url) }
+      } catch (error) {
+        return { error: error.message }
+      }
+    }, urls[0])
+    await expect
+      .poll(() => app.evaluate(() => globalThis.folderDialogEntered))
+      .toBe(true)
+    // Revoke authority only after the request reaches the asynchronous dialog.
+    if (change === 'generation') {
+      await writeFile(
+        observedFile,
+        JSON.stringify({
+          ...observed,
+          current: 2,
+          engines: [{ ...observed.engines[0], generation: 2 }],
+        }),
+      )
+    }
+    if (change === 'binding') {
+      await writeFile(
+        projectsFile,
+        JSON.stringify({ version: 1, projects: [] }),
+      )
+    }
+    await app.evaluate(({ dialog }, path) => {
+      dialog.showOpenDialog = globalThis.originalFolderDialog
+      globalThis.finishFolderDialog({ canceled: false, filePaths: [path] })
+    }, scratch)
+    const result = await chosen
+    if (change === 'none') assert.deepEqual(result, { path: scratch })
+    if (change === 'generation') {
+      assert.match(result.error, /no longer the selected ready generation/)
+      assert.equal(result.path, undefined)
+    }
+    if (change === 'binding') {
+      assert.match(result.error, /local project binding changed/)
+      assert.equal(result.path, undefined)
+    }
+    await writeFile(observedFile, JSON.stringify(observed))
+    await writeFile(projectsFile, savedProjects)
+  }
+  await engine.goto(`${urls[0]}/?dinksterProject=p-shared`)
+  const identity = {
+    digest: `blake3:${'a1'.repeat(32)}`,
+    scope: 'local',
+    project: 'p-shared',
+  }
+  const deniedReveal = (asset) =>
+    engine.evaluate(
+      async ({ url, asset }) => {
+        try {
+          await window.dinksterDesktop.revealFile(url, asset)
+          return 'unexpected success'
+        } catch (error) {
+          return error.message
+        }
+      },
+      { url: urls[0], asset },
+    )
+  assert.match(await deniedReveal(identity), /No verified local copy/)
+  assert.equal(locationRequests.at(-1).searchParams.get('project'), 'p-shared')
+  const requests = locationRequests.length
+  assert.match(
+    await deniedReveal({ ...identity, project: 'default' }),
+    /requesting project/,
+  )
+  assert.equal(locationRequests.length, requests)
+  await engine.evaluate(() =>
+    history.replaceState(null, '', '?dinksterProject=p-other'),
+  )
+  assert.match(await deniedReveal(identity), /No verified local copy/)
+  assert.equal(locationRequests.at(-1).searchParams.get('project'), 'p-shared')
+  assert.match(
+    await deniedReveal({ ...identity, project: 'p-other' }),
+    /requesting project/,
+  )
+  await engine.goto(`${urls[0]}/?dinksterProject=invalid_project`)
+  assert.deepEqual(
+    await engine.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      urls[0],
+    ),
+    { nativeFolderChoice: false, reveal: false, resolvePath: false },
+  )
+  await engine.goto(urls[0])
   await manager
     .getByRole('button', { name: 'Manage main', exact: true })
     .click()
@@ -230,6 +436,10 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
   await remote.getByRole('heading', { name: 'Updated supervisor' }).waitFor()
   assert.equal((await readFile(calls, 'utf8')).trim().split('\n').length, count)
   assert.equal(await remote.evaluate(() => typeof window.require), 'undefined')
+  assert.equal(
+    await remote.evaluate(() => typeof window.dinksterDesktop),
+    'undefined',
+  )
   const dataFiles = await readdir(env.DINKSTER_DESKTOP_DATA)
   for (const forbidden of ['generations', 'current', 'store', 'journal'])
     assert(!dataFiles.includes(forbidden))

@@ -21,11 +21,13 @@ const scratch = await mkdtemp(join(tmpdir(), 'dinkster-desktop-client-'))
 const artifacts = process.env.DINKSTER_SMOKE_ARTIFACTS
 if (artifacts) await mkdir(artifacts, { recursive: true })
 const servers = []
+const locationRequests = []
 let app
 try {
   for (const heading of ['Original supervisor', 'Updated supervisor']) {
     const server = createServer((request, response) => {
       if (request.url.startsWith('/api/mounts/locations')) {
+        locationRequests.push(new URL(request.url, 'http://localhost'))
         response.setHeader('Content-Type', 'application/json')
         response.end(
           JSON.stringify({
@@ -230,6 +232,50 @@ console.log(JSON.stringify(row));
     { nativeFolderChoice: false, reveal: false, resolvePath: false },
   )
   await writeFile(observedFile, JSON.stringify(observed))
+  await engine.goto(`${urls[0]}/?dinksterProject=p-shared`)
+  const identity = {
+    digest: `blake3:${'a1'.repeat(32)}`,
+    scope: 'local',
+    project: 'p-shared',
+  }
+  const deniedReveal = (asset) =>
+    engine.evaluate(
+      async ({ url, asset }) => {
+        try {
+          await window.dinksterDesktop.revealFile(url, asset)
+          return 'unexpected success'
+        } catch (error) {
+          return error.message
+        }
+      },
+      { url: urls[0], asset },
+    )
+  assert.match(await deniedReveal(identity), /No verified local copy/)
+  assert.equal(locationRequests.at(-1).searchParams.get('project'), 'p-shared')
+  const requests = locationRequests.length
+  assert.match(
+    await deniedReveal({ ...identity, project: 'default' }),
+    /requesting project/,
+  )
+  assert.equal(locationRequests.length, requests)
+  await engine.evaluate(() =>
+    history.replaceState(null, '', '?dinksterProject=p-other'),
+  )
+  assert.match(await deniedReveal(identity), /No verified local copy/)
+  assert.equal(locationRequests.at(-1).searchParams.get('project'), 'p-shared')
+  assert.match(
+    await deniedReveal({ ...identity, project: 'p-other' }),
+    /requesting project/,
+  )
+  await engine.goto(`${urls[0]}/?dinksterProject=invalid_project`)
+  assert.deepEqual(
+    await engine.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      urls[0],
+    ),
+    { nativeFolderChoice: false, reveal: false, resolvePath: false },
+  )
+  await engine.goto(urls[0])
   await manager
     .getByRole('button', { name: 'Manage main', exact: true })
     .click()

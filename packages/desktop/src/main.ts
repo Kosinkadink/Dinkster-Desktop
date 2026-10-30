@@ -76,7 +76,7 @@ import type {
 const { autoUpdater } = updater
 let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
-const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string }>()
+const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; folderProject?: string; document: number }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
 const environmentClient = new EnvironmentClient()
 let pendingProjectPlan: { token: string; project: DesktopProject; request: EnvironmentRequest } | undefined
@@ -312,14 +312,16 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
   const parent = BrowserWindow.fromWebContents(event.sender)
   const binding = parent && remoteWindows.get(parent)
   if (parent && binding) {
-    const { projectId, engineId, url } = binding
+    const { projectId, engineId, url, folderProject, document } = binding
     const trusted = (): void => {
       if (quitting || parent.isDestroyed() || remoteWindows.get(parent) !== binding || binding.url !== url
+        || binding.document !== document || !folderProject || binding.folderProject !== folderProject
         || !isTrustedDesktopIpc(parent.webContents, parent.webContents.mainFrame, new URL(url).origin, event.sender, event.senderFrame)) {
         throw new Error('Native file access requires the bound local engine window')
       }
     }
     trusted()
+    if (!folderProject) throw new Error('Invalid folder-project context')
     requireLocalFiles(backendUrl, url, true)
     const projects = await readProjects(dataDirectory)
     const project = projects.projects.find((entry) => entry.id === projectId)
@@ -347,8 +349,7 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
       await checkBinding()
     }
     await revalidate()
-    // An environment project has its own library; Desktop's install id is not a backend folder-project id.
-    return { url, project: 'default', revalidate }
+    return { url, project: folderProject, revalidate }
   }
   trustedIpc(event)
   const current = runtime
@@ -518,8 +519,14 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   })
   installWindowChrome(remote)
   remote.on('page-title-updated', (event) => event.preventDefault())
-  const binding = { projectId, engineId, url }
+  const binding = { projectId, engineId, url, folderProject: undefined as string | undefined, document: 0 }
   remoteWindows.set(remote, binding)
+  remote.webContents.on('did-navigate', (_event, address) => {
+    // Match the frontend's immutable document scope, not later history.replaceState edits.
+    const project = new URL(address).searchParams.get('dinksterProject') ?? 'default'
+    binding.folderProject = validProjectId(project) ? project : undefined
+    binding.document++
+  })
   denyRendererPermissions(remote.webContents.session)
   remote.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   remote.webContents.on('will-navigate', (navigation, url) => {

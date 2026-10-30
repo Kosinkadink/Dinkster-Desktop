@@ -26,7 +26,7 @@ const yaml = createRequire(import.meta.url)('js-yaml') as { load(source: string)
 const workflow = yaml.load(source) as {
   on: Record<string, unknown>
   permissions: Record<string, string>
-  jobs: { verify: { if: string; permissions?: unknown; env: Record<string, string>; steps: Step[] } }
+  jobs: { verify: { if: string; permissions?: unknown; steps: Step[] } }
 }
 const steps = workflow.jobs.verify.steps
 const psQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`
@@ -52,21 +52,19 @@ describe('published Desktop verification workflow', () => {
     expect(steps[0]?.name).toBe('Prepare isolated verification directory')
     expect(steps[1]?.uses).toBe('actions/checkout@v4')
     expect(steps[1]?.with).toEqual({ clean: true, 'persist-credentials': false })
-    const backend = steps.find((step) => step.run?.endsWith('-Action DownloadBackend'))!
     const desktop = steps.find((step) => step.run?.endsWith('-Action DownloadDesktop'))!
     expect(steps[0]?.env).toBeUndefined()
-    expect(backend.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
     expect(desktop.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
-    expect(steps.filter((step) => step.env?.['GH_TOKEN'])).toEqual([backend, desktop])
+    expect(steps.filter((step) => step.env?.['GH_TOKEN'])).toEqual([desktop])
     expect(helper).not.toMatch(/GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|githubtoken|auth login/)
-    expect(helper).toContain('Get-ReleaseArtifact $aimdo')
     expect(helper).toContain('Get-ReleaseArtifact $desktop')
+    expect(helper).not.toMatch(/backend|aimdo|Invoke-WebRequest|resources\/engine/i)
   })
 
-  it('reuses the source-profile and CPU installed-app contracts and always cleans owned installs', () => {
-    expect(steps.some((step) => step.run === 'pnpm --filter @dinkster/desktop prepare:engine')).toBe(true)
+  it('verifies the installed shell without provisioning and always cleans owned installs', () => {
+    expect(steps.some((step) => step.run?.includes('prepare:engine'))).toBe(false)
     const verify = steps.find((step) => step.run === 'pnpm --filter @dinkster/desktop verify:installed')!
-    expect(verify.env).toEqual({ DINKSTER_ACCELERATOR: 'cpu' })
+    expect(verify.env).toBeUndefined()
     expect(steps.find((step) => step.id === 'install')?.env).toBeUndefined()
     expect(steps.find((step) => step.run?.endsWith('-Action Cleanup'))?.if).toBe("always() && steps.install.outcome != 'skipped'")
     const upload = steps.find((step) => step.uses === 'actions/upload-artifact@v4')!
@@ -85,22 +83,19 @@ describe('published Desktop verification workflow', () => {
     expect(workflow.jobs.verify.if).toContain('&& false')
     expect(helper).toContain("throw 'No Dinkster Desktop release has been published'")
     expect(helper).toContain('Assert-Artifact $Pin (Join-Path $assets $Pin.archive)')
-    expect(helper).toContain('Assert-Artifact $pin (Join-Path $install "resources/engine/$($pin.archive)")')
+    expect(helper).toContain('Assert-Artifact $desktop (Join-Path $assets $desktop.archive)')
   })
 
   it('keeps the proof code ready but does not select an unpublished source commit', async () => {
     const checkout = steps.find((step) => step.name === 'Check out the published Desktop proof harness')!
     expect(checkout.with).toEqual({ clean: true, ref: 'main', path: 'published-source', 'persist-credentials': false })
-    expect(workflow.jobs.verify.env['DINKSTER_PUBLISHED_SOURCE']).toBe('published-source')
     const commands = steps.filter((step) => step.run?.startsWith('pnpm '))
     expect(commands.map((step) => step.run)).toEqual([
       'pnpm install --frozen-lockfile',
-      'pnpm --filter @dinkster/desktop prepare:engine',
       'pnpm --filter @dinkster/desktop verify:installed',
     ])
     expect(commands.every((step) => step['working-directory'] === 'published-source')).toBe(true)
-    expect(helper).toContain("Join-Path $env:DINKSTER_PUBLISHED_SOURCE 'packages/desktop/src/backend-release.json'")
-    expect(helper).not.toContain("Join-Path $PSScriptRoot '../src/backend-release.json'")
+    expect(helper).not.toContain('DINKSTER_PUBLISHED_SOURCE')
   })
 })
 
@@ -108,11 +103,6 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
   let scratch: string
   beforeEach(async () => {
     scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-verify-safety-'))
-    await mkdir(resolve(scratch, 'published/packages/desktop/src'), { recursive: true })
-    await writeFile(resolve(scratch, 'published/packages/desktop/src/backend-release.json'), JSON.stringify({
-      commit: '69130cdd6c00ffac7430c1564b5da30ec91db051',
-      releaseTag: 'main-69130cdd6c00ffac7430c1564b5da30ec91db051',
-    }))
   })
   afterEach(async () => { await rm(scratch, { recursive: true, force: true }) })
 
@@ -120,7 +110,6 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     return execute('pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], {
       env: {
         ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/TOKEN|SECRET|PASSWORD|CREDENTIAL|^GIT_/i.test(name))),
-        DINKSTER_PUBLISHED_SOURCE: resolve(scratch, 'published'),
       },
       timeout: 30_000,
     })
@@ -137,27 +126,17 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
     }`)).resolves.toBeDefined()
   })
 
-  it('scopes release tokens to their repositories and downloads the public wheel without credentials', async () => {
+  it('acquires only the checksum-pinned shell with the Desktop token', async () => {
     const scripts = resolve(scratch, 'scripts')
     await mkdir(scripts)
-    await mkdir(resolve(scratch, 'src'))
     const content = 'fixture'
     const digest = { size: content.length, sha256: createHash('sha256').update(content).digest('hex') }
     const desktop = {
       repository: 'Kosinkadink/Dinkster-Desktop', published: true,
       releaseTag: 'desktop-v0.2.0', commit: 'c'.repeat(40),
-      archive: 'Dinkster-Desktop-0.2.0-Setup.exe', backendCommit: 'a'.repeat(40),
+      archive: 'Dinkster-Desktop-0.2.0-Setup.exe',
     }
-    const backend = JSON.parse(await readFile(resolve(root, 'packages/desktop/src/backend-release.json'), 'utf8'))
     await writeFile(resolve(scripts, 'published-desktop.json'), JSON.stringify({ ...desktop, ...digest }))
-    await writeFile(resolve(scratch, 'src/backend-release.json'), 'invalid moving-main pin')
-    await writeFile(resolve(scratch, 'published/packages/desktop/src/backend-release.json'), JSON.stringify({
-      ...backend, ...digest, commit: desktop.backendCommit, releaseTag: `main-${desktop.backendCommit}`,
-      desktopWindowsRuntime: {
-        ...backend.desktopWindowsRuntime,
-        aimdo: { ...backend.desktopWindowsRuntime.aimdo, ...digest },
-      },
-    }))
     const fixtureScript = resolve(scripts, 'verify.ps1')
     await writeFile(fixtureScript, helper)
     const envFile = resolve(scratch, 'exported-env')
@@ -167,28 +146,21 @@ describe.runIf(process.platform === 'win32')('Windows verification safety', () =
         if ($args[0] -eq 'api') { $repo=$args[1].Substring(6) }
         elseif ($args[0] -eq 'release' -and $args[1] -eq 'download') { $repo=$args[4] }
         else { throw 'UNEXPECTED_GH_OPERATION' }
-        $allowed = if ($env:GH_TOKEN -eq 'backend-only') { @('Kosinkadink/Dinkster') }
-          elseif ($env:GH_TOKEN -eq 'desktop-only') { @('Kosinkadink/Dinkster-Desktop') } else { @() }
+        $allowed = if ($env:GH_TOKEN -eq 'desktop-only') { @('Kosinkadink/Dinkster-Desktop') } else { @() }
         if ($repo -notin $allowed) { throw 'WRONG_TOKEN_ROUTE' }
         if ($args[0] -eq 'api') { '{"private":true}' }
         else { [IO.File]::WriteAllText((Join-Path $args[8] $args[6]), 'fixture') }
       }
       function Invoke-WebRequest {
-        param($Uri, $OutFile)
-        if ($Uri -notlike 'https://files.pythonhosted.org/packages/*' -or $args.Count) { throw 'UNEXPECTED_WHEEL_REQUEST' }
-        [IO.File]::WriteAllText($OutFile, 'fixture')
+        throw 'UNEXPECTED_NETWORK_REQUEST'
       }
-      $env:GH_TOKEN='backend-only'; & ${psQuote(fixtureScript)} -Action DownloadBackend
       $env:GH_TOKEN='desktop-only'; & ${psQuote(fixtureScript)} -Action DownloadDesktop`)
-    const exported = await readFile(envFile, 'utf8')
-    expect(exported).toContain('DINKSTER_ENGINE_ARCHIVE=')
-    expect(exported).toContain('DINKSTER_AIMDO_WHEEL=')
-    expect(exported).not.toMatch(/TOKEN|backend-only|desktop-only/)
+    await expect(readFile(envFile, 'utf8')).rejects.toThrow()
     expect(await readFile(resolve(scratch, 'work/assets', desktop.archive), 'utf8')).toBe(content)
   })
 
   it('fails the download helper with a dummy fallback token before GH access', async () => {
-    const command = `& ${psQuote(script)} -Action DownloadBackend`
+    const command = `& ${psQuote(script)} -Action DownloadDesktop`
     await expect(powershell(`$env:GITHUB_TOKEN='dummy-fallback'; $env:GH_ENTERPRISE_TOKEN='dummy-fallback'
       function gh { throw 'UNEXPECTED_GH_ACCESS' }
       ${command}`)).rejects.toThrow(/no fallback token is permitted/)

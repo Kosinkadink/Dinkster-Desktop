@@ -31,7 +31,7 @@ export interface DesktopInfo {
   readonly variant: EngineAccelerator
   readonly storageBytes: number
   readonly releases: readonly DesktopEngineRelease[]
-  readonly update: { readonly state: 'idle' | 'checking' | 'available' | 'ready' | 'current' | 'failed'; readonly detail: string }
+  readonly update: { readonly state: 'idle' | 'checking' | 'available' | 'ready' | 'current' | 'installing' | 'failed'; readonly detail: string }
 }
 
 export interface DesktopSystemCheck {

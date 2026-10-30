@@ -1,20 +1,13 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { createServer } from 'node:http'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
-import { promisify } from 'node:util'
-import { _electron as electron } from '@playwright/test'
-import backend from '../../desktop/src/backend-release.json' with { type: 'json' }
-import { ENGINE_RELEASE } from '../../desktop/src/release.ts'
+import { _electron as electron, expect } from '@playwright/test'
 
-const { aimdo, cudaTorch } = backend.desktopWindowsRuntime
-const schemaWireVersion = 1
-
+// Shell installation is independent of generation construction. Local lifecycle
+// acceptance also needs the environment owner's real tools and shared mirror.
 const executablePath = process.env.DINKSTER_DESKTOP_EXECUTABLE
 const directory = process.env.DINKSTER_DESKTOP_VERIFY_ROOT
-const variant = process.env.DINKSTER_ACCELERATOR ?? 'cpu'
-assert.ok(['cpu', 'cuda'].includes(variant), 'Installed Windows native verification requires DINKSTER_ACCELERATOR=cpu or cuda')
 if (!executablePath || !directory) throw new Error('Set DINKSTER_DESKTOP_EXECUTABLE and a new DINKSTER_DESKTOP_VERIFY_ROOT')
 const root = resolve(directory)
 await mkdir(root, { recursive: false })
@@ -22,137 +15,80 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]
   value !== undefined && !/TOKEN|SECRET|PASSWORD|CREDENTIAL|ELECTRON_RUN_AS_NODE|^DINKSTER_|^UV_|^PYTHON|^VIRTUAL_ENV$|^GIT_|^PATH$/i.test(name),
 ))
 env.DINKSTER_DESKTOP_DATA = join(root, 'data')
-env.DINKSTER_ACCELERATOR = variant
-env.UV_PYTHON_INSTALL_DIR = join(root, 'python')
-env.UV_PYTHON_PREFERENCE = 'only-managed'
-env.UV_CACHE_DIR = join(root, 'cache')
-env.UV_NO_CONFIG = '1'
-env.GIT_CONFIG_GLOBAL = join(root, 'no-git-config')
-env.GIT_CONFIG_NOSYSTEM = '1'
-env.GIT_TERMINAL_PROMPT = '0'
-env.PATH = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+env.DINKSTER_ENV = join(root, 'environment-tools-must-not-run')
+env.PATH = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32') : '/nonexistent'
 
-const execute = promisify(execFile)
-const source = join(root, 'data', 'engine', 'releases', `${backend.commit}-${variant}`)
-async function inspectNativeEnvironments() {
-  const environments = [{ name: 'host', directory: join(source, '.venv') }]
-  const packs = join(root, 'data', 'library', 'venvs', variant)
-  for (const artifact of await readdir(packs, { withFileTypes: true })) {
-    if (!artifact.isDirectory()) continue
-    for (const pack of await readdir(join(packs, artifact.name), { withFileTypes: true })) {
-      if (pack.isDirectory()) environments.push({ name: pack.name, directory: join(packs, artifact.name, pack.name) })
-    }
-  }
-  assert.ok(environments.length > 1, 'Default packs must retain isolated environments')
-  const results = []
-  for (const entry of environments) {
-    const { stdout } = await execute(join(entry.directory, 'Scripts', 'python.exe'), ['-c', `
-import importlib.metadata as metadata
-import importlib.util
-import json
-result = {}
-if importlib.util.find_spec('torch'):
-    import torch
-    result.update(torch=torch.__version__, cuda=torch.version.cuda)
-if importlib.util.find_spec('torchvision'):
-    import torchvision
-    result['torchvision'] = torchvision.__version__
-try:
-    result['aimdo'] = metadata.version('comfy-aimdo')
-except metadata.PackageNotFoundError:
-    pass
-else:
-    import comfy_aimdo.control
-    if ${variant === 'cuda' ? 'True' : 'False'}:
-        assert comfy_aimdo.control.init('cuda'), 'Aimdo native library did not load'
-print(json.dumps(result))
-`], { env, cwd: source, windowsHide: true, timeout: 120_000 })
-    const versions = JSON.parse(stdout.trim())
-    if (entry.name === 'host') {
-      if (variant === 'cuda') assert.ok(versions.torch, 'CUDA host Torch must import')
-      else {
-        assert.equal(versions.torch, undefined, 'CPU host must remain Torch-free')
-        assert.equal(versions.torchvision, undefined, 'CPU host must remain torchvision-free')
-      }
-      assert.equal(versions.aimdo, aimdo.version)
-    }
-    if (versions.torch) {
-      const expected = variant === 'cuda' ? cudaTorch.version
-        : `${cudaTorch.version.split('+')[0]}+cpu`
-      assert.equal(versions.torch, expected, `${entry.name} Torch`)
-      assert.equal(versions.cuda, variant === 'cuda' ? cudaTorch.cudaVersion : null, `${entry.name} CUDA`)
-    }
-    if (versions.torchvision) assert.equal(versions.torchvision, `${cudaTorch.torchvisionVersion}+${variant === 'cuda' ? cudaTorch.version.split('+')[1] : 'cpu'}`, `${entry.name} torchvision`)
-    if (versions.aimdo) assert.equal(versions.aimdo, aimdo.version, `${entry.name} Aimdo`)
-    results.push({ name: entry.name, ...versions })
-  }
-  assert.ok(results.some((entry) => entry.name !== 'host' && entry.torch), 'Isolated worker Torch must import')
-  return results
-}
-
-let installedMarker
-const markerPath = join(source, '.dinkster-desktop-release.json')
-for (const launch of ['first-run', 'restart', 'mismatched-profile']) {
-  const mismatched = launch === 'mismatched-profile'
-    ? JSON.stringify({ ...JSON.parse(installedMarker), nativeProfile: '0'.repeat(64) }) : undefined
-  if (mismatched) await writeFile(markerPath, mismatched)
-  const app = await electron.launch({ executablePath, args: [`--user-data-dir=${join(root, 'electron')}`], env, timeout: 60_000 })
-  let page
-  try {
-    page = await app.firstWindow({ timeout: 60_000 })
-    await page.waitForLoadState('domcontentloaded')
-    const deadline = Date.now() + 20 * 60_000
-    let status
-    let phase
-    while (Date.now() < deadline) {
-      status = await page.evaluate(() => window.dinksterDesktop?.status())
-      if (status?.phase !== phase) {
-        phase = status?.phase
-        console.log(`${launch}: ${phase}`)
-      }
-      if (status?.phase === 'running' || status?.phase === 'failed') break
-      await delay(1000)
-    }
-    if (mismatched) {
-      assert.equal(status?.phase, 'failed')
-      assert.match(status.error, /different native runtime profile/)
-      assert.equal(await readFile(markerPath, 'utf8'), mismatched)
-      await page.screenshot({ path: join(root, `${launch}.png`), fullPage: true })
-      await writeFile(join(root, `${launch}.json`), JSON.stringify({ status }, null, 2))
-      console.log('Verified installed Desktop refuses to mutate a mismatched native profile')
-      continue
-    }
-    assert.equal(status?.phase, 'running', JSON.stringify(status))
-    const info = await page.evaluate(() => window.dinksterDesktop.info())
-    assert.equal(info.engineCommit, backend.commit)
-    assert.equal(info.variant, variant)
-    assert.equal(status.variant, variant)
-    const marker = await readFile(markerPath, 'utf8')
-    assert.equal(JSON.parse(marker).nativeProfile, ENGINE_RELEASE.nativeProfile)
-    if (installedMarker !== undefined) assert.equal(marker, installedMarker, 'Restart must preserve the installed native profile')
-    installedMarker = marker
-    const health = await page.evaluate(async () => {
-      const response = await fetch('/supervisor/status')
-      return response.json()
+let requests = 0
+const server = createServer((_request, response) => {
+  requests += 1
+  response.setHeader('Content-Type', 'text/html')
+  response.end('<!doctype html><title>Remote project</title><h1>Installed remote frontend</h1>')
+})
+await new Promise((done) => server.listen(0, '127.0.0.1', done))
+const url = `http://127.0.0.1:${server.address().port}`
+let bindings
+try {
+  for (const launch of ['first-run', 'restart']) {
+    const app = await electron.launch({
+      executablePath: resolve(executablePath), args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`], env, timeout: 60_000,
     })
-    assert.equal(health.state, 'ready')
-    const catalog = await page.evaluate(async () => {
-      const response = await fetch('/api/nodes')
-      if (!response.ok) throw new Error(`Catalog request failed: ${response.status}`)
-      return response.json()
-    })
-    assert.ok(catalog && typeof catalog === 'object', 'Installed backend must provide a catalog object')
-    assert.ok(catalog.nodes && typeof catalog.nodes === 'object' && Object.keys(catalog.nodes).length > 0, 'Installed backend must provide usable nodes')
-    assert.equal(catalog.dinkster?.schemaWire, schemaWireVersion, 'Installed backend must use the frontend schema wire')
-    const nativeEnvironments = await inspectNativeEnvironments()
-    await page.screenshot({ path: join(root, `${launch}.png`), fullPage: true })
-    await writeFile(join(root, `${launch}.json`), JSON.stringify({ status, info, health, nodes: Object.keys(catalog.nodes).length, schemaWire: catalog.dinkster.schemaWire, nativeEnvironments }, null, 2))
-    console.log(`Verified installed Desktop ${launch}: backend ${info.engineCommit}`)
-  } catch (error) {
-    await page?.screenshot({ path: join(root, `${launch}-failed.png`), fullPage: true }).catch(() => undefined)
-    throw error
-  } finally {
-    await app.close()
-    if (mismatched) await writeFile(markerPath, installedMarker)
+    let page
+    try {
+      assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
+      page = await app.firstWindow({ timeout: 60_000 })
+      await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
+      if (launch === 'first-run') {
+        await page.getByText('No projects yet.', { exact: false }).waitFor()
+        await page.locator('#name').fill('Installed remote project')
+        await page.locator('#url').fill(url)
+        await page.locator('#channel').selectOption('main')
+        await page.getByRole('button', { name: 'Save remote project' }).click()
+      }
+      await page.getByRole('button', { name: 'Open Remote engine' }).waitFor()
+      const before = requests
+      const opened = app.waitForEvent('window')
+      await page.getByRole('button', { name: 'Open Remote engine' }).click()
+      const remote = await opened
+      await remote.getByRole('heading', { name: 'Installed remote frontend' }).waitFor()
+      assert.equal(new URL(remote.url()).origin, url)
+      assert(requests > before, 'The remote frontend must be served on each launch')
+      assert.deepEqual(await remote.evaluate(() => [
+        typeof window.require, typeof window.process, typeof window.dinksterDesktop, typeof window.dinksterProjects,
+      ]), ['undefined', 'undefined', 'undefined', 'undefined'])
+      const path = join(env.DINKSTER_DESKTOP_DATA, 'projects.json')
+      const record = await readFile(path, 'utf8')
+      const projects = JSON.parse(record).projects
+      assert.equal(projects.length, 1)
+      assert.equal(projects[0].channel, 'main')
+      assert.equal(projects[0].root, undefined)
+      assert.deepEqual(projects[0].engines, [{ id: 'remote', name: 'Remote engine', kind: 'remote', url }])
+      if (bindings !== undefined) assert.equal(record, bindings, 'Restart must preserve remote bindings')
+      bindings = record
+      await page.locator('#name').fill('Rejected credentials')
+      await page.locator('#url').fill(url.replace('://', '://blocked@'))
+      await page.getByRole('button', { name: 'Save remote project' }).click()
+      await expect(page.locator('#message')).toContainText('without credentials')
+      assert.equal(await readFile(path, 'utf8'), record, 'Refused URL must not change bindings')
+      async function inspect(directory) {
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          assert(!['generations', 'current', 'store', 'journal', '.venv'].includes(entry.name), `Unexpected environment state: ${entry.name}`)
+          if (entry.isDirectory()) await inspect(join(directory, entry.name))
+        }
+      }
+      await inspect(env.DINKSTER_DESKTOP_DATA)
+      await remote.screenshot({ path: join(root, `${launch}.png`), fullPage: true })
+      await writeFile(join(root, `${launch}.json`), JSON.stringify({
+        packaged: true, remote: url, channel: projects[0].channel,
+        bindingsPreserved: true, remoteIsolated: true, localEnvironmentCreated: false, credentialUrlRefused: true,
+      }, null, 2))
+      console.log(`Verified installed Desktop ${launch}: remote frontend, isolated renderer, no local environment or Git`)
+    } catch (error) {
+      await page?.screenshot({ path: join(root, `${launch}-failed.png`), fullPage: true }).catch(() => undefined)
+      throw error
+    } finally {
+      await app.close()
+    }
   }
+} finally {
+  await new Promise((done) => server.close(done))
 }

@@ -6,6 +6,7 @@ import {
   addChildWindow, addWorkspaceWindow, decodeWindowLayout, defaultWindowLayout, normalizeWindowBounds,
   readWindowLayout, removeWindow, restoreChildWindows, setWorkspaceProject, updateWindowPlacement, writeWindowLayout,
 } from '../src/window-layout.js'
+import { windowChromeOptions } from '../src/window-chrome.js'
 
 const temporaryDirectories: string[] = []
 afterEach(async () => Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))))
@@ -19,6 +20,19 @@ async function temporaryDirectory(): Promise<string> {
 const placement = { bounds: { x: 10, y: 20, width: 640, height: 480 }, maximized: false } as const
 
 describe('window layout model', () => {
+  it('uses native overlay controls off macOS and inset traffic lights on macOS', () => {
+    for (const platform of ['win32', 'linux'] as const) {
+      const options = windowChromeOptions(platform)
+      expect(options.titleBarStyle).toBe('hidden')
+      expect(options.titleBarOverlay).toEqual({ color: '#202020', symbolColor: '#ededed', height: 48 })
+      expect(options.trafficLightPosition).toBeUndefined()
+    }
+    const mac = windowChromeOptions('darwin')
+    expect(mac.titleBarStyle).toBe('hidden')
+    expect(mac.trafficLightPosition).toEqual({ x: 14, y: 16 })
+    expect(mac.titleBarOverlay).toBeUndefined()
+  })
+
   it('falls back for corrupt and unsupported persisted data', async () => {
     const directory = await temporaryDirectory()
     const fallback = defaultWindowLayout({ x: 1, y: 2, width: 800, height: 600 })

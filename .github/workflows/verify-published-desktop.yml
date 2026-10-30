@@ -14,8 +14,6 @@ jobs:
     defaults:
       run:
         shell: pwsh
-    env:
-      DINKSTER_PUBLISHED_SOURCE: published-source
     steps:
       - name: Prepare isolated verification directory
         run: |
@@ -31,10 +29,6 @@ jobs:
           ref: main
           path: published-source
           persist-credentials: false
-      - name: Download pinned backend and Aimdo
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./packages/desktop/scripts/verify-published-desktop.ps1 -Action DownloadBackend
       - name: Download published Desktop with repository token
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,15 +42,10 @@ jobs:
           node-version: 26.12.0
       - run: pnpm install --frozen-lockfile
         working-directory: published-source
-      - name: Verify backend source-bound native profile
-        run: pnpm --filter @dinkster/desktop prepare:engine
-        working-directory: published-source
       - name: Install verified published executable without credentials
         id: install
         run: ./packages/desktop/scripts/verify-published-desktop.ps1 -Action Install
-      - name: Verify isolated CPU first start restart and refusal
-        env:
-          DINKSTER_ACCELERATOR: cpu
+      - name: Verify remote first start restart and credential refusal
         run: pnpm --filter @dinkster/desktop verify:installed
         working-directory: published-source
       - name: Clean up only the owned installation
@@ -66,14 +55,12 @@ jobs:
         if: always() && steps.install.outcome != 'skipped'
         uses: actions/upload-artifact@v4
         with:
-          name: published-desktop-cpu-proof
+          name: published-desktop-shell-proof
           retention-days: 7
           if-no-files-found: ignore
           path: |
             ${{ env.DINKSTER_VERIFY_WORK }}/proof/*.json
             ${{ env.DINKSTER_VERIFY_WORK }}/run/first-run.json
             ${{ env.DINKSTER_VERIFY_WORK }}/run/restart.json
-            ${{ env.DINKSTER_VERIFY_WORK }}/run/mismatched-profile.json
             ${{ env.DINKSTER_VERIFY_WORK }}/run/first-run.png
             ${{ env.DINKSTER_VERIFY_WORK }}/run/restart.png
-            ${{ env.DINKSTER_VERIFY_WORK }}/run/mismatched-profile.png

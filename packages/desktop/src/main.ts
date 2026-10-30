@@ -1,4 +1,5 @@
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFile, rm, writeFile } from 'node:fs/promises'
@@ -38,9 +39,14 @@ import {
 } from './remote-workers.js'
 import { ENGINE_RELEASE } from './release.js'
 import { configureUpdateFeed } from './update-feed.js'
+import { ShellUpdater } from './shell-updater.js'
+import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
+import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } from './environment.js'
+import { detectNvidiaGpus, planVariant } from './hardware.js'
 import { createWebHost, type WebHost } from './web-host.js'
 import { writeFileAtomic } from './atomic-file.js'
 import { denyRendererPermissions, secureWebPreferences } from './security.js'
+import { installWindowChrome, windowChromeOptions } from './window-chrome.js'
 import {
   addChildWindow,
   addWorkspaceWindow,
@@ -68,6 +74,11 @@ import type {
 
 const { autoUpdater } = updater
 let window: BrowserWindow | undefined
+let projectWindow: BrowserWindow | undefined
+const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string }>()
+const localEngines = new Map<string, { root: string; engine: string }>()
+const environmentClient = new EnvironmentClient()
+let pendingProjectPlan: { token: string; project: DesktopProject; request: EnvironmentRequest } | undefined
 const windows = new Map<string, BrowserWindow>()
 const redockingWindows = new Set<string>()
 let windowLayout: WindowLayout = defaultWindowLayout()
@@ -83,10 +94,7 @@ const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirecto
 let backendPort = 3639
 let selection: EngineSelection | undefined
 const updateFeed = configureUpdateFeed(autoUpdater, process.env['DINKSTER_UPDATE_FEED_URL'])
-let update: DesktopInfo['update'] = {
-  state: 'idle',
-  detail: updateFeed ? 'Updates have not been checked' : 'The production update feed will be enabled with public releases',
-}
+const shellUpdater = new ShellUpdater({ target: autoUpdater, dataDirectory, currentVersion: app.getVersion(), updateFeed, packaged: app.isPackaged })
 const lifecycleQueue = new LifecycleQueue()
 const windowQueue = new LifecycleQueue()
 const layoutPersistenceQueue = new LifecycleQueue()
@@ -176,19 +184,10 @@ async function flushWindowLayout(): Promise<void> {
   await persistWindowLayout()
 }
 
-const packagedEngine = app.isPackaged
-  ? join(process.resourcesPath, 'engine', ENGINE_RELEASE.sourceArchive)
-  : process.env['DINKSTER_ENGINE_ARCHIVE']
-const packagedAimdo = app.isPackaged
-  ? join(process.resourcesPath, 'engine', ENGINE_RELEASE.aimdo.archive)
-  : process.env['DINKSTER_AIMDO_WHEEL']
 function createRuntime(selected?: EngineSelection): EngineRuntime {
   return new EngineRuntime({
     dataDirectory,
-    ...(packagedEngine ? { sourceArchive: packagedEngine } : {}),
-    ...(packagedAimdo ? { aimdoWheel: packagedAimdo } : {}),
     ...(process.env['DINKSTER_ENGINE_SOURCE'] ? { sourceDirectory: process.env['DINKSTER_ENGINE_SOURCE'] } : {}),
-    ...(process.env['DINKSTER_UV'] ? { uvExecutable: process.env['DINKSTER_UV'] } : {}),
     port: backendPort,
     ...(selected
       ? { variant: selected.variant, releaseCommit: selected.commit }
@@ -236,7 +235,7 @@ async function desktopInfo(): Promise<DesktopInfo> {
     variant: active.variant,
     storageBytes: await desktopStorageBytes(dataDirectory),
     releases: await listEngineReleases(dataDirectory, active),
-    update,
+    update: shellUpdater.status,
   }
 }
 
@@ -305,6 +304,169 @@ function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
   }
 }
 
+const projectDialogPath = join(app.getAppPath(), 'resources', 'projects.html')
+
+function trustedProjectIpc(event: Electron.IpcMainInvokeEvent): void {
+  if (quitting) throw new Error('Desktop is shutting down')
+  if (!projectWindow || event.sender !== projectWindow.webContents
+    || event.senderFrame !== projectWindow.webContents.mainFrame
+    || event.senderFrame.url !== pathToFileURL(projectDialogPath).href) {
+    throw new Error('project capability denied for an untrusted renderer')
+  }
+}
+
+async function createProjectManager(): Promise<void> {
+  if (projectWindow && !projectWindow.isDestroyed()) { projectWindow.show(); return }
+  projectWindow = new BrowserWindow({
+    ...windowChromeOptions(),
+    width: 1040, height: 760, minWidth: 600, minHeight: 500,
+    title: 'Dinkster Desktop', icon: applicationIcon(), backgroundColor: windowBackground(),
+    webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
+  })
+  installWindowChrome(projectWindow)
+  projectWindow.on('page-title-updated', (event) => event.preventDefault())
+  denyRendererPermissions(projectWindow.webContents.session)
+  projectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  projectWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+  projectWindow.on('closed', () => { projectWindow = undefined; pendingProjectPlan = undefined })
+  await projectWindow.loadFile(projectDialogPath)
+}
+
+ipcMain.handle('desktop:projects-list', async (event) => {
+  trustedProjectIpc(event)
+  return readProjects(dataDirectory)
+})
+ipcMain.handle('desktop:projects-save', (event, value: unknown) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  await writeProjects(dataDirectory, saveProject(await readProjects(dataDirectory), value))
+}))
+ipcMain.handle('desktop:projects-remove', (event, projectId: unknown) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  if (!validProjectId(projectId)) throw new Error('invalid project id')
+  const projects = await readProjects(dataDirectory)
+  await writeProjects(dataDirectory, { ...projects, projects: projects.projects.filter((project) => project.id !== projectId) })
+}))
+ipcMain.handle('desktop:projects-inspect', (event, input: EnvironmentRequest) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  const request: EnvironmentRequest = { root: input.root, operation: 'catalog',
+    ...(input.channel === undefined ? {} : { channel: input.channel }),
+    ...(input.mirrors === undefined ? {} : { mirrors: input.mirrors }) }
+  const result = await environmentClient.run(request)
+  const hardware = await detectNvidiaGpus()
+  const plan = planVariant((result.variants ?? []).map((entry) => entry.manifest), hardware, input.gpus ?? [], process.platform)
+  return { result, hardware, plan }
+}))
+
+function localEngineUrl(project: DesktopProject, engineId: string, result: EnvironmentResult): string {
+  const engine = result.engines?.find((candidate) => candidate.name === engineId)
+  const url = engine?.url ?? (project.engines.filter((candidate) => candidate.kind === 'local').length === 1 ? result.url : undefined)
+  if (!url || (engine && engine.state !== 'ready')) throw new Error(`dinkster-env did not return a ready URL for ${engineId}`)
+  const address = serverUrl(url)
+  const parsed = new URL(address)
+  if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') throw new Error('local supervisor returned a non-loopback URL')
+  return address
+}
+
+async function handoffProject(project: DesktopProject, result: EnvironmentResult): Promise<void> {
+  for (const [managed, binding] of remoteWindows) {
+    if (binding.projectId !== project.id || managed.isDestroyed()) continue
+    if (!project.engines.some((engine) => engine.id === binding.engineId && engine.kind === 'local')) continue
+    const url = localEngineUrl(project, binding.engineId, result)
+    binding.url = url
+    await managed.loadURL(url)
+  }
+}
+
+ipcMain.handle('desktop:projects-plan', (event, value: unknown, input: EnvironmentRequest) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  pendingProjectPlan = undefined
+  const project = parseProject(value)
+  if (!project.root || input.root !== project.root
+    || !['setup', 'update', 'rollback', 'move', 'doctor', 'gc'].includes(input.operation)) throw new Error('invalid local project operation')
+  // Validate the shell binding before asking the environment owner to mutate it.
+  saveProject(await readProjects(dataDirectory), project)
+  if (input.operation === 'move') saveProject(await readProjects(dataDirectory), { ...project, root: input.destination })
+  const engine = project.engines.find((binding) => binding.kind === 'local' && binding.id === input.engine)
+  if (input.operation === 'setup' && (!engine || engine.kind !== 'local')) throw new Error('select the local engine binding before setup')
+  const request: EnvironmentRequest = { ...input, root: project.root,
+    ...(input.operation === 'setup' && engine?.kind === 'local' ? { engine: engine.id, gpus: engine.gpus, port: engine.port } : {}) }
+  const result = await environmentClient.run(request)
+  if (result.status !== 'planned') return { result }
+  const token = randomUUID()
+  pendingProjectPlan = { token, project, request }
+  return { token, result }
+}))
+ipcMain.handle('desktop:projects-apply', (event, token: unknown) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  const planned = pendingProjectPlan
+  pendingProjectPlan = undefined
+  if (!planned || token !== planned.token) throw new Error('the plan expired; review a new plan before applying')
+  saveProject(await readProjects(dataDirectory), planned.project)
+  if (planned.request.operation === 'move') saveProject(await readProjects(dataDirectory), { ...planned.project, root: planned.request.destination })
+  const result = await environmentClient.run(planned.request, true)
+  if (result.status !== 'applied' && result.status !== 'clean') throw new Error('dinkster-env did not apply the confirmed operation')
+  const project = parseProject({
+    ...planned.project,
+    root: result.root,
+    ...(planned.request.channel ? { channel: planned.request.channel } : {}),
+  })
+  await writeProjects(dataDirectory, saveProject(await readProjects(dataDirectory), project))
+  for (const engine of result.engines ?? []) {
+    if (engine.state === 'ready' && project.engines.some((binding) => binding.kind === 'local' && binding.id === engine.name)) {
+      localEngines.set(`${project.id}/${engine.name}`, { root: project.root!, engine: engine.name })
+    }
+  }
+  if (planned.request.operation === 'move') {
+    for (const binding of localEngines.values()) if (binding.root === planned.project.root) binding.root = project.root!
+  }
+  if (['setup', 'update', 'rollback', 'move'].includes(planned.request.operation)) await handoffProject(project, result)
+  return result
+}))
+ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: unknown) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  if (!validProjectId(projectId) || !validProjectId(engineId)) throw new Error('invalid engine binding')
+  const project = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === projectId)
+  const engine = project?.engines.find((candidate) => candidate.id === engineId)
+  if (!engine) throw new Error('engine binding not found')
+  let url: string
+  if (engine.kind === 'remote') url = engine.url
+  else {
+    const root = project!.root!
+    const result = await environmentClient.run({
+      root, operation: 'start', engine: engine.id, gpus: engine.gpus,
+      ...(engine.port === undefined ? {} : { port: engine.port }),
+    }, true)
+    if (result.status !== 'applied') throw new Error('dinkster-env did not start the selected engine')
+    localEngines.set(`${projectId}/${engineId}`, { root, engine: engine.id })
+    url = localEngineUrl(project!, engine.id, result)
+  }
+  const existing = [...remoteWindows].find(([managed, binding]) => !managed.isDestroyed() && binding.projectId === projectId && binding.engineId === engineId)
+  if (existing) {
+    existing[1].url = url
+    await existing[0].loadURL(url)
+    existing[0].show()
+    return
+  }
+  const remote = new BrowserWindow({
+    ...windowChromeOptions(),
+    width: 1440, height: 900, title: 'Dinkster Desktop',
+    icon: applicationIcon(), backgroundColor: windowBackground(),
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
+  })
+  installWindowChrome(remote)
+  remote.on('page-title-updated', (event) => event.preventDefault())
+  const binding = { projectId, engineId, url }
+  remoteWindows.set(remote, binding)
+  denyRendererPermissions(remote.webContents.session)
+  remote.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  remote.webContents.on('will-navigate', (navigation, url) => {
+    if (new URL(url).origin !== new URL(binding.url).origin) navigation.preventDefault()
+  })
+  remote.on('closed', () => remoteWindows.delete(remote))
+  try { await remote.loadURL(url) }
+  catch (error) { remote.destroy(); throw error }
+}))
+
 async function gpuCheck(): Promise<SystemCheck['gpu']> {
   try {
     const { stdout } = await executeFile('nvidia-smi', [
@@ -323,13 +485,19 @@ async function shutdown(): Promise<void> {
   if (quitting) return
   quitting = true
   await windowQueue.run(async () => {})
-  await Promise.allSettled([
+  const stopped = await Promise.allSettled([
     runtime.stop(),
+    ...[...localEngines.values()].map(({ root, engine }) => environmentClient.run({ root, operation: 'stop', engine }, true)),
     Promise.resolve().then(() => webHost?.close()),
   ])
   try {
+    if (stopped.every((result) => result.status === 'fulfilled')) await environmentClient.dispose()
+    else await shellLog.append('Retaining environment tools because shutdown did not stop every local service.')
     window = undefined
     await flushWindowLayout()
+    projectWindow?.destroy()
+    for (const managed of remoteWindows.keys()) managed.destroy()
+    remoteWindows.clear()
     for (const managed of windows.values()) managed.destroy()
     windows.clear()
     tray?.destroy()
@@ -373,6 +541,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
   const bounds = normalizeWindowBounds(placement.bounds, displayWorkAreas())
   windowLayout = updateWindowPlacement(windowLayout, id, { bounds })
   const managed = new BrowserWindow({
+    ...windowChromeOptions(),
     ...bounds,
     minWidth: Math.min(900, bounds.width),
     minHeight: Math.min(640, bounds.height),
@@ -382,6 +551,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
     backgroundColor: windowBackground(),
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
+  installWindowChrome(managed)
   managed.on('page-title-updated', (event) => event.preventDefault())
   windows.set(id, managed)
   if (id === 'primary') window = managed
@@ -848,40 +1018,13 @@ ipcMain.handle('desktop:select-engine', (event, commit: unknown, variant: unknow
 }))
 ipcMain.handle('desktop:check-for-updates', async (event) => {
   trustedIpc(event)
-  if (!updateFeed) {
-    update = { state: 'idle', detail: 'The production update feed will be enabled with public releases' }
-    await sendInfo()
-    return
-  }
-  if (!app.isPackaged) {
-    update = { state: 'current', detail: 'Update checks are available in installed builds' }
-    await sendInfo()
-    return
-  }
-  update = { state: 'checking', detail: 'Checking for a Dinkster Desktop update' }
   await sendInfo()
-  try {
-    await autoUpdater.checkForUpdates()
-  } catch (error) {
-    update = { state: 'failed', detail: redactDiagnosticText(error instanceof Error ? error.message : String(error)) }
-    await sendInfo()
-  }
+  return shellUpdater.manualStatus()
 })
-ipcMain.handle('desktop:install-update', (event) => serializeLifecycle(async () => {
+ipcMain.handle('desktop:install-update', async (event) => {
   trustedIpc(event)
-  if (update.state !== 'ready') throw new Error('an update is not ready to install')
-  quitting = true
-  await windowQueue.run(async () => {})
-  await Promise.allSettled([runtime.stop(), Promise.resolve().then(() => webHost?.close())])
-  await flushWindowLayout()
-  await lifecycleLease?.release()
-  lifecycleLease = undefined
-  window = undefined
-  for (const managed of windows.values()) managed.destroy()
-  windows.clear()
-  tray?.destroy()
-  autoUpdater.quitAndInstall(false, true)
-}))
+  return shellUpdater.manualStatus()
+})
 ipcMain.handle('desktop:choose-directory', async (event) => {
   trustedIpc(event)
   const result = await dialog.showOpenDialog(window!, { title: 'Choose an existing model folder', properties: ['openDirectory'] })
@@ -949,24 +1092,8 @@ ipcMain.handle('desktop:export-support-report', (event) => serializeLifecycle(as
   return result.filePath
 }))
 
-autoUpdater.autoDownload = true
-autoUpdater.autoInstallOnAppQuit = false
-autoUpdater.on('update-available', (info) => {
-  update = { state: 'available', detail: `Downloading Dinkster Desktop ${info.version}` }
-  void sendInfo()
-})
-autoUpdater.on('update-not-available', () => {
-  update = { state: 'current', detail: 'Dinkster Desktop is up to date' }
-  void sendInfo()
-})
-autoUpdater.on('update-downloaded', (info) => {
-  update = { state: 'ready', detail: `Dinkster Desktop ${info.version} is ready to install` }
-  void sendInfo()
-})
-autoUpdater.on('error', (error) => {
-  update = { state: 'failed', detail: redactDiagnosticText(error.message) }
-  void shellLog.append(redactDiagnosticText(`updater: ${error.message}`))
-  void sendInfo()
+autoUpdater.on('error', () => {
+  void shellLog.append('Desktop updater reported an error; startup update status contains the result.')
 })
 
 app.on('before-quit', (event) => {
@@ -1006,6 +1133,28 @@ app.on('open-url', (event, url) => {
 
 if (primaryInstance) app.whenReady().then(async () => {
   lifecycleLease = await acquireLifecycleLease(dataDirectory)
+  const shellUpdate = await shellUpdater.start()
+  if (shellUpdate.state === 'installing') return
+  nativeTheme.on('updated', () => {
+    for (const managed of windows.values()) managed.setBackgroundColor(windowBackground())
+    if (projectWindow && !projectWindow.isDestroyed()) projectWindow.setBackgroundColor(windowBackground())
+    for (const remote of remoteWindows.keys()) remote.setBackgroundColor(windowBackground())
+  })
+  if (!process.env['DINKSTER_ENGINE_SOURCE']) {
+    credentialStore = await CredentialStore.open(join(dataDirectory, 'credentials.json'), desktopCredentialCipher())
+    applyCredentialHeaders()
+    await createProjectManager()
+    tray = new Tray(trayIcon())
+    tray.setToolTip('Dinkster Desktop')
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Projects', click: () => { void createProjectManager() } },
+      { label: 'About Dinkster Desktop', click: () => { void showAbout() } },
+      { type: 'separator' },
+      { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
+    ]))
+    tray.on('double-click', () => { void createProjectManager() })
+    return
+  }
   backendPort = await availableLoopbackPort()
   const persistedDiagnostic = (message: string): void => { void shellLog.append(message) }
   const interrupted = await readEngineOperation(dataDirectory, persistedDiagnostic)
@@ -1019,9 +1168,6 @@ if (primaryInstance) app.whenReady().then(async () => {
   if (launchLink) preReadyLinks.unshift(launchLink) // launch argv precedes any staged open-url
   windowsReady = true
   for (const link of preReadyLinks.splice(0)) void routeDeepLink(link)
-  nativeTheme.on('updated', () => {
-    for (const managed of windows.values()) managed.setBackgroundColor(windowBackground())
-  })
   tray = new Tray(trayIcon())
   tray.setToolTip('Dinkster Desktop')
   tray.setContextMenu(Menu.buildFromTemplate([

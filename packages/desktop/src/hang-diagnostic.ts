@@ -5,6 +5,15 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 export const hangDiagnosticEnabled = process.env['DINKSTER_DESKTOP_HANG_DIAGNOSTIC'] === '1'
 
 type Handler = 'supervisor-restart' | 'proxy' | 'static'
+  | 'proxy-dispatch' | 'proxy-error-response' | 'proxy-error-destroy'
+  | 'websocket-dispatch' | 'websocket-destroy'
+  | 'static-exists' | 'static-stat' | 'static-write-head' | 'static-stream'
+  | 'runtime-log-dispatch' | 'runtime-status-dispatch'
+  | 'window-destroyed' | 'webcontents-get' | 'webcontents-destroyed' | 'webcontents-send'
+  | 'window-maximized' | 'window-bounds' | 'window-background' | 'theme-dark-colors'
+  | 'ipc-main-frame' | 'ipc-sender-frame' | 'ipc-frame-url' | 'chrome-insert-css' | 'chrome-warning'
+  | 'trusted-ipc' | 'credential-available' | 'credential-encrypt' | 'credential-decrypt'
+  | 'credential-request-callback'
 type Boundary = { timestamp: number; handler: Handler; phase: 'entry' | 'exit' }
 let worker: Worker | undefined
 
@@ -19,6 +28,16 @@ export function startHangDiagnostic(dataDirectory: string): void {
 
 export function diagnosticBoundary(handler: Handler, phase: Boundary['phase']): void {
   worker?.postMessage({ timestamp: Date.now(), handler, phase } satisfies Boundary)
+}
+
+export function diagnosticCall<T>(handler: Handler, call: () => T): T {
+  if (!hangDiagnosticEnabled) return call()
+  diagnosticBoundary(handler, 'entry')
+  try {
+    return call()
+  } finally {
+    diagnosticBoundary(handler, 'exit')
+  }
 }
 
 if (!isMainThread && hangDiagnosticEnabled) {

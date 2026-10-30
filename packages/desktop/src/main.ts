@@ -27,7 +27,7 @@ import {
 import { availableLoopbackPort, EngineRuntime, defaultDataDirectory } from './engine.js'
 import { configuredEngineAccelerator, isEngineAccelerator } from './accelerator.js'
 import { changeEngineTransaction } from './engine-transaction.js'
-import { hangDiagnosticEnabled, startHangDiagnostic } from './hang-diagnostic.js'
+import { diagnosticCall, hangDiagnosticEnabled, startHangDiagnostic } from './hang-diagnostic.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
@@ -142,13 +142,13 @@ function publicWindowLayout(projectId: string | undefined): DesktopWindowLayout 
 
 function broadcastToWindows(channel: string, value: (id: string) => unknown): void {
   for (const [id, managed] of windows) {
-    if (managed.isDestroyed() || managed.webContents.isDestroyed()) {
+    if (diagnosticCall('window-destroyed', () => managed.isDestroyed()) || diagnosticCall('webcontents-destroyed', () => diagnosticCall('webcontents-get', () => managed.webContents).isDestroyed())) {
       windows.delete(id)
       if (id === 'primary') window = undefined
       continue
     }
     try {
-      managed.webContents.send(channel, value(id))
+      diagnosticCall('webcontents-send', () => diagnosticCall('webcontents-get', () => managed.webContents).send(channel, value(id)))
     } catch (error) {
       void shellLog.append(redactDiagnosticText(
         `window broadcast ${id}: ${error instanceof Error ? error.message : String(error)}`,
@@ -295,14 +295,14 @@ async function changeEngine(
 }
 
 function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
-  const expected = [...windows.values()].find((managed) => managed.webContents === event.sender)?.webContents
-  if (!isTrustedDesktopIpc(
+  const expected = diagnosticCall('webcontents-get', () => [...windows.values()].find((managed) => managed.webContents === event.sender)?.webContents)
+  if (!diagnosticCall('trusted-ipc', () => isTrustedDesktopIpc(
     expected,
-    event.sender.mainFrame,
+    diagnosticCall('ipc-main-frame', () => event.sender.mainFrame),
     webHost ? new URL(webHost.url).origin : undefined,
     event.sender,
-    event.senderFrame,
-  )) {
+    diagnosticCall('ipc-sender-frame', () => event.senderFrame),
+  ))) {
     throw new Error('desktop capability denied for an untrusted renderer')
   }
 }
@@ -637,8 +637,8 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
     managed.show()
   })
   const recordPlacement = (): void => {
-    if (managed.isDestroyed() || managed.isMaximized()) return
-    windowLayout = updateWindowPlacement(windowLayout, id, { bounds: managed.getBounds() })
+    if (diagnosticCall('window-destroyed', () => managed.isDestroyed()) || diagnosticCall('window-maximized', () => managed.isMaximized())) return
+    windowLayout = updateWindowPlacement(windowLayout, id, { bounds: diagnosticCall('window-bounds', () => managed.getBounds()) })
     scheduleWindowLayoutWrite()
   }
   managed.on('move', recordPlacement)
@@ -648,7 +648,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
     scheduleWindowLayoutWrite()
   })
   managed.on('unmaximize', () => {
-    windowLayout = updateWindowPlacement(windowLayout, id, { maximized: false, bounds: managed.getBounds() })
+    windowLayout = updateWindowPlacement(windowLayout, id, { maximized: false, bounds: diagnosticCall('window-bounds', () => managed.getBounds()) })
     scheduleWindowLayoutWrite()
   })
   managed.on('close', (event) => {
@@ -789,9 +789,9 @@ async function openWorkspaceWindow(
 
 function desktopCredentialCipher(): CredentialCipher {
   return {
-    available: () => safeStorage.isEncryptionAvailable(),
-    encrypt: (plain) => safeStorage.encryptString(plain),
-    decrypt: (blob) => safeStorage.decryptString(blob),
+    available: () => diagnosticCall('credential-available', () => safeStorage.isEncryptionAvailable()),
+    encrypt: (plain) => diagnosticCall('credential-encrypt', () => safeStorage.encryptString(plain)),
+    decrypt: (blob) => diagnosticCall('credential-decrypt', () => safeStorage.decryptString(blob)),
   }
 }
 
@@ -831,7 +831,7 @@ function applyCredentialHeaders(): void {
     if (secret !== undefined && !hasAuthorizationHeader(details.requestHeaders)) {
       details.requestHeaders['Authorization'] = `Bearer ${secret}`
     }
-    callback({ requestHeaders: details.requestHeaders })
+    diagnosticCall('credential-request-callback', () => callback({ requestHeaders: details.requestHeaders }))
   })
 }
 
@@ -1019,7 +1019,7 @@ ipcMain.handle('desktop:take-deep-links', (event) => {
 ipcMain.handle('desktop:connection-credentials', (event) => {
   trustedIpc(event)
   return {
-    custody: credentialStore !== undefined && safeStorage.isEncryptionAvailable(),
+    custody: credentialStore !== undefined && diagnosticCall('credential-available', () => safeStorage.isEncryptionAvailable()),
     profiles: credentialStore?.list().map((entry) => entry.profileId) ?? [],
   }
 })
@@ -1243,9 +1243,9 @@ if (primaryInstance) app.whenReady().then(async () => {
   const shellUpdate = await shellUpdater.start()
   if (shellUpdate.state === 'installing') return
   nativeTheme.on('updated', () => {
-    for (const managed of windows.values()) managed.setBackgroundColor(windowBackground())
-    if (projectWindow && !projectWindow.isDestroyed()) projectWindow.setBackgroundColor(windowBackground())
-    for (const remote of remoteWindows.keys()) remote.setBackgroundColor(windowBackground())
+    for (const managed of windows.values()) diagnosticCall('window-background', () => managed.setBackgroundColor(windowBackground()))
+    if (projectWindow && !diagnosticCall('window-destroyed', () => projectWindow!.isDestroyed())) diagnosticCall('window-background', () => projectWindow!.setBackgroundColor(windowBackground()))
+    for (const remote of remoteWindows.keys()) diagnosticCall('window-background', () => remote.setBackgroundColor(windowBackground()))
   })
   if (!process.env['DINKSTER_ENGINE_SOURCE']) {
     credentialStore = await CredentialStore.open(join(dataDirectory, 'credentials.json'), desktopCredentialCipher())

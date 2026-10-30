@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, nativeImage, nativeTheme } from 'electron'
+import { diagnosticCall } from './hang-diagnostic.js'
 
 const directory = app.isPackaged
   ? join(process.resourcesPath, 'branding')
@@ -11,7 +12,7 @@ const palette = JSON.parse(readFileSync(join(directory, 'tokens', 'dinkster-colo
 }
 
 export function windowBackground(): string {
-  return palette[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'].bg.canvas
+  return palette[diagnosticCall('theme-dark-colors', () => nativeTheme.shouldUseDarkColors) ? 'dark' : 'light'].bg.canvas
 }
 
 export function applicationIcon(): Electron.NativeImage {

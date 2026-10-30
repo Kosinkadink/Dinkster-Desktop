@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
+import { diagnosticCall } from './hang-diagnostic.js'
 import { ENGINE_RELEASE, torchBackend } from './release.js'
 import {
   decodeEngineAccelerator,
@@ -176,7 +177,7 @@ export class EngineRuntime extends EventEmitter {
 
   private update(status: LifecycleStatus): void {
     this.current = status
-    this.emit('status', status)
+    diagnosticCall('runtime-status-dispatch', () => this.emit('status', status))
   }
 
   private track(child: ChildProcess): void {
@@ -259,8 +260,8 @@ export class EngineRuntime extends EventEmitter {
     })
     this.supervisorInstance = instance
     this.track(this.child)
-    this.child.stdout?.on('data', (chunk: Buffer) => this.emit('log', chunk.toString()))
-    this.child.stderr?.on('data', (chunk: Buffer) => this.emit('log', chunk.toString()))
+    this.child.stdout?.on('data', (chunk: Buffer) => diagnosticCall('runtime-log-dispatch', () => this.emit('log', chunk.toString())))
+    this.child.stderr?.on('data', (chunk: Buffer) => diagnosticCall('runtime-log-dispatch', () => this.emit('log', chunk.toString())))
     await new Promise<void>((resolve, reject) => {
       this.child!.once('spawn', resolve)
       this.child!.once('error', reject)

@@ -1,4 +1,5 @@
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron'
+import { diagnosticCall } from './hang-diagnostic.js'
 
 export function windowChromeOptions(platform: NodeJS.Platform = process.platform): BrowserWindowConstructorOptions {
   return {
@@ -31,8 +32,8 @@ export function installWindowChrome(window: BrowserWindow): void {
     }
   `
   window.webContents.on('did-finish-load', () => {
-    if (!window.isDestroyed()) void window.webContents.insertCSS(css).catch(() => {
-      if (!window.isDestroyed()) console.warn('Desktop window chrome could not be applied.')
+    if (!diagnosticCall('window-destroyed', () => window.isDestroyed())) void diagnosticCall('chrome-insert-css', () => window.webContents.insertCSS(css)).catch(() => {
+      if (!diagnosticCall('window-destroyed', () => window.isDestroyed())) diagnosticCall('chrome-warning', () => console.warn('Desktop window chrome could not be applied.'))
     })
   })
 }

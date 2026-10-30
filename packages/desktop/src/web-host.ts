@@ -3,7 +3,7 @@ import { createServer, type RequestListener, type Server } from 'node:http'
 import type { Socket } from 'node:net'
 import { extname, join, normalize, resolve } from 'node:path'
 import httpProxy from 'http-proxy'
-import { diagnosticBoundary, hangDiagnosticEnabled } from './hang-diagnostic.js'
+import { diagnosticBoundary, diagnosticCall, hangDiagnosticEnabled } from './hang-diagnostic.js'
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.css': 'text/css; charset=utf-8',
@@ -41,15 +41,17 @@ export async function createWebHost(appDirectory: string, backendPort = 3639, pr
   const sockets = new Set<Socket>()
   let webSocketSource = "'none'"
   proxy.on('error', (_error, _request, responseOrSocket) => {
-    if ('destroy' in responseOrSocket) responseOrSocket.destroy()
+    if ('destroy' in responseOrSocket) diagnosticCall('proxy-error-destroy', () => responseOrSocket.destroy())
   })
   const handleRequest: RequestListener = (request, response) => {
     const requestPath = request.url ?? '/'
     if (isProxyPath(requestPath)) {
-      proxy.web(request, response, {}, (error) => {
-        if (!response.headersSent) response.writeHead(502, { 'content-type': 'application/json' })
-        response.end(JSON.stringify({ error: 'backend-unavailable', detail: error.message }))
-      })
+      diagnosticCall('proxy-dispatch', () => proxy.web(request, response, {}, (error) => {
+        diagnosticCall('proxy-error-response', () => {
+          if (!response.headersSent) response.writeHead(502, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ error: 'backend-unavailable', detail: error.message }))
+        })
+      }))
       return
     }
     let pathname: string
@@ -65,13 +67,13 @@ export async function createWebHost(appDirectory: string, backendPort = 3639, pr
       response.writeHead(403).end()
       return
     }
-    if (!existsSync(file) || statSync(file).isDirectory()) file = join(appRoot, 'index.html')
-    response.writeHead(200, {
+    if (!diagnosticCall('static-exists', () => existsSync(file)) || diagnosticCall('static-stat', () => statSync(file).isDirectory())) file = join(appRoot, 'index.html')
+    diagnosticCall('static-write-head', () => response.writeHead(200, {
       'content-type': CONTENT_TYPES[extname(file)] ?? 'application/octet-stream',
       'content-security-policy': `default-src 'self'; connect-src 'self' ${webSocketSource}; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'`,
       'x-content-type-options': 'nosniff',
-    })
-    createReadStream(file).pipe(response)
+    }))
+    diagnosticCall('static-stream', () => createReadStream(file).pipe(response))
   }
   const server: Server = createServer(hangDiagnosticEnabled ? (request, response) => {
     const handler = isProxyPath(request.url ?? '/') ? 'proxy' : 'static'
@@ -87,9 +89,11 @@ export async function createWebHost(appDirectory: string, backendPort = 3639, pr
   } : handleRequest)
   server.on('upgrade', (request, socket, head) => {
     if (isProxyPath(request.url ?? '/')) {
-      proxy.ws(request, socket, head, {}, () => socket.destroy())
+      diagnosticCall('websocket-dispatch', () => proxy.ws(request, socket, head, {}, () => {
+        diagnosticCall('websocket-destroy', () => socket.destroy())
+      }))
     }
-    else socket.destroy()
+    else diagnosticCall('websocket-destroy', () => socket.destroy())
   })
   server.on('connection', (socket) => {
     sockets.add(socket)

@@ -232,6 +232,62 @@ console.log(JSON.stringify(row));
     { nativeFolderChoice: false, reveal: false, resolvePath: false },
   )
   await writeFile(observedFile, JSON.stringify(observed))
+  const projectsFile = join(env.DINKSTER_DESKTOP_DATA, 'projects.json')
+  const savedProjects = await readFile(projectsFile, 'utf8')
+  for (const change of ['none', 'generation', 'binding']) {
+    await app.evaluate(({ dialog }) => {
+      globalThis.originalFolderDialog = dialog.showOpenDialog
+      globalThis.folderDialogEntered = false
+      dialog.showOpenDialog = () =>
+        new Promise((done) => {
+          globalThis.finishFolderDialog = done
+          globalThis.folderDialogEntered = true
+        })
+    })
+    const chosen = engine.evaluate(async (url) => {
+      try {
+        return { path: await window.dinksterDesktop.chooseDirectory(url) }
+      } catch (error) {
+        return { error: error.message }
+      }
+    }, urls[0])
+    await expect
+      .poll(() => app.evaluate(() => globalThis.folderDialogEntered))
+      .toBe(true)
+    // Revoke authority only after the request reaches the asynchronous dialog.
+    if (change === 'generation') {
+      await writeFile(
+        observedFile,
+        JSON.stringify({
+          ...observed,
+          current: 2,
+          engines: [{ ...observed.engines[0], generation: 2 }],
+        }),
+      )
+    }
+    if (change === 'binding') {
+      await writeFile(
+        projectsFile,
+        JSON.stringify({ version: 1, projects: [] }),
+      )
+    }
+    await app.evaluate(({ dialog }, path) => {
+      dialog.showOpenDialog = globalThis.originalFolderDialog
+      globalThis.finishFolderDialog({ canceled: false, filePaths: [path] })
+    }, scratch)
+    const result = await chosen
+    if (change === 'none') assert.deepEqual(result, { path: scratch })
+    if (change === 'generation') {
+      assert.match(result.error, /no longer the selected ready generation/)
+      assert.equal(result.path, undefined)
+    }
+    if (change === 'binding') {
+      assert.match(result.error, /local project binding changed/)
+      assert.equal(result.path, undefined)
+    }
+    await writeFile(observedFile, JSON.stringify(observed))
+    await writeFile(projectsFile, savedProjects)
+  }
   await engine.goto(`${urls[0]}/?dinksterProject=p-shared`)
   const identity = {
     digest: `blake3:${'a1'.repeat(32)}`,

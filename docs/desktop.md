@@ -1,5 +1,27 @@
 # Desktop environment boundaries
 
+## Native identity
+
+`pnpm prepare:frontend` copies native branding from the workflow-pinned
+`.frontend/branding` source into generated Desktop resources. Windows and NSIS
+use its ICO, macOS uses its ICNS, and Linux uses its color PNG. Do not maintain
+or edit a second set of icons in Desktop. The accepted 16 and 24 px frames are
+the exact-source renders without hand edits.
+
+The packaged product name also sets Electron's application identity. Linux
+uses `dinkster-desktop.desktop` for Wayland association and explicitly matches
+`StartupWMClass` to Electron 37's X11 class, `Dinkster Desktop`, so running
+windows associate with the installed desktop entry and its icon.
+
+Window backgrounds follow the operating system's light or dark theme using
+the same source's palette tokens. The tray uses the color symbol on Windows
+and Linux and the monochrome template with Retina representation on macOS.
+Open "About Dinkster Desktop" from the tray menu to see the accepted wordmark
+and installed shell version. The about surface follows live OS-theme changes.
+The first-run renderer and its installation controls remain Frontend-owned.
+Managed windows retain the native title "Dinkster Desktop" rather than adopting
+the embedded web page's browser title.
+
 ## Projects and engines
 
 Desktop stores its project names and engine bindings in `projects.json` under

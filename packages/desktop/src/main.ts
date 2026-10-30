@@ -4,8 +4,9 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, screen, session, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, session, Tray } from 'electron'
 import updater from 'electron-updater'
+import { applicationIcon, showAbout, trayIcon, windowBackground } from './branding.js'
 import {
   clearEngineOperation,
   createInstallSnapshot,
@@ -319,10 +320,11 @@ async function createProjectManager(): Promise<void> {
   projectWindow = new BrowserWindow({
     ...windowChromeOptions(),
     width: 1040, height: 760, minWidth: 600, minHeight: 500,
-    title: 'Dinkster projects', backgroundColor: '#171717',
+    title: 'Dinkster Desktop', icon: applicationIcon(), backgroundColor: windowBackground(),
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
   installWindowChrome(projectWindow)
+  projectWindow.on('page-title-updated', (event) => event.preventDefault())
   denyRendererPermissions(projectWindow.webContents.session)
   projectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   projectWindow.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -447,11 +449,12 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   }
   const remote = new BrowserWindow({
     ...windowChromeOptions(),
-    width: 1440, height: 900, title: `${project!.name} - ${engine.name}`,
-    backgroundColor: '#171717',
+    width: 1440, height: 900, title: 'Dinkster Desktop',
+    icon: applicationIcon(), backgroundColor: windowBackground(),
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
   })
   installWindowChrome(remote)
+  remote.on('page-title-updated', (event) => event.preventDefault())
   const binding = { projectId, engineId, url }
   remoteWindows.set(remote, binding)
   denyRendererPermissions(remote.webContents.session)
@@ -476,11 +479,6 @@ async function gpuCheck(): Promise<SystemCheck['gpu']> {
   } catch {
     return { available: false }
   }
-}
-
-function trayImage(): Electron.NativeImage {
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="7" fill="#171717"/><path d="M8 7h8c6 0 9 3 9 9s-3 9-9 9H8V7zm6 5v8h2c2 0 3-1 3-4s-1-4-3-4h-2z" fill="#8be9fd"/></svg>'
-  return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
 }
 
 async function shutdown(): Promise<void> {
@@ -548,10 +546,13 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
     minWidth: Math.min(900, bounds.width),
     minHeight: Math.min(640, bounds.height),
     show: false,
-    backgroundColor: '#171717',
+    title: 'Dinkster Desktop',
+    icon: applicationIcon(),
+    backgroundColor: windowBackground(),
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
   installWindowChrome(managed)
+  managed.on('page-title-updated', (event) => event.preventDefault())
   windows.set(id, managed)
   if (id === 'primary') window = managed
   denyRendererPermissions(managed.webContents.session)
@@ -1134,14 +1135,20 @@ if (primaryInstance) app.whenReady().then(async () => {
   lifecycleLease = await acquireLifecycleLease(dataDirectory)
   const shellUpdate = await shellUpdater.start()
   if (shellUpdate.state === 'installing') return
+  nativeTheme.on('updated', () => {
+    for (const managed of windows.values()) managed.setBackgroundColor(windowBackground())
+    if (projectWindow && !projectWindow.isDestroyed()) projectWindow.setBackgroundColor(windowBackground())
+    for (const remote of remoteWindows.keys()) remote.setBackgroundColor(windowBackground())
+  })
   if (!process.env['DINKSTER_ENGINE_SOURCE']) {
     credentialStore = await CredentialStore.open(join(dataDirectory, 'credentials.json'), desktopCredentialCipher())
     applyCredentialHeaders()
     await createProjectManager()
-    tray = new Tray(trayImage())
+    tray = new Tray(trayIcon())
     tray.setToolTip('Dinkster Desktop')
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: 'Projects', click: () => { void createProjectManager() } },
+      { label: 'About Dinkster Desktop', click: () => { void showAbout() } },
       { type: 'separator' },
       { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
     ]))
@@ -1161,10 +1168,11 @@ if (primaryInstance) app.whenReady().then(async () => {
   if (launchLink) preReadyLinks.unshift(launchLink) // launch argv precedes any staged open-url
   windowsReady = true
   for (const link of preReadyLinks.splice(0)) void routeDeepLink(link)
-  tray = new Tray(trayImage())
+  tray = new Tray(trayIcon())
   tray.setToolTip('Dinkster Desktop')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show Dinkster', click: () => window?.show() },
+    { label: 'About Dinkster Desktop', click: () => { void showAbout() } },
     { type: 'separator' },
     { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
   ]))

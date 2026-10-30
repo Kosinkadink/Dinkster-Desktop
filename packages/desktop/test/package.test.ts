@@ -31,6 +31,30 @@ async function writeFeedFixture(release: string, overrides: { url?: string; size
 }
 
 describe('desktop package inputs', () => {
+  it('prepares native branding byte-for-byte from the pinned frontend without stale assets', async () => {
+    const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-native-brand-'))
+    try {
+      await mkdir(resolve(scratch, '.frontend/packages/app/dist'), { recursive: true })
+      await writeFile(resolve(scratch, '.frontend/packages/app/dist/index.html'), '<html>bundle</html>')
+      const fixtures = ['platform/dinkster.ico', 'platform/dinkster.icns', 'raster/color/16.png', 'raster/color/24.png', 'raster/color/512.png', 'raster/mono/16.png', 'raster/mono/32.png', 'svg/dinkster-wordmark-color-dark.svg', 'svg/dinkster-wordmark-color-light.svg', 'tokens/dinkster-colors.json']
+      for (const path of fixtures) {
+        const target = resolve(scratch, '.frontend/branding', path)
+        await mkdir(resolve(target, '..'), { recursive: true })
+        await writeFile(target, Buffer.from(`source bytes: ${path}`))
+      }
+      const output = resolve(scratch, 'packages/desktop/resources/branding')
+      await mkdir(output, { recursive: true })
+      await writeFile(resolve(output, 'stale.ico'), 'obsolete')
+      await execute(process.execPath, [resolve(root, 'scripts/prepare-frontend.mjs')], { cwd: scratch })
+      for (const path of fixtures) {
+        expect(await readFile(resolve(output, path))).toEqual(Buffer.from(`source bytes: ${path}`))
+      }
+      await expect(access(resolve(output, 'stale.ico'))).rejects.toThrow()
+    } finally {
+      await rm(scratch, { recursive: true, force: true })
+    }
+  })
+
   it('cleans generated outputs and excludes engine installation inputs from the shell package', async () => {
     const manifest = JSON.parse(await readFile(resolve(root, 'packages/desktop/package.json'), 'utf8')) as {
       scripts: Record<string, string>
@@ -44,7 +68,10 @@ describe('desktop package inputs', () => {
     expect(manifest.scripts['package:win']).toContain('clean-output.mjs release')
     expect(manifest.scripts['package:win']).not.toMatch(/prepare:engine|prepare-engine-source/)
     expect(manifest.scripts).not.toHaveProperty('prepare:engine')
-    expect(manifest.build.extraResources).toEqual([{ from: '../app/dist', to: 'app' }])
+    expect(manifest.build.extraResources).toEqual([
+      { from: '../app/dist', to: 'app' },
+      { from: 'resources/branding', to: 'branding' },
+    ])
     expect(manifest.build.publish).toEqual([{ provider: 'generic', url: 'https://updates.dinkster.invalid/desktop' }])
     expect(manifest.build.win.forceCodeSigning).toBe(false)
     expect(manifest.build.win).not.toHaveProperty('azureSignOptions')

@@ -53,7 +53,7 @@ export async function showAbout(): Promise<void> {
   about = panel
   panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   panel.webContents.on('will-navigate', (event) => event.preventDefault())
-  const refresh = (): void => panel.setBackgroundColor(windowBackground())
+  const refresh = (): void => diagnosticCall('window-background', () => panel.setBackgroundColor(windowBackground()))
   nativeTheme.on('updated', refresh)
   panel.on('closed', () => {
     nativeTheme.removeListener('updated', refresh)

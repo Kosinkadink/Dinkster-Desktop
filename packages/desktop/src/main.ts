@@ -27,6 +27,7 @@ import {
 import { availableLoopbackPort, EngineRuntime, defaultDataDirectory } from './engine.js'
 import { configuredEngineAccelerator, isEngineAccelerator } from './accelerator.js'
 import { changeEngineTransaction } from './engine-transaction.js'
+import { hangDiagnosticEnabled, startHangDiagnostic } from './hang-diagnostic.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
@@ -92,6 +93,7 @@ const remoteWorkerFileGrants = new RemoteWorkerFileGrants()
 let lifecycleLease: LifecycleLease | undefined
 let quitting = false
 const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirectory()
+if (hangDiagnosticEnabled) startHangDiagnostic(dataDirectory)
 let backendPort = 3639
 let selection: EngineSelection | undefined
 const updateFeed = configureUpdateFeed(autoUpdater, process.env['DINKSTER_UPDATE_FEED_URL'])

@@ -1,8 +1,9 @@
 import { createReadStream, existsSync, statSync } from 'node:fs'
-import { createServer, type Server } from 'node:http'
+import { createServer, type RequestListener, type Server } from 'node:http'
 import type { Socket } from 'node:net'
 import { extname, join, normalize, resolve } from 'node:path'
 import httpProxy from 'http-proxy'
+import { diagnosticBoundary, hangDiagnosticEnabled } from './hang-diagnostic.js'
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.css': 'text/css; charset=utf-8',
@@ -42,7 +43,7 @@ export async function createWebHost(appDirectory: string, backendPort = 3639, pr
   proxy.on('error', (_error, _request, responseOrSocket) => {
     if ('destroy' in responseOrSocket) responseOrSocket.destroy()
   })
-  const server: Server = createServer((request, response) => {
+  const handleRequest: RequestListener = (request, response) => {
     const requestPath = request.url ?? '/'
     if (isProxyPath(requestPath)) {
       proxy.web(request, response, {}, (error) => {
@@ -71,7 +72,19 @@ export async function createWebHost(appDirectory: string, backendPort = 3639, pr
       'x-content-type-options': 'nosniff',
     })
     createReadStream(file).pipe(response)
-  })
+  }
+  const server: Server = createServer(hangDiagnosticEnabled ? (request, response) => {
+    const handler = isProxyPath(request.url ?? '/') ? 'proxy' : 'static'
+    const restart = request.method === 'POST' && request.url?.split('?')[0] === '/supervisor/engine/restart'
+    diagnosticBoundary(handler, 'entry')
+    if (restart) diagnosticBoundary('supervisor-restart', 'entry')
+    try {
+      handleRequest(request, response)
+    } finally {
+      if (restart) diagnosticBoundary('supervisor-restart', 'exit')
+      diagnosticBoundary(handler, 'exit')
+    }
+  } : handleRequest)
   server.on('upgrade', (request, socket, head) => {
     if (isProxyPath(request.url ?? '/')) {
       proxy.ws(request, socket, head, {}, () => socket.destroy())

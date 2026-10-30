@@ -214,6 +214,51 @@ console.log(JSON.stringify(row));
     ),
     { nativeFolderChoice: false, reveal: false, resolvePath: false },
   )
+  // Sharing the trusted origin does not grant an unrelated window file access.
+  const untrusted = await app.evaluate(
+    async ({ BrowserWindow, app, dialog }, url) => {
+      const child = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          preload: `${app.getAppPath()}/dist/preload.cjs`,
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      })
+      const original = dialog.showOpenDialog
+      dialog.showOpenDialog = async () => {
+        throw new Error('Untrusted request reached the dialog')
+      }
+      try {
+        await child.loadURL(url)
+        return await child.webContents.executeJavaScript(`(async () => {
+        const bridge = window.dinksterDesktop
+        const errors = []
+        for (const action of [
+          () => bridge.chooseDirectory(location.origin),
+          () => bridge.revealFile(location.origin, '/ungranted'),
+        ]) {
+          try { await action(); errors.push('accepted') }
+          catch (error) { errors.push(error.message) }
+        }
+        return { capabilities: await bridge.fileCapabilities(location.origin), errors }
+      })()`)
+      } finally {
+        dialog.showOpenDialog = original
+        child.destroy()
+      }
+    },
+    urls[0],
+  )
+  assert.deepEqual(untrusted.capabilities, {
+    nativeFolderChoice: false,
+    reveal: false,
+    resolvePath: false,
+  })
+  assert.equal(untrusted.errors.length, 2)
+  for (const error of untrusted.errors)
+    assert.match(error, /untrusted renderer/)
   // A cached window binding is insufficient after the environment loses readiness.
   const observedFile = join(scratch, 'observed.json')
   const observed = JSON.parse(await readFile(observedFile, 'utf8'))

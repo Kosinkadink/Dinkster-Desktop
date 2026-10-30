@@ -88,7 +88,7 @@ env.DINKSTER_DESKTOP_DATA = data
 env.DINKSTER_ENGINE_SOURCE = resolve(source)
 env.DINKSTER_ACCELERATOR = 'cpu'
 env.DINKSTER_UV = process.env.DINKSTER_UV ?? 'uv'
-// Development sources skip the release catalog preparation in EngineRuntime.
+// The checkout launcher requires catalogs to be prepared before it starts.
 const preparationLog = openSync(join(root, 'catalog-preparation.log'), 'wx')
 try {
   execFileSync(
@@ -168,20 +168,22 @@ try {
       outputMount: (await project.json()).outputMount,
     }
   })
-  const visibleDefaults = Object.hasOwn(initialLocations, 'importMount')
-  if (visibleDefaults) {
-    const output = initialLocations.activeMounts.find(
-      (mount) => mount.id === initialLocations.outputMount,
-    )
-    const imports = initialLocations.activeMounts.find(
-      (mount) => mount.id === initialLocations.importMount,
-    )
-    assert.equal(output?.path, join(data, 'library', 'output'))
-    assert.equal(output.mode, 'readwrite')
-    assert.equal((await stat(output.path)).isDirectory(), true)
-    assert.equal(imports?.path, join(data, 'library', 'imports'))
-    assert.equal((await stat(imports.path)).isDirectory(), true)
-  }
+  assert.equal(
+    Object.hasOwn(initialLocations, 'importMount'),
+    true,
+    'The backend must expose output and import defaults',
+  )
+  const defaultOutput = initialLocations.activeMounts.find(
+    (mount) => mount.id === initialLocations.outputMount,
+  )
+  const imports = initialLocations.activeMounts.find(
+    (mount) => mount.id === initialLocations.importMount,
+  )
+  assert.equal(defaultOutput?.path, join(data, 'library', 'output'))
+  assert.equal(defaultOutput.mode, 'readwrite')
+  assert.equal((await stat(defaultOutput.path)).isDirectory(), true)
+  assert.equal(imports?.path, join(data, 'library', 'imports'))
+  assert.equal((await stat(imports.path)).isDirectory(), true)
   const remote = await page.evaluate(() =>
     window.dinksterDesktop.fileCapabilities('https://remote.invalid'),
   )
@@ -642,7 +644,6 @@ try {
           const bridge = window.dinksterDesktop
           const results = []
           for (const action of [
-            () => bridge.fileCapabilities(location.origin),
             () => bridge.chooseDirectory(location.origin),
             () => bridge.revealFile(location.origin, '/ungranted'),
             () => bridge.resolveDroppedFile(location.origin, document.getElementById('untrusted-drop-test').files[0]),
@@ -650,7 +651,7 @@ try {
             try { await action(); results.push('accepted') }
             catch (error) { results.push(String(error)) }
           }
-          return results
+          return { capabilities: await bridge.fileCapabilities(location.origin), results }
         })()`)
       } finally {
         child.destroy()
@@ -662,8 +663,13 @@ try {
     join(root, 'untrusted-sender.json'),
     JSON.stringify(untrusted),
   )
-  assert.equal(untrusted.length, 4)
-  for (const rejection of untrusted)
+  assert.deepEqual(untrusted.capabilities, {
+    nativeFolderChoice: false,
+    reveal: false,
+    resolvePath: false,
+  })
+  assert.equal(untrusted.results.length, 3)
+  for (const rejection of untrusted.results)
     assert.match(rejection, /untrusted renderer/)
 
   // Nested frames must not receive their own native-capability bridge.
@@ -685,34 +691,32 @@ try {
   )
 
   const configuredOutput = join(root, 'existing custom output')
-  if (visibleDefaults) {
-    await mkdir(configuredOutput)
-    await writeFile(join(configuredOutput, 'keep.txt'), 'existing output bytes')
-    await page.evaluate(async (path) => {
-      const added = await fetch('/api/mounts', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: 'custom-output', path, mode: 'readwrite' }),
-      })
-      if (!added.ok) throw new Error('Custom output grant failed')
-      const selected = await fetch('/api/mounts/output', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: 'custom-output' }),
-      })
-      if (!selected.ok) throw new Error('Custom output selection failed')
-      const current = await (await fetch('/api/mounts?project=default')).json()
-      const project = await fetch('/api/mounts/projects/default', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          mounts: current.mounts.map((mount) => mount.id),
-          outputMount: 'custom-output',
-        }),
-      })
-      if (!project.ok) throw new Error('Custom project output selection failed')
-    }, configuredOutput)
-  }
+  await mkdir(configuredOutput)
+  await writeFile(join(configuredOutput, 'keep.txt'), 'existing output bytes')
+  await page.evaluate(async (path) => {
+    const added = await fetch('/api/mounts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'custom-output', path, mode: 'readwrite' }),
+    })
+    if (!added.ok) throw new Error('Custom output grant failed')
+    const selected = await fetch('/api/mounts/output', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'custom-output' }),
+    })
+    if (!selected.ok) throw new Error('Custom output selection failed')
+    const current = await (await fetch('/api/mounts?project=default')).json()
+    const project = await fetch('/api/mounts/projects/default', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mounts: current.mounts.map((mount) => mount.id),
+        outputMount: 'custom-output',
+      }),
+    })
+    if (!project.ok) throw new Error('Custom project output selection failed')
+  }, configuredOutput)
   // Restart the real backend while the dialog is pending. Cached shell status
   // remains running, but the returned path must lose native authority.
   await app.evaluate(
@@ -738,7 +742,7 @@ try {
       return String(error)
     }
   })
-  assert.match(restartRejection, /shell-managed backend is no longer available/)
+  assert.match(restartRejection, /shell-managed backend changed/)
   assert.equal(
     (await page.evaluate(() => window.dinksterDesktop.status())).phase,
     'running',
@@ -771,42 +775,39 @@ try {
     join(root, 'restart-during-choice.json'),
     JSON.stringify({ rejection: restartRejection, recovered }),
   )
-  if (visibleDefaults) {
-    const restartedLocations = await page.evaluate(async () => {
-      const response = await fetch('/api/mounts/locations?project=default')
-      if (!response.ok) throw new Error('Restarted locations lookup failed')
-      const project = await fetch('/api/mounts?project=default')
-      if (!project.ok)
-        throw new Error('Restarted project folders lookup failed')
-      return {
-        ...(await response.json()),
-        outputMount: (await project.json()).outputMount,
-      }
-    })
-    assert.equal(restartedLocations.outputMount, 'custom-output')
-    const output = restartedLocations.activeMounts.find(
-      (mount) => mount.id === restartedLocations.outputMount,
-    )
-    assert.equal(output?.path, configuredOutput)
-    assert.equal(
-      await readFile(join(configuredOutput, 'keep.txt'), 'utf8'),
-      'existing output bytes',
-    )
-    await writeFile(
-      join(root, 'managed-output.json'),
-      JSON.stringify(
-        {
-          backendCommit: commit,
-          freshVisibleOutput: true,
-          namedImportTargetVerified: true,
-          configuredOutputPreserved: true,
-          existingBytesPreserved: true,
-        },
-        null,
-        2,
-      ),
-    )
-  }
+  const restartedLocations = await page.evaluate(async () => {
+    const response = await fetch('/api/mounts/locations?project=default')
+    if (!response.ok) throw new Error('Restarted locations lookup failed')
+    const project = await fetch('/api/mounts?project=default')
+    if (!project.ok) throw new Error('Restarted project folders lookup failed')
+    return {
+      ...(await response.json()),
+      outputMount: (await project.json()).outputMount,
+    }
+  })
+  assert.equal(restartedLocations.outputMount, 'custom-output')
+  const output = restartedLocations.activeMounts.find(
+    (mount) => mount.id === restartedLocations.outputMount,
+  )
+  assert.equal(output?.path, configuredOutput)
+  assert.equal(
+    await readFile(join(configuredOutput, 'keep.txt'), 'utf8'),
+    'existing output bytes',
+  )
+  await writeFile(
+    join(root, 'managed-output.json'),
+    JSON.stringify(
+      {
+        backendCommit: commit,
+        freshVisibleOutput: true,
+        namedImportTargetVerified: true,
+        configuredOutputPreserved: true,
+        existingBytesPreserved: true,
+      },
+      null,
+      2,
+    ),
+  )
   await writeFile(
     join(root, 'local-files.json'),
     JSON.stringify(

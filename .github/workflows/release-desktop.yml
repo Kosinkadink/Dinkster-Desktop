@@ -1,8 +1,16 @@
-name: Windows Desktop release
+name: Desktop installers and Windows release
 
 on:
   push:
+    branches: [main]
     tags: ['v*.*.*']
+  pull_request:
+    paths:
+      - '.github/workflows/release-desktop.yml'
+      - 'packages/desktop/scripts/prepare-tools.mjs'
+      - 'packages/desktop/scripts/verify-installed-tools.mjs'
+      - 'packages/desktop/src/environment-tools-release.json'
+      - 'packages/desktop/package.json'
   workflow_dispatch:
 
 permissions:
@@ -12,17 +20,87 @@ env:
   DINKSTER_FRONTEND_REF: 54b24ecd8a7a7a079863cb751b14988f29047c46
 
 concurrency:
-  group: private-desktop-release
+  group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  installers:
+    name: ${{ matrix.os }} installer resources
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, windows]
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS)[matrix.os] }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            .frontend/pnpm-lock.yaml
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm install --frozen-lockfile
+      - if: matrix.os == 'linux'
+        run: pnpm --filter @dinkster/desktop package:linux
+      - if: matrix.os == 'windows'
+        run: pnpm --filter @dinkster/desktop package:win
+      - name: Extract Linux installer and verify resources
+        if: matrix.os == 'linux'
+        working-directory: packages/desktop/release
+        run: |
+          chmod +x ./*.AppImage
+          ./*.AppImage --appimage-extract > /dev/null
+          node ../scripts/verify-installed-tools.mjs squashfs-root/resources > installed-tools.json
+          sha256sum ./*.AppImage > installer-SHA256SUMS
+      - name: Install Windows package and verify resources
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $destination = Join-Path $env:RUNNER_TEMP dinkster-tools-installed
+          if (Test-Path $destination) { throw 'Installation directory already exists' }
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          node packages/desktop/scripts/verify-installed-tools.mjs (Join-Path $destination resources) > packages/desktop/release/installed-tools.json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed tools verification failed' }
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($installer.Name)" > packages/desktop/release/installer-SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}-installer
+          path: |
+            packages/desktop/release/*.AppImage
+            packages/desktop/release/*-Setup.exe
+            packages/desktop/release/installed-tools.json
+            packages/desktop/release/installer-SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error
+
   validation:
-    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/full-validation.yml
 
   release:
     needs: validation
-    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')
     environment: desktop-signing
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
     timeout-minutes: 90
@@ -98,6 +176,8 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
           "DINKSTER_DESKTOP_EXECUTABLE=$(Join-Path $destination 'Dinkster Desktop.exe')" >> $env:GITHUB_ENV
           "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
+          node packages/desktop/scripts/verify-installed-tools.mjs (Join-Path $destination resources)
+          if ($LASTEXITCODE -ne 0) { throw 'Installed tools verification failed' }
       - run: pnpm --filter @dinkster/desktop verify:installed
       - name: Preserve verification evidence
         if: always()

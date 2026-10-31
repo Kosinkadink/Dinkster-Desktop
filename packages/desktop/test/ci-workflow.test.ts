@@ -59,8 +59,9 @@ describe('desktop workflows', () => {
   })
 
   it('gates tag and manual signing on the same owner-approved environment without publishing', () => {
-    expect(release.on).toEqual({
-      push: { tags: ['v*.*.*'] },
+    expect(release.on).toMatchObject({
+      push: { branches: ['main'], tags: ['v*.*.*'] },
+      pull_request: { paths: expect.arrayContaining(['.github/workflows/release-desktop.yml', 'packages/desktop/src/environment-tools-release.json']) },
       workflow_dispatch: null,
     })
     expect(signed.on).toEqual({ workflow_dispatch: null })
@@ -197,7 +198,7 @@ describe('desktop workflows', () => {
       for (const [name, job] of Object.entries(workflow.jobs)) {
         if (job.uses) continue
         expect(job['runs-on'], name).toMatch(
-          /^\$\{\{ fromJSON\(vars\.CI_RUNNERS\)\.(linux|windows) \}\}$/,
+          /^\$\{\{ fromJSON\(vars\.CI_RUNNERS\)(\.(linux|windows)|\[matrix\.os\]) \}\}$/,
         )
       }
     }
@@ -255,9 +256,9 @@ describe('desktop workflows', () => {
     )
   })
 
-  it('validates main and tag commits and keeps test-tag output without publishing', () => {
+  it('validates signing only on tags and keeps test-tag output without publishing', () => {
     expect(release.jobs['validation']).toEqual({
-      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))",
+      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')",
       uses: './.github/workflows/full-validation.yml',
     })
     expect(release.jobs['release']!.needs).toBe('validation')
@@ -266,6 +267,24 @@ describe('desktop workflows', () => {
     expect(steps.find((step) => step.name === 'Keep the signed installer')?.with?.['name']).toBe('desktop-signed-installer')
     expect(steps.find((step) => step.name === 'Create release')?.if).toBe("github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')")
     expect(steps.filter((step) => step.run?.includes('gh release create'))).toHaveLength(1)
+  })
+
+  it('produces both native installers without signing or publishing on main and relevant pull requests', () => {
+    const job = release.jobs['installers']!
+    expect(job.environment).toBeUndefined()
+    const steps = job.steps!
+    expect(steps.find((step) => step.run === 'pnpm --filter @dinkster/desktop package:linux')?.if).toBe("matrix.os == 'linux'")
+    expect(steps.find((step) => step.run === 'pnpm --filter @dinkster/desktop package:win')?.if).toBe("matrix.os == 'windows'")
+    for (const name of ['Extract Linux installer and verify resources', 'Install Windows package and verify resources']) {
+      expect(steps.find((step) => step.name === name)?.run).toContain('verify-installed-tools.mjs')
+    }
+    expect(steps.find((step) => step.uses === 'actions/upload-artifact@v4')?.with).toMatchObject({
+      name: 'desktop-${{ matrix.os }}-installer', 'if-no-files-found': 'error',
+    })
+    expect(JSON.stringify(job)).not.toMatch(/secrets\.|gh release create|package:win:signed/)
+    const smoke = full.jobs['desktop-smoke']!.steps!.map((step) => step.run ?? '')
+    expect(smoke.indexOf('pnpm --filter @dinkster/desktop prepare:tools')).toBeLessThan(smoke.indexOf('pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never'))
+    expect(smoke).toContain('node packages/desktop/scripts/verify-installed-tools.mjs packages/desktop/release/linux-unpacked/resources')
   })
 
   it('keeps published verification disabled and read-only', () => {

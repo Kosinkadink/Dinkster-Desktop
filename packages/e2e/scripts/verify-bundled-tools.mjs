@@ -180,6 +180,9 @@ try {
       { timeout: 120_000 },
     )
     .toBe(true)
+  await expect(engine.getByTestId('composition-progress')).toHaveCount(0, {
+    timeout: 120_000,
+  })
   await engine.screenshot({
     path: join(root, `${mode}-engine.png`),
     fullPage: true,

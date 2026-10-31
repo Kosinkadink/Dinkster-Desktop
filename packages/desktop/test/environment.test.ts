@@ -4,6 +4,7 @@ import { createServer, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
+import { crc32, deflateRawSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EnvironmentClient, type EnvironmentOperation } from '../src/environment.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
@@ -62,7 +63,7 @@ describe('Desktop dinkster-env command client', () => {
     const manifest = join(root, 'override.json')
     await writeFile(manifest, '{}')
     vi.stubEnv('DINKSTER_TOOLS_MANIFEST', manifest)
-    vi.stubEnv('DINKSTER_TOOLS_MANIFEST_SHA256', 'a'.repeat(64))
+    vi.stubEnv('DINKSTER_TOOLS_SHA256', 'a'.repeat(64))
     vi.stubEnv('DINKSTER_TOOLS_RELEASE', root)
     const overridden = new EnvironmentClient(undefined, undefined, undefined, missingBundle)
     await expect(overridden.run({ root, operation: 'status' })).rejects.toThrow('checksum mismatch')
@@ -71,6 +72,24 @@ describe('Desktop dinkster-env command client', () => {
     const command = new EnvironmentClient(undefined, [join(root, 'command.cjs')], undefined, missingBundle)
     expect((await command.run({ root, operation: 'status' })).current).toBe(2)
     await command.dispose()
+  })
+
+  it('selects a channel tools pin before the packaged payload for a supported channel', async () => {
+    const { root } = await commandFixture()
+    await mkdir(join(root, 'channels'))
+    const manifest = join(root, 'newer-tools.json')
+    await writeFile(manifest, '{}')
+    await writeFile(join(root, 'channels', 'main.json'), JSON.stringify({
+      format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0', signature: null,
+      tools: { manifest, sha256: 'a'.repeat(64), release: root },
+    }))
+    const client = new EnvironmentClient(undefined, undefined, undefined,
+      { manifest: join(root, 'bundle-must-not-open'), sha256: 'b'.repeat(64), release: root }, '0.2.0')
+    // A checksum error from the channel's real file, not ENOENT from the bundle,
+    // proves selection and that the channel pin still goes through verification.
+    await expect(client.run({ root, operation: 'setup', channel: 'main', mirrors: [root] })).rejects.toThrow('checksum mismatch')
+    await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
+    await client.dispose()
   })
 
   it('drains a running command before disposal and refuses commands after closing', async () => {
@@ -139,6 +158,11 @@ describe('Desktop dinkster-env command client', () => {
     await writeFile(join(root, name), replacement)
     const replacementRow = { ...row, sha256: createHash('sha256').update(replacement).digest('hex') }
     const replacementPin = await input([replacementRow])
+    await writeFile(join(root, name), archive)
+    await expect(acquireEnvironmentTools({ ...replacementPin, cacheRoot })).rejects.toThrow('checksum mismatch')
+    expect(await readFile(cached.python, 'utf8')).toBe('fixture')
+    await expect(stat(join(cacheRoot, replacementRow.sha256))).rejects.toThrow()
+    await writeFile(join(root, name), replacement)
     const replaced = await acquireEnvironmentTools({ ...replacementPin, cacheRoot })
     expect(replaced.directory).toBe(join(cacheRoot, replacementRow.sha256))
     expect(await readFile(replaced.python, 'utf8')).toBe('fixture')
@@ -150,6 +174,52 @@ describe('Desktop dinkster-env command client', () => {
     await expect(acquireEnvironmentTools(await input([{ ...row, sha256: 'b'.repeat(64) }]))).rejects.toThrow('checksum mismatch')
     await expect(acquireEnvironmentTools(await input([row, row]))).rejects.toThrow('unique pinned native tools')
     expect(await readFile(tools.python, 'utf8')).toBe('fixture')
+  })
+
+  it('extracts deflated interpreter streams larger than a stream buffer without truncation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop-tools-'))
+    roots.push(root)
+    const bytes = Buffer.from('compressed interpreter\n'.repeat(16384))
+    const compressed = deflateRawSync(bytes)
+    const local: Buffer[] = []
+    const central: Buffer[] = []
+    let offset = 0
+    for (const path of ['python/bin/python3', 'python/python.exe']) {
+      const name = Buffer.from(path)
+      const header = Buffer.alloc(30)
+      header.writeUInt32LE(0x04034b50)
+      header.writeUInt16LE(20, 4)
+      header.writeUInt16LE(8, 8)
+      header.writeUInt32LE(crc32(bytes), 14)
+      header.writeUInt32LE(compressed.length, 18)
+      header.writeUInt32LE(bytes.length, 22)
+      header.writeUInt16LE(name.length, 26)
+      local.push(header, name, compressed)
+      const record = Buffer.alloc(46)
+      record.writeUInt32LE(0x02014b50)
+      record.writeUInt16LE(0x0314, 4)
+      header.copy(record, 6, 4, 30)
+      record.writeUInt32LE((0o100755 << 16) >>> 0, 38)
+      record.writeUInt32LE(offset, 42)
+      central.push(record, name)
+      offset += header.length + name.length + compressed.length
+    }
+    const end = Buffer.alloc(22)
+    end.writeUInt32LE(0x06054b50)
+    end.writeUInt16LE(2, 8)
+    end.writeUInt16LE(2, 10)
+    end.writeUInt32LE(Buffer.concat(central).length, 12)
+    end.writeUInt32LE(offset, 16)
+    const archive = Buffer.concat([...local, ...central, end])
+    const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
+    const name = `dinkster-tools-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}.zip`
+    await writeFile(join(root, name), archive)
+    const manifest = join(root, 'engine.json')
+    const document = JSON.stringify({ format: 'dinkster.engine/1', artifacts: [{ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }] })
+    await writeFile(manifest, document)
+    const tools = await acquireEnvironmentTools({ manifest, sha256: createHash('sha256').update(document).digest('hex'), release: root })
+    roots.push(tools.directory)
+    expect(await readFile(tools.python)).toEqual(bytes)
   })
 
   it('refuses traversal and links in an otherwise correctly pinned tools ZIP', async () => {

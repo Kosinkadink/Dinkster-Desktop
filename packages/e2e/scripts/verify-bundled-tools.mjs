@@ -133,6 +133,11 @@ try {
       'connected',
       'Online control must reach the same external TCP endpoint',
     )
+  if (mode === 'online') {
+    // Updates can move a live engine to a spare port. Stop before exercising
+    // the saved binding, just as the cold offline relaunch does.
+    await environmentOperations(app, join(root, 'project'), ['stop'])
+  }
   await manager.reload()
   const opened = app.waitForEvent('window', { timeout: 120_000 })
   await manager.getByRole('button', { name: 'Open main', exact: true }).click()
@@ -151,48 +156,11 @@ try {
     path: join(root, `${mode}-engine.png`),
     fullPage: true,
   })
-  const results = await app.evaluate(
-    async ({ app }, projectRoot) => {
-      const require = process
-        .getBuiltinModule('node:module')
-        .createRequire(joinPath(app.getAppPath(), 'package.json'))
-      function joinPath(...parts) {
-        return process.getBuiltinModule('node:path').join(...parts)
-      }
-      const { EnvironmentClient } = require(
-        joinPath(app.getAppPath(), 'dist/environment.js'),
-      )
-      const pin = require(
-        joinPath(app.getAppPath(), 'dist/environment-tools-release.json'),
-      )
-      const client = new EnvironmentClient(
-        undefined,
-        undefined,
-        undefined,
-        {
-          manifest: joinPath(process.resourcesPath, 'tools', pin.manifest.name),
-          sha256: pin.manifest.sha256,
-          release: joinPath(process.resourcesPath, 'tools'),
-          cacheRoot: joinPath(app.getPath('userData'), 'environment-tools'),
-        },
-        app.getVersion(),
-      )
-      try {
-        const results = []
-        for (const operation of ['status', 'doctor', 'stop'])
-          results.push(
-            await client.run(
-              { root: projectRoot, operation, engine: 'main' },
-              true,
-            ),
-          )
-        return results
-      } finally {
-        await client.dispose()
-      }
-    },
-    join(root, 'project'),
-  )
+  const results = await environmentOperations(app, join(root, 'project'), [
+    'status',
+    'doctor',
+    'stop',
+  ])
   assert.deepEqual(
     results.map((result) => result.operation),
     ['status', 'doctor', 'stop'],
@@ -254,4 +222,49 @@ try {
   throw error
 } finally {
   await app.close()
+}
+
+async function environmentOperations(app, projectRoot, operations) {
+  return app.evaluate(
+    async ({ app }, { projectRoot, operations }) => {
+      const require = process
+        .getBuiltinModule('node:module')
+        .createRequire(joinPath(app.getAppPath(), 'package.json'))
+      function joinPath(...parts) {
+        return process.getBuiltinModule('node:path').join(...parts)
+      }
+      const { EnvironmentClient } = require(
+        joinPath(app.getAppPath(), 'dist/environment.js'),
+      )
+      const pin = require(
+        joinPath(app.getAppPath(), 'dist/environment-tools-release.json'),
+      )
+      const client = new EnvironmentClient(
+        undefined,
+        undefined,
+        undefined,
+        {
+          manifest: joinPath(process.resourcesPath, 'tools', pin.manifest.name),
+          sha256: pin.manifest.sha256,
+          release: joinPath(process.resourcesPath, 'tools'),
+          cacheRoot: joinPath(app.getPath('userData'), 'environment-tools'),
+        },
+        app.getVersion(),
+      )
+      try {
+        const results = []
+        for (const operation of operations)
+          results.push(
+            await client.run(
+              { root: projectRoot, operation, engine: 'main' },
+              true,
+            ),
+          )
+        return results
+      } finally {
+        await client.dispose()
+      }
+    },
+    { projectRoot, operations },
+  )
 }

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { rm } from 'node:fs/promises'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
 import { promisify } from 'node:util'
 import type { VariantHardware } from './hardware.js'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
@@ -198,6 +198,8 @@ export class EnvironmentClient {
       // Engine descendants must not inherit host Python configuration either.
       for (const key of Object.keys(environment)) if (key.toLowerCase() === 'path' || /^PYTHON/i.test(key)) delete environment[key]
       environment['PATH'] = process.platform === 'win32' ? join(dirname(executable), 'Scripts') : dirname(executable)
+      // Python retains this prefix when loading native extensions from deep caches.
+      executable = toNamespacedPath(executable)
     }
     let stdout: string
     try {

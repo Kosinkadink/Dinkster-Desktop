@@ -256,7 +256,11 @@ async function environmentOperations(app, projectRoot, operations) {
         for (const operation of operations)
           results.push(
             await client.run(
-              { root: projectRoot, operation, engine: 'main' },
+              {
+                root: projectRoot,
+                operation,
+                ...(operation === 'stop' ? { engine: 'main' } : {}),
+              },
               true,
             ),
           )

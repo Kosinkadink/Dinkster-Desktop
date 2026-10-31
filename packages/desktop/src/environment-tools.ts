@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import extract from 'extract-zip'
@@ -9,6 +9,7 @@ export interface EnvironmentToolsInput {
   readonly manifest: string
   readonly sha256: string
   readonly release: string
+  readonly cacheRoot?: string
 }
 
 function source(location: string): URL | string {
@@ -26,9 +27,11 @@ async function acquire(location: string, target: string, maximumBytes: number): 
   } else await download(input.href, target, undefined, maximumBytes)
 }
 
-export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Promise<{ python: string; directory: string }> {
+export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Promise<{ python: string; directory: string; persistent: boolean }> {
   if (!/^[a-f0-9]{64}$/.test(input.sha256)) throw new Error('tools require an immutable engine manifest SHA256')
-  const directory = await mkdtemp(join(tmpdir(), 'dinkster-tools-'))
+  if (input.cacheRoot && !isAbsolute(input.cacheRoot)) throw new Error('tools cache must be absolute')
+  if (input.cacheRoot) await mkdir(input.cacheRoot, { recursive: true })
+  const directory = await mkdtemp(join(input.cacheRoot ?? tmpdir(), 'dinkster-tools-'))
   try {
     const manifestPath = join(directory, 'engine.json')
     await acquire(input.manifest, manifestPath, 8 * 1024 * 1024)
@@ -41,6 +44,19 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
     const rows = manifest.artifacts.filter((row) => row.name === name)
     const row = rows[0]
     if (rows.length !== 1 || !row || !Number.isSafeInteger(row.size) || row.size <= 0 || !/^[a-f0-9]{64}$/.test(row.sha256)) throw new Error('engine manifest has no unique pinned native tools archive')
+    const interpreter = process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'
+    const cached = input.cacheRoot ? join(input.cacheRoot, row.sha256) : undefined
+    if (cached) {
+      try {
+        if (await readFile(join(cached, 'complete'), 'utf8') === row.sha256 && (await stat(join(cached, 'payload', interpreter))).isFile()) {
+          console.info(`Reusing environment tools ${row.sha256}`)
+          await rm(directory, { recursive: true, force: true })
+          return { python: join(cached, 'payload', interpreter), directory: cached, persistent: true }
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
     const release = source(input.release)
     const archive = join(directory, name)
     await acquire(typeof release === 'string' ? join(release, name) : new URL(name, `${release.href.replace(/\/$/, '')}/`).href, archive, row.size)
@@ -60,9 +76,20 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
         entries.add(key)
       },
     })
-    const python = join(payload, process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3')
+    const python = join(payload, interpreter)
     if (!(await stat(python)).isFile()) throw new Error('tools archive lacks its interpreter')
-    return { python, directory }
+    if (cached && input.cacheRoot) {
+      await writeFile(join(directory, 'complete'), row.sha256)
+      // Publish only a fully checked extraction; failed replacements leave the old tree intact.
+      await rm(cached, { recursive: true, force: true })
+      await rename(directory, cached)
+      for (const entry of await readdir(input.cacheRoot)) {
+        if (/^[a-f0-9]{64}$/.test(entry) && entry !== row.sha256) await rm(join(input.cacheRoot, entry), { recursive: true, force: true })
+      }
+      console.info(`Extracted environment tools ${row.sha256}`)
+      return { python: join(cached, 'payload', interpreter), directory: cached, persistent: true }
+    }
+    return { python, directory, persistent: false }
   } catch (error) {
     await rm(directory, { recursive: true, force: true })
     throw error

@@ -1,0 +1,23 @@
+{
+  "repository": "Kosinkadink/Dinkster",
+  "commit": "fcd73e73234f92f7784164dc2609da1c6e03a4d2",
+  "releaseTag": "main-fcd73e73234f92f7784164dc2609da1c6e03a4d2",
+  "pinnedAt": "2026-10-31T12:45:00-07:00",
+  "manifest": {
+    "name": "release-manifest.json",
+    "size": 37562,
+    "sha256": "5b486eb5c0a4fcfc04511a333feb8fe1422d6b24be07a6c7bfe3cf4c960434a4"
+  },
+  "artifacts": [
+    {
+      "name": "dinkster-tools-linux-x86_64.zip",
+      "size": 110380676,
+      "sha256": "a71276a120c9616557d36cc068378ebcb350d17e4cc7c402752dcf76abf02f0b"
+    },
+    {
+      "name": "dinkster-tools-windows-x86_64.zip",
+      "size": 49272732,
+      "sha256": "572cbd48a9626829222c3501ccfa0407a3baba24f57ff301ad71193b55dfdad3"
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { VariantHardware } from './hardware.js'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
+import { channelTools } from './environment-channel.js'
 
 const execute = promisify(execFile)
 
@@ -139,7 +140,7 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
 
 /** Desktop owns no generation, current, store or journal writes. */
 export class EnvironmentClient {
-  private tools: ReturnType<typeof acquireEnvironmentTools> | undefined
+  private readonly tools = new Map<string, ReturnType<typeof acquireEnvironmentTools>>()
   private readonly active = new Set<Promise<EnvironmentResult>>()
   private closed = false
 
@@ -148,17 +149,21 @@ export class EnvironmentClient {
     private readonly prefix: readonly string[] = process.env['DINKSTER_TOOLS_PYTHON'] ? ['-I', '-m', 'dinkster_supervisor.environment'] : [],
     private readonly toolsInput: EnvironmentToolsInput | undefined = !process.env['DINKSTER_TOOLS_PYTHON'] && !process.env['DINKSTER_ENV'] && process.env['DINKSTER_TOOLS_MANIFEST'] ? {
       manifest: process.env['DINKSTER_TOOLS_MANIFEST'],
-      sha256: process.env['DINKSTER_TOOLS_MANIFEST_SHA256'] ?? '',
+      sha256: process.env['DINKSTER_TOOLS_MANIFEST_SHA256'] ?? process.env['DINKSTER_TOOLS_SHA256'] ?? '',
       release: process.env['DINKSTER_TOOLS_RELEASE'] ?? '',
     } : undefined,
+    private readonly bundledTools: EnvironmentToolsInput | undefined = undefined,
+    private readonly desktopVersion: string | undefined = undefined,
   ) {}
 
   async dispose(): Promise<void> {
     this.closed = true
     await Promise.allSettled([...this.active])
-    const tools = await this.tools?.catch(() => undefined)
-    if (tools) await rm(tools.directory, { recursive: true, force: true })
-    this.tools = undefined
+    for (const pending of this.tools.values()) {
+      const tools = await pending.catch(() => undefined)
+      if (tools && !tools.persistent) await rm(tools.directory, { recursive: true, force: true })
+    }
+    this.tools.clear()
   }
 
   run(request: EnvironmentRequest, confirmed = false): Promise<EnvironmentResult> {
@@ -174,9 +179,16 @@ export class EnvironmentClient {
     const commandArgs = argumentsFor(request, confirmed)
     let executable = this.executable
     let prefix = this.prefix
-    if (this.toolsInput) {
-      this.tools ??= acquireEnvironmentTools(this.toolsInput).catch((error: unknown) => { this.tools = undefined; throw error })
-      executable = (await this.tools).python
+    const selectedTools = this.desktopVersion ? await channelTools(request, this.desktopVersion) : undefined
+    const toolsInput = this.toolsInput ?? (this.executable === 'dinkster-env' && !process.env['DINKSTER_ENV'] && !process.env['DINKSTER_TOOLS_PYTHON'] ? selectedTools ?? this.bundledTools : undefined)
+    if (toolsInput) {
+      const key = JSON.stringify(toolsInput)
+      let pending = this.tools.get(key)
+      if (!pending) {
+        pending = acquireEnvironmentTools(toolsInput).catch((error: unknown) => { this.tools.delete(key); throw error })
+        this.tools.set(key, pending)
+      }
+      executable = (await pending).python
       prefix = ['-I', '-m', 'dinkster_supervisor.environment']
     }
     const args = [...prefix, ...commandArgs]

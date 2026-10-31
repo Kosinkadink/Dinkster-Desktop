@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EnvironmentClient, type EnvironmentOperation } from '../src/environment.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
+afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
 
 async function commandFixture(): Promise<{ root: string; client: EnvironmentClient }> {
   const root = await mkdtemp(join(tmpdir(), 'desktop-env-'))
@@ -33,6 +33,46 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('refuses a channel above the running Desktop before invoking any command, without gating offline operations', async () => {
+    const { root } = await commandFixture()
+    const script = join(root, 'command.cjs')
+    const client = new EnvironmentClient(process.execPath, [script], undefined, undefined, '0.2.0')
+    await mkdir(join(root, 'channels'))
+    const channel = join(root, 'channels', 'main.json')
+    await writeFile(join(root, 'project.json'), JSON.stringify({ channel: 'main', mirrors: [root] }))
+    await writeFile(channel, JSON.stringify({ format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.1', signature: null }))
+    for (const operation of ['setup', 'update', 'catalog'] as const) {
+      await expect(client.run({ root, operation })).rejects.toThrow('DesktopVersionTooOld: channel requires Desktop 0.2.1')
+      await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
+    }
+    await rm(channel)
+    for (const operation of ['start', 'status', 'doctor', 'stop'] as const) {
+      expect((await client.run({ root, operation }, true)).operation).toBe(operation)
+    }
+    for (const minimumDesktopVersion of ['0.2.0', '0.1.99']) {
+      await writeFile(channel, JSON.stringify({ format: 'dinkster.channel/1', minimumDesktopVersion }))
+      expect((await client.run({ root, operation: 'update' })).status).toBe('planned')
+    }
+    await client.dispose()
+  })
+
+  it('honors explicit tools and command overrides instead of opening the packaged payload', async () => {
+    const { root } = await commandFixture()
+    const missingBundle = { manifest: join(root, 'missing-bundle'), sha256: 'b'.repeat(64), release: root }
+    const manifest = join(root, 'override.json')
+    await writeFile(manifest, '{}')
+    vi.stubEnv('DINKSTER_TOOLS_MANIFEST', manifest)
+    vi.stubEnv('DINKSTER_TOOLS_MANIFEST_SHA256', 'a'.repeat(64))
+    vi.stubEnv('DINKSTER_TOOLS_RELEASE', root)
+    const overridden = new EnvironmentClient(undefined, undefined, undefined, missingBundle)
+    await expect(overridden.run({ root, operation: 'status' })).rejects.toThrow('checksum mismatch')
+    await overridden.dispose()
+    vi.stubEnv('DINKSTER_ENV', process.execPath)
+    const command = new EnvironmentClient(undefined, [join(root, 'command.cjs')], undefined, missingBundle)
+    expect((await command.run({ root, operation: 'status' })).current).toBe(2)
+    await command.dispose()
+  })
+
   it('drains a running command before disposal and refuses commands after closing', async () => {
     const { root } = await commandFixture()
     let release!: ServerResponse
@@ -84,6 +124,27 @@ describe('Desktop dinkster-env command client', () => {
     roots.push(tools.directory)
     expect(await readFile(tools.python, 'utf8')).toBe('fixture')
     if (process.platform !== 'win32') expect((await stat(tools.python)).mode & 0o777).toBe(0o755)
+    const cacheRoot = join(root, 'desktop-cache')
+    const cached = await acquireEnvironmentTools({ ...pin, cacheRoot })
+    expect(cached.directory).toBe(join(cacheRoot, row.sha256))
+    expect(cached.persistent).toBe(true)
+    const originalTime = (await stat(cached.python)).mtimeMs
+    await rm(join(root, name))
+    const reused = await acquireEnvironmentTools({ ...pin, cacheRoot })
+    expect(reused).toEqual(cached)
+    expect((await stat(reused.python)).mtimeMs).toBe(originalTime)
+    // ZIP timestamp changes its digest without changing file bytes or CRCs.
+    const replacement = Buffer.from(archive)
+    replacement[10] = 1
+    await writeFile(join(root, name), replacement)
+    const replacementRow = { ...row, sha256: createHash('sha256').update(replacement).digest('hex') }
+    const replacementPin = await input([replacementRow])
+    const replaced = await acquireEnvironmentTools({ ...replacementPin, cacheRoot })
+    expect(replaced.directory).toBe(join(cacheRoot, replacementRow.sha256))
+    expect(await readFile(replaced.python, 'utf8')).toBe('fixture')
+    await expect(stat(cached.directory)).rejects.toThrow()
+    await writeFile(join(root, name), archive)
+    await input()
     await expect(acquireEnvironmentTools({ ...pin, sha256: 'a'.repeat(64) })).rejects.toThrow('checksum mismatch')
     await expect(acquireEnvironmentTools(await input([{ ...row, size: row.size + 1 }]))).rejects.toThrow('size mismatch')
     await expect(acquireEnvironmentTools(await input([{ ...row, sha256: 'b'.repeat(64) }]))).rejects.toThrow('checksum mismatch')

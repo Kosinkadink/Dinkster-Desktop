@@ -50,7 +50,10 @@ try {
     globalThis.toolsVerificationRequests = []
     const original = globalThis.fetch
     globalThis.fetch = (input, init) => {
-      globalThis.toolsVerificationRequests.push(String(input))
+      const url = new URL(String(input))
+      url.search = ''
+      url.hash = ''
+      globalThis.toolsVerificationRequests.push(url.href)
       return original(input, init)
     }
   })

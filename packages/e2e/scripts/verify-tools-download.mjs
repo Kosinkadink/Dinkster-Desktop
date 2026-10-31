@@ -52,7 +52,10 @@ try {
       const requests = []
       const original = globalThis.fetch
       globalThis.fetch = (input, init) => {
-        requests.push(String(input))
+        const url = new URL(String(input))
+        url.search = ''
+        url.hash = ''
+        requests.push(url.href)
         return original(input, init)
       }
       const client = new EnvironmentClient()

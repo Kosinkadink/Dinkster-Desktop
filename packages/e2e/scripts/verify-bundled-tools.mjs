@@ -84,7 +84,11 @@ try {
       const planned = await manager.evaluate(
         async ({ project, request }) =>
           window.dinksterProjects.plan(project, request),
-        { project, request: { ...request, operation } },
+        {
+          project,
+          request:
+            operation === 'setup' ? request : { root: request.root, operation },
+        },
       )
       assert.equal(planned.result.status, 'planned')
       assert(planned.token)

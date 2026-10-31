@@ -5,9 +5,13 @@ import { join, resolve } from 'node:path'
 import { _electron as electron, expect } from '@playwright/test'
 
 // Run online once, then offline with the same root and an OS-level outbound
-// block. The offline probe refuses to count a merely disconnected mirror.
+// block. Windows observation-based runs require an independent endpoint probe
+// and forced-download control; they never claim a hard outbound block.
 const mode = process.argv[2]
-assert(['online', 'offline'].includes(mode), 'Choose online or offline')
+assert(
+  ['online', 'offline', 'offline-observed'].includes(mode),
+  'Choose online, offline or offline-observed',
+)
 const executablePath = resolve(process.env.DINKSTER_DESKTOP_EXECUTABLE ?? '')
 const root = process.env.DINKSTER_BUNDLED_VERIFY_ROOT
 assert(
@@ -103,31 +107,34 @@ try {
       )
     }
   }
-  const probe = await app.evaluate(
-    () =>
-      new Promise((resolve) => {
-        const socket = process
-          .getBuiltinModule('node:net')
-          .connect(443, '1.1.1.1')
-        socket.setTimeout(5000)
-        socket.once('connect', () => {
-          socket.destroy()
-          resolve('connected')
-        })
-        socket.once('error', (error) => resolve(error.code))
-        socket.once('timeout', () => {
-          socket.destroy()
-          resolve('timeout')
-        })
-      }),
-  )
+  const probe =
+    mode === 'offline-observed'
+      ? 'not-run-observation-based'
+      : await app.evaluate(
+          () =>
+            new Promise((resolve) => {
+              const socket = process
+                .getBuiltinModule('node:net')
+                .connect(443, '1.1.1.1')
+              socket.setTimeout(5000)
+              socket.once('connect', () => {
+                socket.destroy()
+                resolve('connected')
+              })
+              socket.once('error', (error) => resolve(error.code))
+              socket.once('timeout', () => {
+                socket.destroy()
+                resolve('timeout')
+              })
+            }),
+        )
   if (mode === 'offline')
     assert.notEqual(
       probe,
       'connected',
       'OS-level block must deny external TCP, not just a channel URL',
     )
-  else
+  else if (mode === 'online')
     assert.equal(
       probe,
       'connected',
@@ -155,10 +162,26 @@ try {
     response.ok(),
     `Started engine must answer /api/health, got ${response.status()}`,
   )
+  await expect
+    .poll(
+      async () => {
+        const response = await engine.request.get(
+          new URL('/api/composition', engine.url()).href,
+        )
+        const state = await response.json()
+        return (
+          state.composing === undefined &&
+          Object.values(state.packs).every((pack) => pack.state === 'announced')
+        )
+      },
+      { timeout: 120_000 },
+    )
+    .toBe(true)
   await engine.screenshot({
     path: join(root, `${mode}-engine.png`),
     fullPage: true,
   })
+  await engine.close()
   const results = await environmentOperations(app, join(root, 'project'), [
     'status',
     'doctor',
@@ -202,7 +225,7 @@ try {
       mtime: (await fs.stat(python)).mtimeMs,
     }
   })
-  if (mode === 'offline')
+  if (mode !== 'online')
     assert.deepEqual(
       cache,
       JSON.parse(await readFile(join(root, 'online.json'), 'utf8')).cache,

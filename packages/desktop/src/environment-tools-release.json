@@ -1,23 +1,23 @@
 {
   "repository": "Kosinkadink/Dinkster",
-  "commit": "fcd73e73234f92f7784164dc2609da1c6e03a4d2",
-  "releaseTag": "main-fcd73e73234f92f7784164dc2609da1c6e03a4d2",
-  "pinnedAt": "2026-10-31T12:45:00-07:00",
+  "commit": "6e181666ab332b2d0214e6b035185b1690c5f83b",
+  "releaseTag": "main-6e181666ab332b2d0214e6b035185b1690c5f83b",
+  "pinnedAt": "2026-10-31T14:06:00-07:00",
   "manifest": {
     "name": "release-manifest.json",
-    "size": 37562,
-    "sha256": "5b486eb5c0a4fcfc04511a333feb8fe1422d6b24be07a6c7bfe3cf4c960434a4"
+    "size": 51872,
+    "sha256": "927ad09fc62ea77e7ce26f93dfb4e5a637480c293547089d4f8d6154207aebea"
   },
   "artifacts": [
     {
       "name": "dinkster-tools-linux-x86_64.zip",
-      "size": 110380676,
-      "sha256": "a71276a120c9616557d36cc068378ebcb350d17e4cc7c402752dcf76abf02f0b"
+      "size": 110388594,
+      "sha256": "ababea76e2a1de55f7e7687745c704337b9b0e141765326b96aef7bd623b1036"
     },
     {
       "name": "dinkster-tools-windows-x86_64.zip",
-      "size": 49272732,
-      "sha256": "572cbd48a9626829222c3501ccfa0407a3baba24f57ff301ad71193b55dfdad3"
+      "size": 49280612,
+      "sha256": "f6f613d2476f66e14158fb39e0b90b0bff6bae2ef92c8f668422a114d22e7ef0"
     }
   ]
 }

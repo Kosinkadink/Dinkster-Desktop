@@ -57,13 +57,13 @@ describe('Desktop dinkster-env command client', () => {
     await client.dispose()
   })
 
-  it('honors explicit tools and command overrides instead of opening the packaged payload', async () => {
+  it.each(['DINKSTER_TOOLS_SHA256', 'DINKSTER_TOOLS_MANIFEST_SHA256'])('honors %s and command overrides instead of opening the packaged payload', async (sha256Variable) => {
     const { root } = await commandFixture()
     const missingBundle = { manifest: join(root, 'missing-bundle'), sha256: 'b'.repeat(64), release: root }
     const manifest = join(root, 'override.json')
     await writeFile(manifest, '{}')
     vi.stubEnv('DINKSTER_TOOLS_MANIFEST', manifest)
-    vi.stubEnv('DINKSTER_TOOLS_SHA256', 'a'.repeat(64))
+    vi.stubEnv(sha256Variable, 'a'.repeat(64))
     vi.stubEnv('DINKSTER_TOOLS_RELEASE', root)
     const overridden = new EnvironmentClient(undefined, undefined, undefined, missingBundle)
     await expect(overridden.run({ root, operation: 'status' })).rejects.toThrow('checksum mismatch')

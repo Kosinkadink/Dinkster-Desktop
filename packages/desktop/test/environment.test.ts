@@ -142,6 +142,20 @@ describe('Desktop dinkster-env command client', () => {
     await expect(client.run({ root, operation: 'doctor', repair: true }, true)).rejects.toThrow('generation drift needs offline repair')
   })
 
+  it('preserves validated user-defined base metadata and refuses malformed labels', async () => {
+    const { root } = await commandFixture()
+    const script = join(root, 'custom.cjs')
+    const base = { variant: 'studio-cuda', origin: 'user-defined', torchVersion: '2.14.1+cu130', torchIndex: 'https://download.pytorch.org/whl/cu130' }
+    const response = { format: 'dinkster.environment-result/1', operation: 'doctor', status: 'clean', root, current: 1, plan: [], base }
+    const client = new EnvironmentClient(process.execPath, [script])
+    await writeFile(script, `console.log(${JSON.stringify(JSON.stringify(response))});`)
+    expect((await client.run({ root, operation: 'doctor' })).base).toEqual(base)
+    for (const invalid of [null, { ...base, origin: 'local' }, { ...base, torchVersion: 2.14 }, { ...base, torchIndex: [] }, { ...base, variant: undefined }]) {
+      await writeFile(script, `console.log(${JSON.stringify(JSON.stringify({ ...response, base: invalid }))});`)
+      await expect(client.run({ root, operation: 'doctor' })).rejects.toThrow('unsupported dinkster-env base response')
+    }
+  })
+
   it('reads catalog discovery without confirmation and preserves producer manifests', async () => {
     const { root } = await commandFixture()
     const base = `sha256:${'a'.repeat(64)}`

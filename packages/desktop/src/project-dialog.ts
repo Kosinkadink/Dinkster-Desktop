@@ -44,7 +44,9 @@ function localProject(): DesktopProject {
 function showPlan(result: EnvironmentResult, token?: string): void {
   planToken = token
   document.querySelector<HTMLElement>('#plan-panel')!.hidden = false
-  document.querySelector<HTMLElement>('#plan')!.textContent = [result.status, ...result.plan, ...(result.changes ?? [])].join('\n')
+  const base = result.base
+  const label = base ? [`Variant: ${base.variant} (${base.origin})`, `Torch: ${base.torchVersion ?? 'none'}`, `Torch index: ${base.torchIndex ?? 'none'}`] : []
+  document.querySelector<HTMLElement>('#plan')!.textContent = [result.status, ...label, ...result.plan, ...(result.changes ?? [])].join('\n')
   document.querySelector<HTMLButtonElement>('#apply')!.hidden = token === undefined
   document.querySelector<HTMLElement>('#plan-panel')!.scrollIntoView({ block: 'nearest' })
 }

@@ -58,7 +58,8 @@ if (operation === 'catalog') {
 }
 const url = ${JSON.stringify(urls)}[operation === 'update' ? 1 : 0];
 console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,
-status:planned ? 'planned' : 'applied',root,current:operation === 'update' ? 2 : 1,
+status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,current:operation === 'update' ? 2 : 1,
+...(operation === 'doctor' ? {base:{variant:'studio-cuda',origin:'user-defined',torchVersion:'2.14.1+cu130',torchIndex:'https://download.pytorch.org/whl/cu130'}} : {}),
 plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current'],url,
 engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]}));
 `,
@@ -214,6 +215,16 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
   await manager
     .getByText('Environment operation completed.', { exact: false })
     .waitFor()
+  await manager.locator('#local-operation').selectOption('doctor')
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#plan')).toContainText(
+    'Variant: studio-cuda (user-defined)\nTorch: 2.14.1+cu130\nTorch index: https://download.pytorch.org/whl/cu130',
+  )
+  await expect(manager.locator('#apply')).toBeHidden()
+  if (artifacts)
+    await manager.locator('#plan-panel').screenshot({
+      path: join(artifacts, 'user-defined-base.png'),
+    })
   if (artifacts)
     await manager.screenshot({
       path: join(artifacts, 'local-applied.png'),

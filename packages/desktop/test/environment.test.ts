@@ -110,6 +110,39 @@ describe('Desktop dinkster-env command client', () => {
     await expect(stat(join(root, 'escape'))).rejects.toThrow()
   })
 
+  it.each(['linux', 'win32', 'darwin'])('checks tools ZIP duplicates using %s path identity', async (platform) => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop-tools-'))
+    roots.push(root)
+    // Stored ZIP: both interpreter paths and the published 2621A/2621a terminfo pair.
+    const pair = Buffer.from('UEsDBBQAAAAAAAAAIQC3JjKwCwAAAAsAAAASAAAAcHl0aG9uL2Jpbi9weXRob24zaW50ZXJwcmV0ZXJQSwMEFAAAAAAAAAAhALcmMrALAAAACwAAABEAAABweXRob24vcHl0aG9uLmV4ZWludGVycHJldGVyUEsDBBQAAAAAAAAAIQCc319uBQAAAAUAAAAdAAAAcHl0aG9uL3NoYXJlL3Rlcm1pbmZvLzIvMjYyMUF1cHBlclBLAwQUAAAAAAAAACEAI3uaDgUAAAAFAAAAHQAAAHB5dGhvbi9zaGFyZS90ZXJtaW5mby8yLzI2MjFhbG93ZXJQSwECFAMUAAAAAAAAACEAtyYysAsAAAALAAAAEgAAAAAAAAAAAAAA7YEAAAAAcHl0aG9uL2Jpbi9weXRob24zUEsBAhQDFAAAAAAAAAAhALcmMrALAAAACwAAABEAAAAAAAAAAAAAAO2BOwAAAHB5dGhvbi9weXRob24uZXhlUEsBAhQDFAAAAAAAAAAhAJzfX24FAAAABQAAAB0AAAAAAAAAAAAAAO2BdQAAAHB5dGhvbi9zaGFyZS90ZXJtaW5mby8yLzI2MjFBUEsBAhQDFAAAAAAAAAAhACN7mg4FAAAABQAAAB0AAAAAAAAAAAAAAO2BtQAAAHB5dGhvbi9zaGFyZS90ZXJtaW5mby8yLzI2MjFhUEsFBgAAAAAEAAQAFQEAAPUAAAAAAA==', 'base64')
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: platform })
+    try {
+      const os = { linux: 'linux', win32: 'windows', darwin: 'macos' }[platform]
+      const name = `dinkster-tools-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}.zip`
+      for (const exactDuplicate of [false, true]) {
+        // Change both ZIP name records, leaving file contents and their CRCs intact.
+        const archive = exactDuplicate ? Buffer.from(pair.toString('latin1').replaceAll('2621a', '2621A'), 'latin1') : pair
+        await writeFile(join(root, name), archive)
+        const bytes = JSON.stringify({ format: 'dinkster.engine/1', artifacts: [{ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }] })
+        const manifest = join(root, 'engine.json')
+        await writeFile(manifest, bytes)
+        const pending = acquireEnvironmentTools({ manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root })
+        if (platform === 'linux' && !exactDuplicate) {
+          const tools = await pending
+          roots.push(tools.directory)
+          expect(await readFile(tools.python, 'utf8')).toBe('interpreter')
+          if (descriptor.value === 'linux') {
+            expect(await readFile(join(tools.directory, 'payload/python/share/terminfo/2/2621A'), 'utf8')).toBe('upper')
+            expect(await readFile(join(tools.directory, 'payload/python/share/terminfo/2/2621a'), 'utf8')).toBe('lower')
+          }
+        } else await expect(pending).rejects.toThrow('unsafe tools ZIP entry')
+      }
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor)
+    }
+  })
+
   it('plans by default and passes explicit confirmation without changing artifact formats', async () => {
     const { root, client } = await commandFixture()
     const request = { root, operation: 'setup' as const, channel: 'main' as const, variant: 'win-nvidia-cu126', mirrors: [join(root, 'offline mirror'), 'https://releases.dinkster.org'], data: join(root, 'wheel store'), port: 44000, engine: 'compute', gpus: ['1'] }

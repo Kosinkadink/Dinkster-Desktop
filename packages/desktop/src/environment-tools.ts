@@ -53,7 +53,7 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
       dir: payload,
       onEntry(entry) {
         const name = entry.fileName
-        const key = name.replace(/\/$/, '').toLowerCase()
+        const key = (process.platform === 'win32' || process.platform === 'darwin' ? name.toLowerCase() : name).replace(/\/$/, '')
         const type = (entry.externalFileAttributes >>> 16) & 0o170000
         if (!name.startsWith('python/') || name.includes('\\') || name.includes(':') || name.split('/').some((part) => part === '.' || part === '..')
           || (type !== 0 && type !== 0o100000 && type !== 0o040000) || entries.has(key)) throw new Error('unsafe tools ZIP entry')

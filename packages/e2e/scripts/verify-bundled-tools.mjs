@@ -144,7 +144,10 @@ try {
   const engine = await opened
   await engine.waitForLoadState('domcontentloaded')
   assert.equal(new URL(engine.url()).hostname, '127.0.0.1')
-  await expect(engine.locator('body')).not.toBeEmpty()
+  await expect(engine.getByTestId('graph-canvas')).toBeVisible({
+    timeout: 60_000,
+  })
+  await expect(engine.getByTestId('new-tab')).toBeEnabled()
   const response = await engine.request.get(
     new URL('/api/health', engine.url()).href,
   )

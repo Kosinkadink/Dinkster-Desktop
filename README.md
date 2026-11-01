@@ -37,6 +37,8 @@ Apple Silicon on macOS 14 or newer is the supported Mac target. Intel Macs
 are not supported. `pnpm --filter @dinkster/desktop package:mac` builds an
 arm64 ZIP containing an unsigned `.app`, without an Apple signing identity
 or notarization. The engine uses the `mac-arm64` base and MPS, not CUDA.
+Local project setup selects the Apple Silicon base from the channel catalog
+without requiring an NVIDIA GPU or an explicit CPU fallback.
 
 The Desktop release workflow builds this ZIP on hosted `macos-latest`,
 checks the extracted executable's arm64 architecture, and retains the ZIP,

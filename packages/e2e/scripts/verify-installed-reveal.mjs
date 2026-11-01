@@ -38,6 +38,7 @@ env.LOCALAPPDATA = join(installed, 'user-data')
 let app
 let page
 let stage = 'launch'
+const rendererErrors = []
 const result = {
   complete: false,
   setupRepeated: false,
@@ -57,6 +58,9 @@ try {
   })
   app.process().stdout.on('data', () => {})
   app.process().stderr.on('data', () => {})
+  app.on('window', (window) =>
+    window.on('pageerror', (error) => rendererErrors.push(error.message)),
+  )
   const manager = await app.firstWindow()
   await manager
     .getByRole('heading', { name: 'Projects', exact: true })
@@ -73,26 +77,47 @@ try {
   )
   page = await opened
   await page.waitForLoadState('domcontentloaded')
-  stage = 'resolve-existing-output'
+  stage = 'publish-media'
   const capabilities = await page.evaluate(() =>
     window.dinksterDesktop.fileCapabilities(location.origin),
   )
   assert.equal(capabilities.reveal, true)
-  await page.evaluate(() => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.id = 'reveal-existing-output'
-    input.hidden = true
-    document.body.append(input)
-  })
-  await page.locator('#reveal-existing-output').setInputFiles(target)
-  const resolved = await page.evaluate(() =>
-    window.dinksterDesktop.resolveDroppedFile(
-      location.origin,
-      document.getElementById('reveal-existing-output').files[0],
-    ),
+  // Reveal accepts published asset identities, not arbitrary granted markers.
+  const bytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGNUqzzzn4GBgQEADlQCbLCpUUgAAAAASUVORK5CYII=',
+    'base64',
   )
-  assert.equal(resolved.status, 'resolved')
+  const asset = await page.evaluate(
+    async (bytes) => {
+      const query = new URLSearchParams({
+        scope: 'local',
+        project: 'default',
+        kind: 'media/image',
+        name: 'installed reveal.png',
+      })
+      const response = await fetch(`/api/assets/media?${query}`, {
+        method: 'POST',
+        headers: { 'content-type': 'image/png' },
+        body: new Uint8Array(bytes),
+      })
+      if (response.status !== 201)
+        throw new Error(`Media publication failed (HTTP ${response.status})`)
+      return (await response.json()).asset
+    },
+    [...bytes],
+  )
+  const locations = await page.evaluate(async (digest) => {
+    const query = new URLSearchParams({
+      digest,
+      scope: 'local',
+      project: 'default',
+    })
+    const response = await fetch(`/api/mounts/locations?${query}`)
+    if (!response.ok) throw new Error('Published asset location lookup failed')
+    return (await response.json()).locations
+  }, asset.digest)
+  assert.equal(locations.length, 1)
+  assert.deepEqual(await readFile(locations[0].path), bytes)
   stage = 'reveal'
   const revealed = await page.evaluate(
     (asset) =>
@@ -101,7 +126,7 @@ try {
         scope: 'local',
         project: 'default',
       }),
-    resolved.asset,
+    asset,
   )
   assert.equal(
     revealed.mode,
@@ -111,7 +136,7 @@ try {
   result.reveal = true
   await writeFile(
     join(root, 'reveal.json'),
-    JSON.stringify({ capabilities, resolved, revealed, target }, null, 2),
+    JSON.stringify({ capabilities, asset, locations, revealed }, null, 2),
   )
   stage = 'loaded-renderer'
   await expect(page.getByTestId('graph-canvas')).toBeVisible({
@@ -127,7 +152,13 @@ try {
   await writeFile(
     join(root, 'failure.json'),
     JSON.stringify(
-      { stage, type: error.constructor.name, message: error.message, result },
+      {
+        stage,
+        type: error.constructor.name,
+        message: error.message,
+        rendererErrors,
+        result,
+      },
       null,
       2,
     ),

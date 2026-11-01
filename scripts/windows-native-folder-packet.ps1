@@ -20,7 +20,7 @@ $preloadHash = 'a49830ed4db1f76d45fff7a1aeb43e594854fea31eb4dae500821ac6aea88c8b
 $helperHash = 'dfdcd84ab1f0ce5b12c775c8429dddfb71e145004bd00874f3a7828179b7bce1'
 $driverHash = '752e6c08a9b23223ad01e536ecdd7d207db8d2cb1b549a75b9287486d45b95b5'
 $nativeHash = '9fdde5108387d2d8adfd6c6060723fbc57dd8658ee7438f43978fe6a6873ab55'
-$harnessHash = '0265e4161f22b976235cfccd1fa87a4dfb3539b70dc2e469e257379af9ce4692'
+$harnessHash = 'd327f11c8b55f0b173ab3d2c62890dd22a18a723fb630e2c86a4481d2acc02ea'
 $packetDirectory = Split-Path -Parent $PSCommandPath
 . (Join-Path $packetDirectory 'filtered-process-join.ps1')
 $desktopRoot = Resolve-Path (Join-Path $packetDirectory '..\..\..')

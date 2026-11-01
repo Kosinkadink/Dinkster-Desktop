@@ -109,7 +109,7 @@ async function addEvent(state) {
     { flag: 'a' },
   )
 }
-async function chooseWithTimeout(page, target) {
+async function chooseWithTimeout(page, target, mountId) {
   console.log(`Select this folder in the native dialog: ${target}`)
   await addEvent('chooser-prompted')
   const result = await Promise.race([
@@ -121,6 +121,46 @@ async function chooseWithTimeout(page, target) {
     }),
   ])
   assert.equal(result, target)
+  const registered = await page.evaluate(
+    async ({ id, path }) => {
+      const added = await fetch('/api/mounts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id, path, mode: 'read', project: 'default' }),
+      })
+      if (added.status !== 201)
+        throw new Error('Native chosen folder registration failed')
+      const response = await fetch('/api/mounts/locations?project=default')
+      if (!response.ok) throw new Error('Registered folder lookup failed')
+      return (await response.json()).mounts.find((mount) => mount.id === id)
+    },
+    { id: mountId, path: result },
+  )
+  assert.equal(registered?.id, mountId)
+  assert.equal(registered.path, target)
+  assert.equal(registered.mode, 'read')
+  const persisted = JSON.parse(
+    execFileSync(
+      join(source, '.venv', 'Scripts', 'python.exe'),
+      [
+        '-c',
+        'import json,sys,tomllib; from pathlib import Path; data=tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8")); print(json.dumps(data["mounts"][sys.argv[2]]))',
+        join(data, 'library', 'mounts.toml'),
+        mountId,
+      ],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 10_000,
+      },
+    ),
+  )
+  assert.equal(persisted.path, target)
+  assert.equal(persisted.mode, 'read')
+  await writeFile(
+    join(root, `${mountId}-confirmed.json`),
+    JSON.stringify({ complete: true, ipcPath: result, registered, persisted }),
+  )
   await addEvent('chooser-result-confirmed')
 }
 try {
@@ -151,14 +191,18 @@ try {
     JSON.stringify({ complete: true }),
   )
 
-  await chooseWithTimeout(page, localPath)
-  await chooseWithTimeout(page, uncPath)
+  await chooseWithTimeout(page, localPath, 'native-local')
+  await chooseWithTimeout(page, uncPath, 'native-unc')
   const mapReadyPath = join(root, 'mapped-drive-ready')
   const mapDeadline = Date.now() + cellTimeoutMs
   while (!existsSync(mapReadyPath) && Date.now() < mapDeadline) await delay(100)
   assert.ok(Date.now() < mapDeadline, 'Mapped-drive readiness timed out')
-  await chooseWithTimeout(page, mappedPath)
+  await chooseWithTimeout(page, mappedPath, 'native-mapped')
   await writeFile(join(root, 'mapped-folder-result-acknowledged'), '')
+  const beforeCancel = readFileSync(
+    join(data, 'library', 'mounts.toml'),
+    'utf8',
+  )
   console.log('Cancel the next native folder dialog')
   const canceled = await Promise.race([
     page.evaluate(() =>
@@ -169,6 +213,10 @@ try {
     }),
   ])
   assert.equal(canceled, undefined)
+  assert.equal(
+    readFileSync(join(data, 'library', 'mounts.toml'), 'utf8'),
+    beforeCancel,
+  )
   await writeFile(
     join(root, 'isolated-native-folder-result.json'),
     JSON.stringify({ complete: true }),

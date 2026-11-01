@@ -26,6 +26,7 @@ assert.equal(
   'This packet qualifies Windows path forms',
 )
 assert.ok(network?.startsWith('\\\\') && isAbsolute(network))
+assert.equal(network, resolve(network), 'UNC fixture must already be canonical')
 assert.match(mapped ?? '', /^[D-Z]:\\$/)
 assert.equal((await stat(network)).isDirectory(), true)
 const root = resolve(directory)
@@ -226,8 +227,7 @@ try {
   await register('seam-local', local, 'read')
   result.local = true
   stage = 'unc'
-  // Python Path serializes a UNC share root with its trailing separator.
-  await register('seam-unc', resolve(network), 'read')
+  await register('seam-unc', network, 'read')
   result.unc = true
   stage = 'mapped'
   const drive = mapped.slice(0, 2)

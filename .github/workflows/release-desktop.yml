@@ -1,26 +1,34 @@
-name: Desktop installers and release
+name: Desktop installer builds
 
 on:
   push:
     branches: [main]
-    tags: ['v*.*.*']
   pull_request:
     paths:
       - '.github/workflows/release-desktop.yml'
+      - '.github/workflows/publish-desktop.yml'
       - 'packages/desktop/scripts/prepare-tools.mjs'
       - 'packages/desktop/scripts/verify-installed-tools.mjs'
       - 'packages/desktop/src/environment-tools-release.json'
       - 'packages/desktop/package.json'
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source:
+        type: string
+        required: true
+      signed:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 env:
   DINKSTER_FRONTEND_REF: d454b31137ac839462e5a5e04803c75054511f70
+  DESKTOP_SOURCE_COMMIT: ${{ inputs.source || github.sha }}
 
 concurrency:
-  group: desktop-release-${{ github.ref }}
+  group: desktop-build-${{ github.workflow }}-${{ inputs.source || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -35,6 +43,7 @@ jobs:
         with:
           clean: true
           persist-credentials: false
+          ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
       - uses: actions/checkout@v4
         with:
           clean: true
@@ -78,7 +87,7 @@ jobs:
           const archive = readdirSync('release').find(name => name.endsWith('-macos-arm64.zip'));
           const sha256 = readFileSync('release/installer-SHA256SUMS', 'utf8').split(/\s+/)[0];
           writeFileSync('release/desktop-macos-release.json', JSON.stringify({
-            repository: 'Kosinkadink/Dinkster-Desktop', commit: process.env.GITHUB_SHA,
+            repository: 'Kosinkadink/Dinkster-Desktop', commit: process.env.DESKTOP_SOURCE_COMMIT,
             frontend: process.env.DINKSTER_FRONTEND_REF, version: pkg.version,
             platform: { os: 'macos', arch: 'arm64' }, signed: false, notarized: false,
             archive, sha256, size: statSync(`release/${archive}`).size,
@@ -108,6 +117,7 @@ jobs:
         with:
           clean: true
           persist-credentials: false
+          ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
       - uses: actions/checkout@v4
         with:
           clean: true
@@ -165,31 +175,18 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  validation:
-    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')
-    uses: ./.github/workflows/full-validation.yml
-
   release:
-    needs: [validation, macos]
-    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')
+    needs: [macos]
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && inputs.signed
     environment: desktop-signing
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
     timeout-minutes: 90
-    permissions:
-      contents: write
     steps:
-      - name: Validate version tag
-        shell: pwsh
-        env:
-          RELEASE_REF: ${{ github.ref }}
-        run: |
-          if ($env:RELEASE_REF.StartsWith('refs/tags/') -and $env:RELEASE_REF -notmatch '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$') {
-            throw 'Expected vX.Y.Z or vX.Y.Z-test-suffix; refusing to sign an unrelated tag'
-          }
       - uses: actions/checkout@v4
         with:
           clean: true
           persist-credentials: false
+          ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
       - uses: actions/checkout@v4
         with:
           clean: true
@@ -265,9 +262,8 @@ jobs:
           $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
           $installer = Get-Item packages/desktop/release/*-Setup.exe
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
-          @{ repository = 'Kosinkadink/Dinkster-Desktop'; commit = $env:GITHUB_SHA; version = $package.version; backend = $pin; archive = $installer.Name; sha256 = $hash; size = $installer.Length } | ConvertTo-Json -Depth 8 | Set-Content packages/desktop/release/desktop-release.json
+          @{ repository = 'Kosinkadink/Dinkster-Desktop'; commit = $env:DESKTOP_SOURCE_COMMIT; version = $package.version; backend = $pin; archive = $installer.Name; sha256 = $hash; size = $installer.Length } | ConvertTo-Json -Depth 8 | Set-Content packages/desktop/release/desktop-release.json
           "$hash  $($installer.Name)" | Set-Content packages/desktop/release/SHA256SUMS
-          "DESKTOP_TAG=desktop-v$($package.version)" >> $env:GITHUB_ENV
       - name: Keep the signed installer
         uses: actions/upload-artifact@v4
         with:
@@ -293,7 +289,7 @@ jobs:
           const pkg = JSON.parse(readFileSync('packages/desktop/package.json', 'utf8'));
           const metadata = JSON.parse(readFileSync('packages/desktop/macos-release/desktop-macos-release.json', 'utf8'));
           assert.equal(metadata.repository, 'Kosinkadink/Dinkster-Desktop');
-          assert.equal(metadata.commit, process.env.GITHUB_SHA);
+          assert.equal(metadata.commit, process.env.DESKTOP_SOURCE_COMMIT);
           assert.equal(metadata.version, pkg.version);
           assert.equal(metadata.frontend, process.env.DINKSTER_FRONTEND_REF);
           const name = `Dinkster-Desktop-${pkg.version}-macos-arm64.zip`;
@@ -307,13 +303,15 @@ jobs:
           assert.equal(metadata.sha256, sha256);
           appendFileSync('packages/desktop/release/SHA256SUMS', `${sha256}  ${name}\n`);
           JS
-      - name: Create release
-        if: github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tags = gh api "repos/Kosinkadink/Dinkster-Desktop/git/matching-refs/tags/$env:DESKTOP_TAG" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw 'Could not verify release tag availability' }
-          if (@($tags | Where-Object { $_.ref -ceq "refs/tags/$env:DESKTOP_TAG" }).Count -ne 0) { throw 'Desktop version tag already exists; bump the package version' }
-          gh release create $env:DESKTOP_TAG packages/desktop/release/*-Setup.exe packages/desktop/release/desktop-release.json packages/desktop/release/SHA256SUMS packages/desktop/macos-release/*-macos-arm64.zip packages/desktop/macos-release/desktop-macos-release.json --repo Kosinkadink/Dinkster-Desktop --target $env:GITHUB_SHA --title "Dinkster Desktop $env:DESKTOP_TAG" --notes 'Signed Windows x64 installer and unsigned Apple Silicon macOS ZIP. Source commits and SHA256 are in desktop-release.json, desktop-macos-release.json and SHA256SUMS. Requires internet for locked first-run dependencies. See README.md for the unsigned Mac procedure.'
-          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; existing versions are never overwritten' }
+      - name: Keep the complete verified release asset set
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-assets
+          path: |
+            packages/desktop/release/*-Setup.exe
+            packages/desktop/release/desktop-release.json
+            packages/desktop/release/SHA256SUMS
+            packages/desktop/macos-release/*-macos-arm64.zip
+            packages/desktop/macos-release/desktop-macos-release.json
+          retention-days: 14
+          if-no-files-found: error

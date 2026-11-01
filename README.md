@@ -21,7 +21,7 @@ pnpm typecheck
 pnpm test
 ```
 
-`pnpm --filter @dinkster/desktop package:win` produces an unsigned Windows installer; `package:linux` produces a Linux AppImage; `package:mac` produces an unsigned Apple Silicon ZIP. All include the native standalone environment tools ZIP and its engine manifest, not backend source, engine wheels or base bundles. `packages/desktop/src/environment-tools-release.json` pins the tools release, sizes, SHA256 digests and pin date independently of the checkout-development backend. Build preparation downloads and verifies those public inputs before packaging. The Windows release uses `package:win:signed` through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release.
+`pnpm --filter @dinkster/desktop package:win` produces an unsigned Windows installer; `package:linux` produces a Linux AppImage; `package:mac` produces an unsigned Apple Silicon ZIP. All include the native standalone environment tools ZIP and its engine manifest, not backend source, engine wheels or base bundles. `packages/desktop/src/environment-tools-release.json` pins the tools release, sizes, SHA256 digests and pin date independently of the checkout-development backend. Build preparation downloads and verifies those public inputs before packaging. The Windows release uses `package:win:signed` through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). The desk creates a draft at the qualified landed commit and starts the dedicated publication workflow at main. It builds the draft's exact target using the shared installer workflow, verifies and uploads all five assets, then publishes. Suffix tests publish as prereleases without moving latest; the desk deletes the test release and tag after recording evidence. See [Publishing installers](docs/desktop.md#publishing-installers). Local validation must not dispatch workflows or publish a release.
 
 Both signing workflows reference the `desktop-signing` GitHub environment. Its
 approval gate is off while the program is being established: no required
@@ -29,7 +29,7 @@ reviewers, wait timer or deployment-branch restrictions. Signing uses the
 existing repository-level `AZURE_*` secrets without moving them. To enable the
 approval gate later, the owner adds themselves as a required reviewer under
 Settings -> Environments -> desktop-signing; no workflow change is needed.
-The desk pushes a version tag only after the user's approval on the issue.
+The desk owns draft creation and publication dispatch; build jobs never create releases or Git refs.
 
 ## Apple Silicon macOS
 
@@ -44,7 +44,7 @@ The Desktop release workflow builds this ZIP on hosted `macos-latest`,
 checks the extracted executable's arm64 architecture, and retains the ZIP,
 source metadata and SHA256 in `desktop-unsigned-macos-arm64`. Packaging
 changes also run this job on pull requests without signing credentials.
-Version-tag releases publish the same verified Mac ZIP alongside the signed
+Draft publication uploads the same verified Mac ZIP alongside the signed
 Windows installer, with separate source metadata and shared `SHA256SUMS`.
 The extracted Mac app's bundled tools archive and manifest are checked against
 the same immutable pin used by Windows and Linux packaging. Engine and base

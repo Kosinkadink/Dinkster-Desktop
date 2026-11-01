@@ -1,0 +1,73 @@
+name: Publish Desktop draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing desk-created draft tag (desktop-vX.Y.Z or desktop-vX.Y.Z-suffix)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-publish-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.ref == 'refs/heads/main'
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 5
+    outputs:
+      source: ${{ steps.draft.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - name: Resolve and validate the existing draft
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/publish-desktop.mjs resolve
+
+  build:
+    needs: draft
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      source: ${{ needs.draft.outputs.source }}
+      signed: true
+    secrets: inherit
+
+  publish:
+    needs: [draft, build]
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-release-assets
+          path: release-assets
+      - name: Upload verified assets and publish the existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DESKTOP_SOURCE_COMMIT: ${{ needs.draft.outputs.source }}
+        run: node scripts/publish-desktop.mjs publish

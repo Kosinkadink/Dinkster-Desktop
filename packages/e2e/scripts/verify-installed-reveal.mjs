@@ -7,20 +7,12 @@ import { _electron as electron, expect } from '@playwright/test'
 // Reuse an installed generation without repeating setup or folder acceptance.
 const installed = resolve(process.env.DINKSTER_DESKTOP_INSTALLED_ROOT)
 const root = resolve(process.env.DINKSTER_DESKTOP_VERIFY_ROOT)
+const rendererOnly = process.env.DINKSTER_DESKTOP_VERIFY_RENDERER_ONLY === '1'
 const projects = JSON.parse(
   await readFile(join(installed, 'desktop', 'projects.json'), 'utf8'),
 )
 assert.equal(projects.projects.length, 1)
 const project = projects.projects[0]
-const configured = JSON.parse(
-  await readFile(join(installed, 'configured.json'), 'utf8'),
-)
-const output = configured.activeMounts.find(
-  (mount) => mount.id === configured.outputMount,
-)
-assert.ok(output && output.mode === 'readwrite')
-const target = join(output.path, 'keep.txt')
-const marker = await readFile(target)
 await mkdir(root, { recursive: false })
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
@@ -42,7 +34,8 @@ const rendererErrors = []
 const result = {
   complete: false,
   setupRepeated: false,
-  reveal: false,
+  reveal: rendererOnly ? null : false,
+  revealSkipped: rendererOnly,
   loadedRenderer: false,
 }
 try {
@@ -77,67 +70,79 @@ try {
   )
   page = await opened
   await page.waitForLoadState('domcontentloaded')
-  stage = 'publish-media'
-  const capabilities = await page.evaluate(() =>
-    window.dinksterDesktop.fileCapabilities(location.origin),
-  )
-  assert.equal(capabilities.reveal, true)
-  // Reveal accepts published asset identities, not arbitrary granted markers.
-  const bytes = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGNUqzzzn4GBgQEADlQCbLCpUUgAAAAASUVORK5CYII=',
-    'base64',
-  )
-  const asset = await page.evaluate(
-    async (bytes) => {
+  if (!rendererOnly) {
+    const configured = JSON.parse(
+      await readFile(join(installed, 'configured.json'), 'utf8'),
+    )
+    const output = configured.activeMounts.find(
+      (mount) => mount.id === configured.outputMount,
+    )
+    assert.ok(output && output.mode === 'readwrite')
+    const target = join(output.path, 'keep.txt')
+    const marker = await readFile(target)
+    stage = 'publish-media'
+    const capabilities = await page.evaluate(() =>
+      window.dinksterDesktop.fileCapabilities(location.origin),
+    )
+    assert.equal(capabilities.reveal, true)
+    // Reveal accepts published asset identities, not arbitrary granted markers.
+    const bytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGNUqzzzn4GBgQEADlQCbLCpUUgAAAAASUVORK5CYII=',
+      'base64',
+    )
+    const asset = await page.evaluate(
+      async (bytes) => {
+        const query = new URLSearchParams({
+          scope: 'local',
+          project: 'default',
+          kind: 'media/image',
+          name: 'installed reveal.png',
+        })
+        const response = await fetch(`/api/assets/media?${query}`, {
+          method: 'POST',
+          headers: { 'content-type': 'image/png' },
+          body: new Uint8Array(bytes),
+        })
+        if (response.status !== 201)
+          throw new Error(`Media publication failed (HTTP ${response.status})`)
+        return (await response.json()).asset
+      },
+      [...bytes],
+    )
+    const locations = await page.evaluate(async (digest) => {
       const query = new URLSearchParams({
+        digest,
         scope: 'local',
         project: 'default',
-        kind: 'media/image',
-        name: 'installed reveal.png',
       })
-      const response = await fetch(`/api/assets/media?${query}`, {
-        method: 'POST',
-        headers: { 'content-type': 'image/png' },
-        body: new Uint8Array(bytes),
-      })
-      if (response.status !== 201)
-        throw new Error(`Media publication failed (HTTP ${response.status})`)
-      return (await response.json()).asset
-    },
-    [...bytes],
-  )
-  const locations = await page.evaluate(async (digest) => {
-    const query = new URLSearchParams({
-      digest,
-      scope: 'local',
-      project: 'default',
-    })
-    const response = await fetch(`/api/mounts/locations?${query}`)
-    if (!response.ok) throw new Error('Published asset location lookup failed')
-    return (await response.json()).locations
-  }, asset.digest)
-  assert.equal(locations.length, 1)
-  assert.deepEqual(await readFile(locations[0].path), bytes)
-  stage = 'reveal'
-  const revealed = await page.evaluate(
-    (asset) =>
-      window.dinksterDesktop.revealFile(location.origin, {
-        digest: asset.digest,
-        scope: 'local',
-        project: 'default',
-      }),
-    asset,
-  )
-  assert.equal(
-    revealed.mode,
-    process.platform === 'linux' ? 'folder' : 'selected',
-  )
-  assert.deepEqual(await readFile(target), marker)
-  result.reveal = true
-  await writeFile(
-    join(root, 'reveal.json'),
-    JSON.stringify({ capabilities, asset, locations, revealed }, null, 2),
-  )
+      const response = await fetch(`/api/mounts/locations?${query}`)
+      if (!response.ok)
+        throw new Error('Published asset location lookup failed')
+      return (await response.json()).locations
+    }, asset.digest)
+    assert.equal(locations.length, 1)
+    assert.deepEqual(await readFile(locations[0].path), bytes)
+    stage = 'reveal'
+    const revealed = await page.evaluate(
+      (asset) =>
+        window.dinksterDesktop.revealFile(location.origin, {
+          digest: asset.digest,
+          scope: 'local',
+          project: 'default',
+        }),
+      asset,
+    )
+    assert.equal(
+      revealed.mode,
+      process.platform === 'linux' ? 'folder' : 'selected',
+    )
+    assert.deepEqual(await readFile(target), marker)
+    result.reveal = true
+    await writeFile(
+      join(root, 'reveal.json'),
+      JSON.stringify({ capabilities, asset, locations, revealed }, null, 2),
+    )
+  }
   stage = 'loaded-renderer'
   await expect(page.getByTestId('graph-canvas')).toBeVisible({
     timeout: 120_000,

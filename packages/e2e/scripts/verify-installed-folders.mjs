@@ -34,6 +34,9 @@ const env = Object.fromEntries(
 )
 env.DINKSTER_DESKTOP_DATA = join(root, 'desktop')
 env.DINKSTER_TOOLS_PYTHON = python
+// Keep the volume's store registration inside this run, not the user's registry.
+env.XDG_DATA_HOME = join(root, 'user-data')
+env.LOCALAPPDATA = join(root, 'user-data')
 const project = {
   id: 'installed-folders',
   name: 'Installed folder verification',

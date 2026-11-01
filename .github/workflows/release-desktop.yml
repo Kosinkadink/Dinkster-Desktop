@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  DINKSTER_FRONTEND_REF: 54b24ecd8a7a7a079863cb751b14988f29047c46
+  DINKSTER_FRONTEND_REF: d454b31137ac839462e5a5e04803c75054511f70
 
 concurrency:
   group: desktop-release-${{ github.ref }}

@@ -1,10 +1,12 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { ProjectDialogBridge } from './project-dialog.js'
 import type { DesktopProjects } from './projects.js'
 import type {
   DesktopBridge,
   DesktopConnectionCredentials,
   DesktopDeepLink,
+  DesktopDroppedFileResult,
+  DesktopFileCapabilities,
   DesktopInfo,
   DesktopRemoteWorker,
   DesktopRemoteWorkerFileChoice,
@@ -22,7 +24,16 @@ const bridge: DesktopBridge = {
   selectEngine: (commit, variant) => ipcRenderer.invoke('desktop:select-engine', commit, variant) as Promise<void>,
   checkForUpdates: () => ipcRenderer.invoke('desktop:check-for-updates') as Promise<void>,
   installUpdate: () => ipcRenderer.invoke('desktop:install-update') as Promise<void>,
-  chooseDirectory: () => ipcRenderer.invoke('desktop:choose-directory') as Promise<string | undefined>,
+  fileCapabilities: (backendUrl) => ipcRenderer.invoke('desktop:file-capabilities', backendUrl) as Promise<DesktopFileCapabilities>,
+  chooseDirectory: (backendUrl) => ipcRenderer.invoke('desktop:choose-directory', backendUrl) as Promise<string | undefined>,
+  revealFile: (backendUrl, asset) => ipcRenderer.invoke('desktop:reveal-file', backendUrl, asset) as Promise<{ mode: 'selected' | 'folder' }>,
+  resolveDroppedFile: async (backendUrl, file) => {
+    let path: string
+    try { path = webUtils.getPathForFile(file) }
+    catch { throw new Error('Native file resolution requires a File') }
+    if (!path) return { status: 'refused', reason: 'not-native-file' }
+    return ipcRenderer.invoke('desktop:resolve-dropped-file', backendUrl, path) as Promise<DesktopDroppedFileResult>
+  },
   exportSnapshot: () => ipcRenderer.invoke('desktop:export-snapshot') as Promise<string | undefined>,
   importSnapshot: () => ipcRenderer.invoke('desktop:import-snapshot') as Promise<unknown | undefined>,
   systemCheck: () => ipcRenderer.invoke('desktop:system-check') as Promise<DesktopSystemCheck>,
@@ -70,7 +81,13 @@ const bridge: DesktopBridge = {
   },
 }
 
-contextBridge.exposeInMainWorld('dinksterDesktop', bridge)
+const localFilesOnly = process.argv.includes('--dinkster-local-files')
+contextBridge.exposeInMainWorld('dinksterDesktop', localFilesOnly ? {
+  fileCapabilities: bridge.fileCapabilities,
+  chooseDirectory: bridge.chooseDirectory,
+  revealFile: bridge.revealFile,
+  resolveDroppedFile: bridge.resolveDroppedFile,
+} : bridge)
 
 const projects: ProjectDialogBridge = {
   list: () => ipcRenderer.invoke('desktop:projects-list') as Promise<DesktopProjects>,
@@ -81,4 +98,4 @@ const projects: ProjectDialogBridge = {
   plan: (project, request) => ipcRenderer.invoke('desktop:projects-plan', project, request),
   apply: (token) => ipcRenderer.invoke('desktop:projects-apply', token),
 }
-contextBridge.exposeInMainWorld('dinksterProjects', projects)
+if (!localFilesOnly) contextBridge.exposeInMainWorld('dinksterProjects', projects)

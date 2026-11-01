@@ -165,6 +165,7 @@ describe('EngineRuntime checkout lifecycle', () => {
       const port = Number(args[args.indexOf('--port') + 1]);
       let restarts = 0;
       http.createServer((request, response) => {
+        if (request.url === '/foreign') { response.end(JSON.stringify({state:'ready', instance:'another process'})); return; }
         if (request.url === '/supervisor/engine/restart') restarts++;
         response.setHeader('content-type', 'application/json');
         response.end(JSON.stringify({state:'ready', instance, restarts,
@@ -179,8 +180,15 @@ describe('EngineRuntime checkout lifecycle', () => {
         : actual.spawn(command, args, options)) as typeof childProcess.spawn)
     const port = await availableLoopbackPort()
     const runtime = createRuntime({ dataDirectory: data, sourceDirectory: source, variant: 'cpu', port })
+    expect(await runtime.ownsBackend()).toBe(false)
     await runtime.start()
     expect(runtime.status).toMatchObject({ phase: 'running', variant: 'cpu' })
+    expect(await runtime.ownsBackend()).toBe(true)
+    const realFetch = globalThis.fetch
+    const foreign = vi.spyOn(globalThis, 'fetch').mockImplementation((_url, options) => realFetch(`http://127.0.0.1:${port}/foreign`, options))
+    expect(await runtime.ownsBackend()).toBe(false)
+    expect(runtime.status.phase).toBe('running')
+    foreign.mockRestore()
     await runtime.start()
     const status = await (await fetch(`http://127.0.0.1:${port}/supervisor/status`)).json()
     expect(status).toMatchObject({ state: 'ready', restarts: 1, accelerator: 'cpu' })
@@ -188,6 +196,7 @@ describe('EngineRuntime checkout lifecycle', () => {
     expect((await readdir(source)).sort()).toEqual(['.venv', 'supervisor.cjs'])
     await runtime.stop()
     expect(runtime.status.phase).toBe('stopped')
+    expect(await runtime.ownsBackend()).toBe(false)
     await expect(fetch(`http://127.0.0.1:${port}/supervisor/status`, { signal: AbortSignal.timeout(1000) })).rejects.toThrow()
   })
 

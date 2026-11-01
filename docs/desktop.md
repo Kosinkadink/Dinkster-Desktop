@@ -34,6 +34,28 @@ A remote-only project stores server URLs and no install root. Opening it loads
 the server's frontend in an isolated window without a Desktop preload or Node
 capabilities. It does not invoke environment commands or create a generation.
 
+## Native asset files
+
+Local engine windows receive only the file-capability, directory-choice,
+asset-reveal and native-drop methods, not project-manager, credential or shell
+lifecycle privileges. Each request checks the saved local binding and the
+environment tools' observed ready generation and URL. Requests from child
+frames, remote engines and unrelated connections have no native authority.
+Asynchronous file operations recheck ownership before returning a path or
+opening a file manager; changing generation invalidates an outstanding request.
+The folder-project context comes from the trusted main frame's document-load
+`dinksterProject` URL parameter, not the Desktop installation id or later
+same-document history edits. An absent
+parameter means `default`; malformed ids are refused. Reveal identities must
+match that context, and a context change invalidates an outstanding operation.
+
+The frontend supplies an asset identity, not a filesystem path, for reveal.
+The backend returns the exact location and active mount or vault grant. Both
+the file and grant are canonicalized; an escaping symlink is rejected. Windows
+and macOS select the file; Linux opens its containing folder. Native drops use
+Electron's File lookup and the backend's advertised mounted-path resolver,
+without treating transport failures as permission to upload instead.
+
 Desktop bindings are not environment state. The environment tools own
 `project.json`, generation records, `current`, `store`, journals, dependency
 constraints, and private supervisor runtime metadata. Desktop never writes

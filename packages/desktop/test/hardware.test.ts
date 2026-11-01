@@ -6,6 +6,7 @@ const manifests: readonly VariantHardware[] = [
   { variant: 'win-cpu', platform: { os: 'windows', arch: 'x86_64' }, nvidia: null },
   { variant: 'win-nvidia', platform: { os: 'windows', arch: 'x86_64' }, nvidia: { minimumDriver: '580', minimumComputeCapability: '7.5', maximumExclusiveComputeCapability: null } },
   { variant: 'linux-cpu', platform: { os: 'linux', arch: 'x86_64' }, nvidia: null },
+  { variant: 'mac-arm64', platform: { os: 'macos', arch: 'arm64' }, nvidia: null },
 ]
 const gpus: readonly NvidiaGpu[] = [
   { id: '0', name: 'Display GPU', driver: '580.10', computeCapability: '6.1' },
@@ -13,6 +14,19 @@ const gpus: readonly NvidiaGpu[] = [
 ]
 
 describe('project hardware plan', () => {
+  it('selects the native Apple Silicon base without NVIDIA hardware or a CPU fallback', async () => {
+    const hardware = await detectNvidiaGpus('darwin', async () => { throw new Error('NVIDIA detection must not run on macOS') })
+    expect(hardware).toEqual({ gpus: [] })
+    const plan = planVariant(manifests, hardware, [], 'darwin', undefined, 'arm64')
+    expect(plan.selected).toBe('mac-arm64')
+    expect(plan.reason).toContain('MPS')
+    expect(plan.choices).toEqual([{ variant: 'mac-arm64', supported: true, reason: plan.reason }])
+    expect(planVariant(manifests, { gpus }, ['1'], 'darwin', undefined, 'x64').choices).toEqual([])
+    expect(planVariant(manifests, { gpus: [] }, [], 'linux', undefined, 'arm64').choices).toEqual([])
+    const renamed = manifests.map((manifest) => ({ ...manifest, variant: `custom-${manifest.variant}` }))
+    expect(planVariant(renamed, { gpus: [] }, [], 'darwin', undefined, 'arm64').selected).toBe('custom-mac-arm64')
+  })
+
   it('reads indexes, driver, compute capability and memory for every GPU', async () => {
     const facts = await detectNvidiaGpus('win32', async (file, args) => {
       expect(file).toBe('nvidia-smi')

@@ -82,6 +82,8 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
           "DINKSTER_DESKTOP_EXECUTABLE=$(Join-Path $destination 'Dinkster Desktop.exe')" >> $env:GITHUB_ENV
           "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
+          node packages/desktop/scripts/verify-installed-tools.mjs (Join-Path $destination resources)
+          if ($LASTEXITCODE -ne 0) { throw 'Installed tools verification failed' }
       - run: pnpm --filter @dinkster/desktop verify:installed
       - name: Preserve verification evidence
         if: always()

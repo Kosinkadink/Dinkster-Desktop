@@ -1,7 +1,7 @@
 {
   "name": "dinkster-desktop-workspace",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.2",
   "type": "module",
   "packageManager": "pnpm@11.28.8",
   "scripts": {

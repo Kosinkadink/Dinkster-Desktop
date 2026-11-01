@@ -1,6 +1,10 @@
-import { readFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
+import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 
 const root = resolve(import.meta.dirname, '../../..')
@@ -59,8 +63,9 @@ describe('desktop workflows', () => {
   })
 
   it('gates tag and manual signing on the same owner-approved environment without publishing', () => {
-    expect(release.on).toEqual({
-      push: { tags: ['v*.*.*'] },
+    expect(release.on).toMatchObject({
+      push: { branches: ['main'], tags: ['v*.*.*'] },
+      pull_request: { paths: expect.arrayContaining(['.github/workflows/release-desktop.yml', 'packages/desktop/src/environment-tools-release.json']) },
       workflow_dispatch: null,
     })
     expect(signed.on).toEqual({ workflow_dispatch: null })
@@ -192,15 +197,37 @@ describe('desktop workflows', () => {
     expect(requireSuccess?.run).toContain('test "$INSTALLED_RESULT" = success')
   })
 
-  it('uses one required variable for every hosted-eligible job', () => {
+  it('uses hosted macOS directly and the runner variable for existing platforms', () => {
     for (const workflow of [ci, full, release, signed, published]) {
       for (const [name, job] of Object.entries(workflow.jobs)) {
         if (job.uses) continue
+        if (workflow === release && name === 'macos') {
+          expect(job['runs-on']).toBe('macos-latest')
+          continue
+        }
         expect(job['runs-on'], name).toMatch(
-          /^\$\{\{ fromJSON\(vars\.CI_RUNNERS\)\.(linux|windows) \}\}$/,
+          /^\$\{\{ fromJSON\(vars\.CI_RUNNERS\)(\.(linux|windows)|\[matrix\.os\]) \}\}$/,
         )
       }
     }
+  })
+
+  it('packages unsigned arm64 macOS without the signing environment or publication', () => {
+    const job = release.jobs['macos']!
+    expect(job.environment).toBeUndefined()
+    expect(job.needs).toBeUndefined()
+    const source = JSON.stringify(job)
+    expect(source).not.toMatch(/secrets\.|desktop-signing|gh release|notarytool|package:win:signed/)
+    expect(job.steps?.flatMap(step => step.run ?? [])).toContain('pnpm --filter @dinkster/desktop package:mac')
+    const verification = job.steps?.find(step => step.name === 'Verify the extracted Apple Silicon app')
+    expect(verification?.run).toContain('test "$(lipo -archs "$executable")" = arm64')
+    expect(verification?.run).toContain('verify-installed-tools.mjs "$RUNNER_TEMP/dinkster-macos-installed/Dinkster Desktop.app/Contents/Resources" > installed-tools.json')
+    expect(verification?.run).toContain('shasum -a 256')
+    const upload = job.steps?.find(step => step.uses === 'actions/upload-artifact@v4')
+    expect(upload?.with?.['path']).toContain('*-macos-arm64.zip')
+    expect(upload?.with?.['path']).toContain('installer-SHA256SUMS')
+    expect(upload?.with?.['path']).toContain('installed-tools.json')
+    expect(upload?.with?.['if-no-files-found']).toBe('error')
   })
 
   it('publishes one aggregate status that fails for every incomplete lane', () => {
@@ -255,17 +282,79 @@ describe('desktop workflows', () => {
     )
   })
 
-  it('validates main and tag commits and keeps test-tag output without publishing', () => {
+  it('validates signing only on tags and keeps test-tag output without publishing', () => {
     expect(release.jobs['validation']).toEqual({
-      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))",
+      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')",
       uses: './.github/workflows/full-validation.yml',
     })
-    expect(release.jobs['release']!.needs).toBe('validation')
+    expect(release.jobs['release']!.needs).toEqual(['validation', 'macos'])
     expect(release.jobs['release']!.if).toBe(release.jobs['validation']!.if)
     const steps = release.jobs['release']!.steps!
     expect(steps.find((step) => step.name === 'Keep the signed installer')?.with?.['name']).toBe('desktop-signed-installer')
     expect(steps.find((step) => step.name === 'Create release')?.if).toBe("github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')")
     expect(steps.filter((step) => step.run?.includes('gh release create'))).toHaveLength(1)
+  })
+
+  it('admits only matching source and verified Mac bytes into the shared release', async () => {
+    const steps = release.jobs['release']!.steps!
+    const upload = release.jobs['macos']!.steps!.find(step => step.uses === 'actions/upload-artifact@v4')!
+    const download = steps.find(step => step.name === 'Acquire the verified unsigned Mac installer')!
+    expect(download.with?.['name']).toBe(upload.with?.['name'])
+    const verify = steps.find(step => step.name === 'Verify the Mac installer belongs to this release')!
+    const script = verify.run!.match(/<<'JS'\n([\s\S]*)\nJS\n?$/)![1]!
+    const publish = steps.find(step => step.name === 'Create release')!
+    expect(publish.run).toContain('packages/desktop/macos-release/*-macos-arm64.zip')
+    expect(publish.run).toContain('packages/desktop/macos-release/desktop-macos-release.json')
+    const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-macos-release-'))
+    const directory = resolve(scratch, 'packages/desktop')
+    const name = 'Dinkster-Desktop-0.2.0-macos-arm64.zip'
+    const bytes = Buffer.from('native Mac archive')
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    const metadata = { repository: 'Kosinkadink/Dinkster-Desktop', commit: 'source-head', frontend: 'frontend-head', version: '0.2.0', archive: name, platform: { os: 'macos', arch: 'arm64' }, signed: false, notarized: false, size: bytes.length, sha256 }
+    const execute = promisify(execFile)
+    const run = () => execute(process.execPath, ['--input-type=module', '-e', script], { cwd: scratch, env: { ...process.env, GITHUB_SHA: metadata.commit, DINKSTER_FRONTEND_REF: metadata.frontend } })
+    const record = (value: object) => writeFile(resolve(directory, 'macos-release/desktop-macos-release.json'), JSON.stringify(value))
+    try {
+      await mkdir(resolve(directory, 'macos-release'), { recursive: true })
+      await mkdir(resolve(directory, 'release'))
+      await writeFile(resolve(directory, 'package.json'), JSON.stringify({ version: metadata.version }))
+      await writeFile(resolve(directory, 'macos-release', name), bytes)
+      await writeFile(resolve(directory, 'release/SHA256SUMS'), 'windows checksum\n')
+      await record(metadata)
+      await run()
+      const expected = `windows checksum\n${sha256}  ${name}\n`
+      expect(await readFile(resolve(directory, 'release/SHA256SUMS'), 'utf8')).toBe(expected)
+      for (const mismatch of [{ commit: 'other-head' }, { version: '0.3.0' }, { signed: true }, { size: bytes.length + 1 }]) {
+        await record({ ...metadata, ...mismatch })
+        await expect(run()).rejects.toThrow()
+      }
+      await record(metadata)
+      const corrupt = Buffer.from(bytes)
+      corrupt[0] = corrupt[0]! ^ 1
+      await writeFile(resolve(directory, 'macos-release', name), corrupt)
+      await expect(run()).rejects.toThrow()
+      expect(await readFile(resolve(directory, 'release/SHA256SUMS'), 'utf8')).toBe(expected)
+    } finally {
+      await rm(scratch, { recursive: true, force: true })
+    }
+  })
+
+  it('produces both native installers without signing or publishing on main and relevant pull requests', () => {
+    const job = release.jobs['installers']!
+    expect(job.environment).toBeUndefined()
+    const steps = job.steps!
+    expect(steps.find((step) => step.run === 'pnpm --filter @dinkster/desktop package:linux')?.if).toBe("matrix.os == 'linux'")
+    expect(steps.find((step) => step.run === 'pnpm --filter @dinkster/desktop package:win')?.if).toBe("matrix.os == 'windows'")
+    for (const name of ['Extract Linux installer and verify resources', 'Install Windows package and verify resources']) {
+      expect(steps.find((step) => step.name === name)?.run).toContain('verify-installed-tools.mjs')
+    }
+    expect(steps.find((step) => step.uses === 'actions/upload-artifact@v4')?.with).toMatchObject({
+      name: 'desktop-${{ matrix.os }}-installer', 'if-no-files-found': 'error',
+    })
+    expect(JSON.stringify(job)).not.toMatch(/secrets\.|gh release create|package:win:signed/)
+    const smoke = full.jobs['desktop-smoke']!.steps!.map((step) => step.run ?? '')
+    expect(smoke.indexOf('pnpm --filter @dinkster/desktop prepare:tools')).toBeLessThan(smoke.indexOf('pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never'))
+    expect(smoke).toContain('node packages/desktop/scripts/verify-installed-tools.mjs packages/desktop/release/linux-unpacked/resources')
   })
 
   it('keeps published verification disabled and read-only', () => {

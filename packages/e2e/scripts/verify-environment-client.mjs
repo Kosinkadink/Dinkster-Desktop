@@ -80,6 +80,29 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
   )
   env.DINKSTER_DESKTOP_DATA = join(scratch, 'desktop')
   env.DINKSTER_ENV = command
+  // The command stub does not write project settings. Supply its channel input
+  // so packaged builds exercise the same version-floor preflight as production.
+  const mirror = join(scratch, 'mirror')
+  await mkdir(join(mirror, 'channels'), { recursive: true })
+  await writeFile(
+    join(mirror, 'channels/stable.json'),
+    JSON.stringify({
+      format: 'dinkster.channel/1',
+      minimumDesktopVersion: '0.2.0',
+      signature: null,
+    }),
+  )
+  await mkdir(join(scratch, 'installation'))
+  await writeFile(
+    join(scratch, 'installation/project.json'),
+    JSON.stringify({
+      format: 'dinkster.project/1',
+      channel: 'stable',
+      mirrors: [mirror],
+      variant: 'linux-cpu',
+      port: 3639,
+    }),
+  )
   app = await electron.launch({
     executablePath:
       process.env.DINKSTER_ELECTRON_EXECUTABLE ??
@@ -112,6 +135,7 @@ engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation 
     .click()
   await manager.locator('#local-name').fill('Local studio')
   await manager.locator('#local-root').fill(join(scratch, 'installation'))
+  await manager.locator('#local-mirrors').fill(mirror)
   await manager
     .getByRole('button', { name: 'Inspect hardware and variants' })
     .click()

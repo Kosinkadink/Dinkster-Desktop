@@ -42,6 +42,7 @@ import { configureUpdateFeed } from './update-feed.js'
 import { ShellUpdater } from './shell-updater.js'
 import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
 import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } from './environment.js'
+import toolsRelease from './environment-tools-release.json' with { type: 'json' }
 import { detectNvidiaGpus, planVariant } from './hardware.js'
 import { createWebHost, type WebHost } from './web-host.js'
 import { writeFileAtomic } from './atomic-file.js'
@@ -77,7 +78,12 @@ let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
 const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
-const environmentClient = new EnvironmentClient()
+const environmentClient = new EnvironmentClient(undefined, undefined, undefined, app.isPackaged ? {
+  manifest: join(process.resourcesPath, 'tools', toolsRelease.manifest.name),
+  sha256: toolsRelease.manifest.sha256,
+  release: join(process.resourcesPath, 'tools'),
+  cacheRoot: join(app.getPath('userData'), 'environment-tools'),
+} : undefined, app.isPackaged ? app.getVersion() : undefined)
 let pendingProjectPlan: { token: string; project: DesktopProject; request: EnvironmentRequest } | undefined
 const windows = new Map<string, BrowserWindow>()
 const redockingWindows = new Set<string>()

@@ -12,7 +12,9 @@
   "scripts": {
     "build": "node scripts/clean-output.mjs dist && tsc -p tsconfig.json && esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
     "build:all": "pnpm --dir ../.. prepare:frontend && pnpm build",
-    "package:win": "pnpm build:all && node scripts/clean-output.mjs release && electron-builder --win nsis --publish never",
+    "prepare:tools": "node --import tsx scripts/prepare-tools.mjs",
+    "package:win": "pnpm build:all && pnpm prepare:tools && node scripts/clean-output.mjs release && electron-builder --win nsis --publish never",
+    "package:linux": "pnpm build:all && pnpm prepare:tools && node scripts/clean-output.mjs release && electron-builder --linux AppImage --publish never",
     "package:win:signed": "pnpm package:win --config electron-builder.signed.mjs",
     "package:mac": "pnpm build:all && node scripts/clean-output.mjs release && electron-builder --mac --publish never",
     "verify:update-feed": "node scripts/verify-update-feed.mjs",
@@ -63,6 +65,10 @@
       {
         "from": "resources/branding",
         "to": "branding"
+      },
+      {
+        "from": "resources/tools",
+        "to": "tools"
       }
     ],
     "directories": {

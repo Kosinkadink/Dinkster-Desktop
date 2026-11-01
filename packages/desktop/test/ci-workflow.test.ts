@@ -282,7 +282,7 @@ describe('desktop workflows', () => {
     )
   })
 
-  it('validates signing only on tags and keeps test-tag output without publishing', () => {
+  it('validates signing only on tags and publishes only onto a matching desk tag', () => {
     expect(release.jobs['validation']).toEqual({
       if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')",
       uses: './.github/workflows/full-validation.yml',
@@ -294,10 +294,24 @@ describe('desktop workflows', () => {
     expect(steps.find((step) => step.name === 'Create release')?.if).toBe("github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')")
     expect(steps.filter((step) => step.run?.includes('gh release create'))).toHaveLength(1)
     const publish = steps.find((step) => step.name === 'Create release')!.run!
-    expect(publish).toContain('gh api --method POST repos/Kosinkadink/Dinkster-Desktop/git/refs --raw-field "ref=refs/tags/$env:DESKTOP_TAG" --raw-field "sha=$env:GITHUB_SHA"')
-    expect(publish).toContain("if ($LASTEXITCODE -ne 0) { throw 'Could not create the immutable release tag; refusing to publish' }")
+    expect(publish).toContain('commits/refs/tags/$env:DESKTOP_TAG')
+    expect(publish).toContain('if ($commit -cne $env:GITHUB_SHA)')
     expect(publish).toContain('--verify-tag')
     expect(publish).not.toContain('--target')
+    expect(publish).not.toContain('/git/refs')
+  })
+
+  it('probes draft publication only on existing test tags and retains the tag during cleanup', () => {
+    const probe = release.jobs['release']!.steps!.find(step => step.name === 'Probe existing-tag publication')!
+    expect(probe.if).toBe("contains(github.ref_name, '-')")
+    expect(probe.env?.['GH_TOKEN']).toBe('${{ github.token }}')
+    expect(probe.run).toContain('const tag = process.env.GITHUB_REF_NAME;')
+    expect(probe.run).toContain("'--draft', '--verify-tag'")
+    expect(probe.run).toContain('releases/tags/${tag}')
+    expect(probe.run).toContain('assert.equal(release.tag_name, tag)')
+    expect(probe.run).toContain('assert.equal(release.draft, true)')
+    expect(probe.run).toContain("finally {\n  if (created) run('release', 'delete', tag, '--repo', repo, '--yes');")
+    expect(probe.run).not.toMatch(/--target|--cleanup-tag|\/git\/refs/)
   })
 
   it('admits only matching source and verified Mac bytes into the shared release', async () => {

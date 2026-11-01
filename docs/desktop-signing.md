@@ -129,21 +129,27 @@ creates a tag or release and does not run the main validation gate, so it is
 the fastest way to prove the signing setup or to hand testers a signed build.
 Actions -> Windows signed package -> Run workflow -> pick a reviewed branch.
 
-The **Windows Desktop release** workflow runs on `vX.Y.Z` and
-`vX.Y.Z-test-suffix` tag pushes, or manually on main. It runs full validation
+The **Desktop installers and release** workflow publishes on `vX.Y.Z` and
+probes publication on `vX.Y.Z-test-suffix` tag pushes. It runs full validation
 through `workflow_call` at that exact commit, then runs signing and installed-app
 checks, waiting for owner approval only when required reviewers are enabled.
 Every successful run keeps the
 signed installer and checksums as the `desktop-signed-installer` artifact.
-A tag with a prerelease suffix never creates a GitHub release: use that path
-to prove signing and full validation without publication, plus the approval
-pause when enabled. Stable
-tags and manual main runs additionally create the GitHub release. The version is not an
-input: it is `version` in
-[packages/desktop/package.json](../packages/desktop/package.json), and the
-tag is `desktop-v<version>`. The workflow refuses to publish when that tag
-already exists, so every release starts with a commit on main that bumps the
-version.
+A tag with a prerelease suffix creates a temporary draft release on that
+existing tag with `GITHUB_TOKEN`, verifies its tag and draft state through
+the API, and deletes the draft in the same step, including on verification
+failure. The Git tag is retained. This probes publication permissions without
+publishing test artifacts as a release. A failed probe is reported, never rerun.
+
+For a stable release the desk pushes both `vX.Y.Z` and `desktop-vX.Y.Z` at
+the qualified commit in one push. The version comes from `version` in
+[packages/desktop/package.json](../packages/desktop/package.json). The job
+requires the existing `desktop-v<version>` tag to resolve to `GITHUB_SHA`,
+then creates its release with `--verify-tag` and no `--target`. An existing
+release is never overwritten. The job never creates, moves or deletes Git
+refs; this avoids relying on workflow-scoped authorization to tag an older
+commit. Main, pull-request and manual non-tag runs build installers without
+publishing.
 
 ### Sign locally
 

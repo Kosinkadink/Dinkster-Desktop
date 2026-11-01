@@ -148,6 +148,7 @@ describe('desktop package inputs', () => {
     expect(steps.find((step) => step.run !== undefined)?.name).toBe('Validate version tag')
     expect(steps.filter((step) => step.env?.['GH_TOKEN'] !== undefined)).toEqual([
       steps.find((step) => step.name === 'Create release'),
+      steps.find((step) => step.name === 'Probe existing-tag publication'),
     ])
     for (const file of ['release-desktop.yml', 'signed-package.yml', 'full-validation.yml']) {
       const packaging = await readFile(resolve(root, '.github/workflows', file), 'utf8')

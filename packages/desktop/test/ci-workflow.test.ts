@@ -1,6 +1,10 @@
-import { readFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
+import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 
 const root = resolve(import.meta.dirname, '../../..')
@@ -281,12 +285,56 @@ describe('desktop workflows', () => {
       if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')",
       uses: './.github/workflows/full-validation.yml',
     })
-    expect(release.jobs['release']!.needs).toBe('validation')
+    expect(release.jobs['release']!.needs).toEqual(['validation', 'macos'])
     expect(release.jobs['release']!.if).toBe(release.jobs['validation']!.if)
     const steps = release.jobs['release']!.steps!
     expect(steps.find((step) => step.name === 'Keep the signed installer')?.with?.['name']).toBe('desktop-signed-installer')
     expect(steps.find((step) => step.name === 'Create release')?.if).toBe("github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')")
     expect(steps.filter((step) => step.run?.includes('gh release create'))).toHaveLength(1)
+  })
+
+  it('admits only matching source and verified Mac bytes into the shared release', async () => {
+    const steps = release.jobs['release']!.steps!
+    const upload = release.jobs['macos']!.steps!.find(step => step.uses === 'actions/upload-artifact@v4')!
+    const download = steps.find(step => step.name === 'Acquire the verified unsigned Mac installer')!
+    expect(download.with?.['name']).toBe(upload.with?.['name'])
+    const verify = steps.find(step => step.name === 'Verify the Mac installer belongs to this release')!
+    const script = verify.run!.match(/<<'JS'\n([\s\S]*)\nJS\n?$/)![1]!
+    const publish = steps.find(step => step.name === 'Create release')!
+    expect(publish.run).toContain('packages/desktop/macos-release/*-macos-arm64.zip')
+    expect(publish.run).toContain('packages/desktop/macos-release/desktop-macos-release.json')
+    const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-macos-release-'))
+    const directory = resolve(scratch, 'packages/desktop')
+    const name = 'Dinkster-Desktop-0.2.0-macos-arm64.zip'
+    const bytes = Buffer.from('native Mac archive')
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    const metadata = { repository: 'Kosinkadink/Dinkster-Desktop', commit: 'source-head', frontend: 'frontend-head', version: '0.2.0', archive: name, platform: { os: 'macos', arch: 'arm64' }, signed: false, notarized: false, size: bytes.length, sha256 }
+    const execute = promisify(execFile)
+    const run = () => execute(process.execPath, ['--input-type=module', '-e', script], { cwd: scratch, env: { ...process.env, GITHUB_SHA: metadata.commit, DINKSTER_FRONTEND_REF: metadata.frontend } })
+    const record = (value: object) => writeFile(resolve(directory, 'macos-release/desktop-macos-release.json'), JSON.stringify(value))
+    try {
+      await mkdir(resolve(directory, 'macos-release'), { recursive: true })
+      await mkdir(resolve(directory, 'release'))
+      await writeFile(resolve(directory, 'package.json'), JSON.stringify({ version: metadata.version }))
+      await writeFile(resolve(directory, 'macos-release', name), bytes)
+      await writeFile(resolve(directory, 'release/SHA256SUMS'), 'windows checksum\n')
+      await record(metadata)
+      await run()
+      const expected = `windows checksum\n${sha256}  ${name}\n`
+      expect(await readFile(resolve(directory, 'release/SHA256SUMS'), 'utf8')).toBe(expected)
+      for (const mismatch of [{ commit: 'other-head' }, { version: '0.3.0' }, { signed: true }, { size: bytes.length + 1 }]) {
+        await record({ ...metadata, ...mismatch })
+        await expect(run()).rejects.toThrow()
+      }
+      await record(metadata)
+      const corrupt = Buffer.from(bytes)
+      corrupt[0] = corrupt[0]! ^ 1
+      await writeFile(resolve(directory, 'macos-release', name), corrupt)
+      await expect(run()).rejects.toThrow()
+      expect(await readFile(resolve(directory, 'release/SHA256SUMS'), 'utf8')).toBe(expected)
+    } finally {
+      await rm(scratch, { recursive: true, force: true })
+    }
   })
 
   it('produces both native installers without signing or publishing on main and relevant pull requests', () => {

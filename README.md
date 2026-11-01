@@ -42,6 +42,8 @@ The Desktop release workflow builds this ZIP on hosted `macos-latest`,
 checks the extracted executable's arm64 architecture, and retains the ZIP,
 source metadata and SHA256 in `desktop-unsigned-macos-arm64`. Packaging
 changes also run this job on pull requests without signing credentials.
+Version-tag releases publish the same verified Mac ZIP alongside the signed
+Windows installer, with separate source metadata and shared `SHA256SUMS`.
 The shell-only packaging limitation above still applies.
 
 Verify the ZIP's checksum, extract it with app permissions preserved, and

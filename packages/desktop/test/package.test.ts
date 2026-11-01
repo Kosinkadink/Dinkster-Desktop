@@ -71,6 +71,7 @@ describe('desktop package inputs', () => {
     expect(manifest.build.extraResources).toEqual([
       { from: '../app/dist', to: 'app' },
       { from: 'resources/branding', to: 'branding' },
+      { from: 'resources/tools', to: 'tools' },
     ])
     expect(manifest.build.publish).toEqual([{ provider: 'generic', url: 'https://updates.dinkster.invalid/desktop' }])
     expect(manifest.build.win.forceCodeSigning).toBe(false)

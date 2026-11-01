@@ -5,3 +5,6 @@ allowBuilds:
   electron: true
   esbuild: true
   electron-winstaller: false
+
+overrides:
+  extract-zip>yauzl: 3.4.0

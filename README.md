@@ -31,6 +31,21 @@ approval gate later, the owner adds themselves as a required reviewer under
 Settings -> Environments -> desktop-signing; no workflow change is needed.
 The desk pushes a version tag only after the user's approval on the issue.
 
+## Apple Silicon macOS
+
+Apple Silicon on macOS 14 or newer is the supported Mac target. Intel Macs
+are not supported. `pnpm --filter @dinkster/desktop package:mac` builds an
+arm64 ZIP containing an unsigned `.app`, without an Apple signing identity
+or notarization. The engine uses the `mac-arm64` base and MPS, not CUDA.
+
+Verify the ZIP's checksum, extract it with app permissions preserved, and
+copy the app to a directory you control. Gatekeeper may require right-click
+**Open** or removal of `com.apple.quarantine` from that verified app before
+launch. This unsigned-build procedure does not establish a signature or
+notarization. [Apple signing and notarization](https://github.com/Kosinkadink/comfy-vibe-station/issues/501)
+are separate from tools and engine setup, doctor, start, update and rollback.
+Local project commands use the native environment tools, not host Python or uv.
+
 ## Environment client development
 
 Normal startup opens the project manager. Remote projects use the frontend

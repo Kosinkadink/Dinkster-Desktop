@@ -61,6 +61,7 @@ describe('desktop workflows', () => {
   it('gates tag and manual signing on the same owner-approved environment without publishing', () => {
     expect(release.on).toEqual({
       push: { tags: ['v*.*.*'] },
+      pull_request: { paths: ['.github/workflows/release-desktop.yml', 'packages/desktop/package.json'] },
       workflow_dispatch: null,
     })
     expect(signed.on).toEqual({ workflow_dispatch: null })
@@ -192,15 +193,35 @@ describe('desktop workflows', () => {
     expect(requireSuccess?.run).toContain('test "$INSTALLED_RESULT" = success')
   })
 
-  it('uses one required variable for every hosted-eligible job', () => {
+  it('uses hosted macOS directly and the runner variable for existing platforms', () => {
     for (const workflow of [ci, full, release, signed, published]) {
       for (const [name, job] of Object.entries(workflow.jobs)) {
         if (job.uses) continue
+        if (workflow === release && name === 'macos') {
+          expect(job['runs-on']).toBe('macos-latest')
+          continue
+        }
         expect(job['runs-on'], name).toMatch(
           /^\$\{\{ fromJSON\(vars\.CI_RUNNERS\)\.(linux|windows) \}\}$/,
         )
       }
     }
+  })
+
+  it('packages unsigned arm64 macOS without the signing environment or publication', () => {
+    const job = release.jobs['macos']!
+    expect(job.environment).toBeUndefined()
+    expect(job.needs).toBeUndefined()
+    const source = JSON.stringify(job)
+    expect(source).not.toMatch(/secrets\.|desktop-signing|gh release|notarytool|package:win:signed/)
+    expect(job.steps?.flatMap(step => step.run ?? [])).toContain('pnpm --filter @dinkster/desktop package:mac')
+    const verification = job.steps?.find(step => step.name === 'Verify the extracted Apple Silicon app')
+    expect(verification?.run).toContain('test "$(lipo -archs "$executable")" = arm64')
+    expect(verification?.run).toContain('shasum -a 256')
+    const upload = job.steps?.find(step => step.uses === 'actions/upload-artifact@v4')
+    expect(upload?.with?.['path']).toContain('*-macos-arm64.zip')
+    expect(upload?.with?.['path']).toContain('installer-SHA256SUMS')
+    expect(upload?.with?.['if-no-files-found']).toBe('error')
   })
 
   it('publishes one aggregate status that fails for every incomplete lane', () => {

@@ -38,6 +38,12 @@ are not supported. `pnpm --filter @dinkster/desktop package:mac` builds an
 arm64 ZIP containing an unsigned `.app`, without an Apple signing identity
 or notarization. The engine uses the `mac-arm64` base and MPS, not CUDA.
 
+The Desktop release workflow builds this ZIP on hosted `macos-latest`,
+checks the extracted executable's arm64 architecture, and retains the ZIP,
+source metadata and SHA256 in `desktop-unsigned-macos-arm64`. Packaging
+changes also run this job on pull requests without signing credentials.
+The shell-only packaging limitation above still applies.
+
 Verify the ZIP's checksum, extract it with app permissions preserved, and
 copy the app to a directory you control. Gatekeeper may require right-click
 **Open** or removal of `com.apple.quarantine` from that verified app before

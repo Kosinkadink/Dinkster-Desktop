@@ -62,6 +62,7 @@ describe('desktop package inputs', () => {
         extraResources: { from: string; to: string }[]
         publish: { provider: string; owner: string; repo: string }[]
         win: { forceCodeSigning: boolean }
+        mac: { target: { target: string; arch: string[] }[]; forceCodeSigning: boolean; identity: string | null; notarize: boolean; minimumSystemVersion: string }
       }
     }
     expect(manifest.scripts['build']).toContain('clean-output.mjs dist')
@@ -77,6 +78,15 @@ describe('desktop package inputs', () => {
     expect(manifest.build.win.forceCodeSigning).toBe(false)
     expect(manifest.build.win).not.toHaveProperty('azureSignOptions')
     expect(manifest.scripts['package:win:signed']).toBe('pnpm package:win --config electron-builder.signed.mjs')
+    expect(manifest.scripts['package:mac']).toContain('pnpm build:all')
+    expect(manifest.scripts['package:mac']).toContain('pnpm prepare:tools && node scripts/clean-output.mjs release')
+    expect(manifest.scripts['package:mac']).toContain('clean-output.mjs release')
+    expect(manifest.scripts['package:mac']).toContain('electron-builder --mac --publish never')
+    expect(manifest.build.mac.target).toEqual([{ target: 'zip', arch: ['arm64'] }])
+    expect(manifest.build.mac.forceCodeSigning).toBe(false)
+    expect(manifest.build.mac.identity).toBeNull()
+    expect(manifest.build.mac.notarize).toBe(false)
+    expect(manifest.build.mac.minimumSystemVersion).toBe('14.0.0')
   })
 
   it('signs releases through the Artifact Signing profile and accepts both publishers on update', async () => {

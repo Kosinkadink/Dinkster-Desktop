@@ -1,4 +1,4 @@
-name: Desktop installers and Windows release
+name: Desktop installers and release
 
 on:
   push:
@@ -24,6 +24,77 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  macos:
+    name: Unsigned Apple Silicon installer
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            .frontend/pnpm-lock.yaml
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @dinkster/desktop package:mac
+      - name: Verify the extracted Apple Silicon app
+        working-directory: packages/desktop/release
+        run: |
+          test "$(uname -m)" = arm64
+          archives=(Dinkster-Desktop-*-macos-arm64.zip)
+          test "${#archives[@]}" = 1
+          ditto -x -k "${archives[0]}" "$RUNNER_TEMP/dinkster-macos-installed"
+          executable="$RUNNER_TEMP/dinkster-macos-installed/Dinkster Desktop.app/Contents/MacOS/Dinkster Desktop"
+          test -x "$executable"
+          test "$(lipo -archs "$executable")" = arm64
+          node ../scripts/verify-installed-tools.mjs "$RUNNER_TEMP/dinkster-macos-installed/Dinkster Desktop.app/Contents/Resources" > installed-tools.json
+          shasum -a 256 "${archives[0]}" > installer-SHA256SUMS
+      - name: Record source and artifact identity
+        working-directory: packages/desktop
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const archive = readdirSync('release').find(name => name.endsWith('-macos-arm64.zip'));
+          const sha256 = readFileSync('release/installer-SHA256SUMS', 'utf8').split(/\s+/)[0];
+          writeFileSync('release/desktop-macos-release.json', JSON.stringify({
+            repository: 'Kosinkadink/Dinkster-Desktop', commit: process.env.GITHUB_SHA,
+            frontend: process.env.DINKSTER_FRONTEND_REF, version: pkg.version,
+            platform: { os: 'macos', arch: 'arm64' }, signed: false, notarized: false,
+            archive, sha256, size: statSync(`release/${archive}`).size,
+          }, null, 2) + '\n');
+          JS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-unsigned-macos-arm64
+          path: |
+            packages/desktop/release/*-macos-arm64.zip
+            packages/desktop/release/desktop-macos-release.json
+            packages/desktop/release/installer-SHA256SUMS
+            packages/desktop/release/installed-tools.json
+          retention-days: 14
+          if-no-files-found: error
+
   installers:
     name: ${{ matrix.os }} installer resources
     strategy:
@@ -99,7 +170,7 @@ jobs:
     uses: ./.github/workflows/full-validation.yml
 
   release:
-    needs: validation
+    needs: [validation, macos]
     if: github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')
     environment: desktop-signing
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
@@ -207,6 +278,35 @@ jobs:
             packages/desktop/release/SHA256SUMS
           retention-days: 14
           if-no-files-found: error
+      - name: Acquire the verified unsigned Mac installer
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-unsigned-macos-arm64
+          path: packages/desktop/macos-release
+      - name: Verify the Mac installer belongs to this release
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('packages/desktop/package.json', 'utf8'));
+          const metadata = JSON.parse(readFileSync('packages/desktop/macos-release/desktop-macos-release.json', 'utf8'));
+          assert.equal(metadata.repository, 'Kosinkadink/Dinkster-Desktop');
+          assert.equal(metadata.commit, process.env.GITHUB_SHA);
+          assert.equal(metadata.version, pkg.version);
+          assert.equal(metadata.frontend, process.env.DINKSTER_FRONTEND_REF);
+          const name = `Dinkster-Desktop-${pkg.version}-macos-arm64.zip`;
+          assert.equal(metadata.archive, name);
+          assert.deepEqual(metadata.platform, { os: 'macos', arch: 'arm64' });
+          assert.equal(metadata.signed, false);
+          assert.equal(metadata.notarized, false);
+          const bytes = readFileSync(`packages/desktop/macos-release/${name}`);
+          const sha256 = createHash('sha256').update(bytes).digest('hex');
+          assert.equal(metadata.size, bytes.length);
+          assert.equal(metadata.sha256, sha256);
+          appendFileSync('packages/desktop/release/SHA256SUMS', `${sha256}  ${name}\n`);
+          JS
       - name: Create release
         if: github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')
         env:
@@ -215,5 +315,5 @@ jobs:
           $tags = gh api "repos/Kosinkadink/Dinkster-Desktop/git/matching-refs/tags/$env:DESKTOP_TAG" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Could not verify release tag availability' }
           if (@($tags | Where-Object { $_.ref -ceq "refs/tags/$env:DESKTOP_TAG" }).Count -ne 0) { throw 'Desktop version tag already exists; bump the package version' }
-          gh release create $env:DESKTOP_TAG packages/desktop/release/*-Setup.exe packages/desktop/release/desktop-release.json packages/desktop/release/SHA256SUMS --repo Kosinkadink/Dinkster-Desktop --target $env:GITHUB_SHA --title "Dinkster Desktop $env:DESKTOP_TAG" --notes 'Windows x64 installer signed through Artifact Signing. Source commits and SHA256 are in desktop-release.json. Requires internet for locked first-run dependencies. See README.md at the release commit.'
+          gh release create $env:DESKTOP_TAG packages/desktop/release/*-Setup.exe packages/desktop/release/desktop-release.json packages/desktop/release/SHA256SUMS packages/desktop/macos-release/*-macos-arm64.zip packages/desktop/macos-release/desktop-macos-release.json --repo Kosinkadink/Dinkster-Desktop --target $env:GITHUB_SHA --title "Dinkster Desktop $env:DESKTOP_TAG" --notes 'Signed Windows x64 installer and unsigned Apple Silicon macOS ZIP. Source commits and SHA256 are in desktop-release.json, desktop-macos-release.json and SHA256SUMS. Requires internet for locked first-run dependencies. See README.md for the unsigned Mac procedure.'
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; existing versions are never overwritten' }

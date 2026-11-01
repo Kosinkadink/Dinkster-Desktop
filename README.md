@@ -21,7 +21,7 @@ pnpm typecheck
 pnpm test
 ```
 
-`pnpm --filter @dinkster/desktop package:win` produces an unsigned Windows installer; `package:linux` produces a Linux AppImage. Both include the native standalone environment tools ZIP and its engine manifest, not backend source, engine wheels or base bundles. `packages/desktop/src/environment-tools-release.json` pins the tools release, sizes, SHA256 digests and pin date independently of the checkout-development backend. Build preparation downloads and verifies those public inputs before packaging. The Windows release uses `package:win:signed` through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release.
+`pnpm --filter @dinkster/desktop package:win` produces an unsigned Windows installer; `package:linux` produces a Linux AppImage; `package:mac` produces an unsigned Apple Silicon ZIP. All include the native standalone environment tools ZIP and its engine manifest, not backend source, engine wheels or base bundles. `packages/desktop/src/environment-tools-release.json` pins the tools release, sizes, SHA256 digests and pin date independently of the checkout-development backend. Build preparation downloads and verifies those public inputs before packaging. The Windows release uses `package:win:signed` through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release.
 
 Both signing workflows reference the `desktop-signing` GitHub environment. Its
 approval gate is off while the program is being established: no required
@@ -30,6 +30,31 @@ existing repository-level `AZURE_*` secrets without moving them. To enable the
 approval gate later, the owner adds themselves as a required reviewer under
 Settings -> Environments -> desktop-signing; no workflow change is needed.
 The desk pushes a version tag only after the user's approval on the issue.
+
+## Apple Silicon macOS
+
+Apple Silicon on macOS 14 or newer is the supported Mac target. Intel Macs
+are not supported. `pnpm --filter @dinkster/desktop package:mac` builds an
+arm64 ZIP containing an unsigned `.app`, without an Apple signing identity
+or notarization. The engine uses the `mac-arm64` base and MPS, not CUDA.
+
+The Desktop release workflow builds this ZIP on hosted `macos-latest`,
+checks the extracted executable's arm64 architecture, and retains the ZIP,
+source metadata and SHA256 in `desktop-unsigned-macos-arm64`. Packaging
+changes also run this job on pull requests without signing credentials.
+Version-tag releases publish the same verified Mac ZIP alongside the signed
+Windows installer, with separate source metadata and shared `SHA256SUMS`.
+The extracted Mac app's bundled tools archive and manifest are checked against
+the same immutable pin used by Windows and Linux packaging. Engine and base
+payloads are acquired during setup, not included in the app.
+
+Verify the ZIP's checksum, extract it with app permissions preserved, and
+copy the app to a directory you control. Gatekeeper may require right-click
+**Open** or removal of `com.apple.quarantine` from that verified app before
+launch. This unsigned-build procedure does not establish a signature or
+notarization. [Apple signing and notarization](https://github.com/Kosinkadink/comfy-vibe-station/issues/501)
+are separate from tools and engine setup, doctor, start, update and rollback.
+Local project commands use the native environment tools, not host Python or uv.
 
 ## Environment client development
 

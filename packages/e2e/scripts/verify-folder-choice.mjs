@@ -226,7 +226,8 @@ try {
   await register('seam-local', local, 'read')
   result.local = true
   stage = 'unc'
-  await register('seam-unc', network, 'read')
+  // Python Path serializes a UNC share root with its trailing separator.
+  await register('seam-unc', resolve(network), 'read')
   result.unc = true
   stage = 'mapped'
   const drive = mapped.slice(0, 2)

@@ -306,10 +306,14 @@ describe('Desktop dinkster-env command client', () => {
     await expect(client.run({ root, operation: 'doctor', repair: true }, true)).rejects.toThrow('generation drift needs offline repair')
   })
 
-  it('reads catalog discovery without confirmation and preserves producer manifests', async () => {
+  it.each([
+    { os: 'windows', arch: 'x86_64' },
+    { os: 'linux', arch: 'x86_64' },
+    { os: 'macos', arch: 'arm64' },
+  ])('reads $os catalog discovery without confirmation and preserves producer manifests', async (platform) => {
     const { root } = await commandFixture()
     const base = `sha256:${'a'.repeat(64)}`
-    const manifest = { format: 'dinkster.base/1', id: base, variant: 'custom-base', platform: { os: 'windows', arch: 'x86_64' },
+    const manifest = { format: 'dinkster.base/1', id: base, variant: 'custom-base', platform,
       nvidia: { minimumDriver: '580.10.1', minimumComputeCapability: '7.5', maximumExclusiveComputeCapability: null }, parts: [], python: '3.14.10' }
     const response = { format: 'dinkster.environment-result/1', operation: 'catalog', status: 'clean', root, current: null, plan: [], channel: 'main',
       channelManifest: { format: 'dinkster.channel/1', base: { 'custom-base': base } }, variants: [{ variant: 'custom-base', base, manifest, downloadBytes: 123456789 }] }
@@ -320,6 +324,8 @@ describe('Desktop dinkster-env command client', () => {
     expect(JSON.parse(await readFile(join(root, 'catalog-args.json'), 'utf8'))).toEqual(['--root', root, 'catalog', '--channel', 'main', '--mirror', join(root, 'mirror'), '--json'])
     for (const invalid of [
       { ...manifest, platform: undefined },
+      { ...manifest, platform: { os: 'macos', arch: 'x86_64' } },
+      { ...manifest, platform: { os: 'linux', arch: 'arm64' } },
       { ...manifest, nvidia: { ...manifest.nvidia, minimumDriver: 580 } },
       { ...manifest, nvidia: { ...manifest.nvidia, maximumExclusiveComputeCapability: '10.x' } },
       { ...manifest, id: `sha256:${'b'.repeat(64)}` },

@@ -128,7 +128,10 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
         || manifest['id'] !== candidate['base']
         || !Number.isSafeInteger(candidate['downloadBytes']) || Number(candidate['downloadBytes']) < 0) return false
       const platform = manifest['platform'] as Record<string, unknown> | undefined
-      if (!platform || !['windows', 'linux'].includes(String(platform['os'])) || platform['arch'] !== 'x86_64') return false
+      if (!platform || !(
+        (['windows', 'linux'].includes(String(platform['os'])) && platform['arch'] === 'x86_64')
+        || (platform['os'] === 'macos' && platform['arch'] === 'arm64')
+      )) return false
       const nvidia = manifest['nvidia'] as Record<string, unknown> | null | undefined
       return nvidia === null || (!!nvidia && ['minimumDriver', 'minimumComputeCapability', 'maximumExclusiveComputeCapability'].every((key) =>
         (key === 'maximumExclusiveComputeCapability' && nvidia[key] === null)

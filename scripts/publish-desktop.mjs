@@ -21,7 +21,7 @@ const view = () =>
       'view',
       tag,
       '--json',
-      'tagName,isDraft,targetCommitish,assets',
+      'tagName,isDraft,isPrerelease,targetCommitish,assets',
     ),
   )
 const draft = view()
@@ -149,22 +149,30 @@ if (mode === 'resolve') {
     if (process.env.GITHUB_STEP_SUMMARY)
       appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n`)
   }
-  if (tag !== stableTag) {
-    summary(
-      `All five assets verified on ${tag}; test release retained as a draft. Publication permission was not probed because tests must not become public.`,
+  const test = tag !== stableTag
+  try {
+    gh(
+      'release',
+      'edit',
+      tag,
+      '--draft=false',
+      ...(test ? ['--prerelease', '--latest=false'] : []),
     )
-  } else {
-    try {
-      gh('release', 'edit', tag, '--draft=false')
-    } catch (error) {
-      summary(
-        `Publication refused for ${tag}; all five uploaded assets were verified. Draft retained for desk publication after run inspection.`,
-      )
-      throw error
-    }
-    assert.equal(view().isDraft, false, 'Publication did not complete')
+  } catch (error) {
     summary(
-      `Published ${tag} with all five verified assets using GITHUB_TOKEN.`,
+      `Publication refused for ${tag}; all five uploaded assets were verified. Draft retained for desk publication after run inspection.`,
     )
+    throw error
   }
+  const published = view()
+  assert.equal(published.isDraft, false, 'Publication did not complete')
+  if (test)
+    assert.equal(
+      published.isPrerelease,
+      true,
+      'Test release must be a prerelease',
+    )
+  summary(
+    `Publication permitted for ${tag}; all five verified assets published using GITHUB_TOKEN.${test ? ' Prerelease does not move latest; desk deletes the test release and its tag after recording evidence.' : ''}`,
+  )
 }

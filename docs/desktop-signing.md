@@ -108,7 +108,8 @@ if the owner will approve runs they started. Agents never approve a deployment.
 Do not copy secret values into source, workflow inputs, issues or build logs.
 
 The desk creates a draft release at the qualified landed commit and starts
-the publication workflow. Suffix test releases remain drafts. Once required
+the publication workflow. Suffix tests publish as prereleases without moving
+latest; the desk deletes them after recording evidence. Once required
 reviewers are configured, both publication and manual signing
 runs wait for that approval. Before approving, inspect the exact commit and
 workflow source; stop if either differs from the reviewed head. Require
@@ -138,7 +139,7 @@ successful build retains the signed installer and checksums as the
 [packages/desktop/package.json](../packages/desktop/package.json); the tag is
 `desktop-v<version>` with an optional test suffix. The workflow never creates a
 release or directly mutates a ref. It uploads and verifies all assets before
-publishing; suffix releases stay drafts. The complete desk procedure and
+publishing; suffix releases are prereleases, never latest. The complete desk procedure and
 publication-refusal recovery are in [Publishing installers](desktop.md#publishing-installers).
 
 ### Sign locally

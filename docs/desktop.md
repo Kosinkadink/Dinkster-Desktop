@@ -23,7 +23,10 @@ unsigned Apple Silicon ZIP and `desktop-macos-release.json`. It downloads and
 hash-verifies the uploaded bytes before publishing the draft. No job creates a
 release or runs a Git ref operation. GitHub creates the version tag when the
 draft is published. A `desktop-vX.Y.Z-suffix` test draft receives the same
-assets and checks but remains a draft for the desk to inspect and delete.
+assets and checks, then is published as a prerelease with `--latest=false`.
+This measures workflow-token publication on the behind-main test target
+without moving latest. The desk records the run, asset set and permission
+result, then deletes the test release and its GitHub-created tag.
 
 A failed run is recorded on the issue, not rerun by the owner. Existing assets
 are never overwritten. If GitHub refuses workflow-token publication after

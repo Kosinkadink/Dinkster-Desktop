@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const root = resolve(import.meta.dirname, '../../..')
@@ -372,7 +373,7 @@ describe('desktop workflows', () => {
     const winName = 'Dinkster-Desktop-0.2.3-Setup.exe'
     const record = (value: object) => writeFile(state, JSON.stringify(value))
     const draft = { tagName: 'desktop-v0.2.3-probe', isDraft: true, targetCommitish: commit, assets: [] }
-    const run = (mode: string, tag = draft.tagName) => execute(process.execPath, ['--import', mock, resolve(root, 'scripts/publish-desktop.mjs'), mode], {
+    const run = (mode: string, tag = draft.tagName) => execute(process.execPath, ['--import', pathToFileURL(mock).href, resolve(root, 'scripts/publish-desktop.mjs'), mode], {
       cwd: scratch,
       env: { ...process.env, RELEASE_TAG: tag, DESKTOP_SOURCE_COMMIT: commit, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary, DRAFT_TEST_STATE: state },
     })
@@ -396,6 +397,8 @@ cp.execFileSync = (file, args) => {
   } else if (args[1] === 'edit') {
     if (state.refuse) throw Error('Publication refused');
     state.isDraft = false;
+    state.isPrerelease = args.includes('--prerelease');
+    state.latest = args.includes('--latest=false') ? false : true;
   } else throw Error('Unexpected operation');
   fs.writeFileSync(location, JSON.stringify(state));
   return '';
@@ -424,12 +427,14 @@ require('node:module').syncBuiltinESMExports();
       await record(draft)
       await run('publish')
       const test = JSON.parse(await readFile(state, 'utf8'))
-      expect(test.isDraft).toBe(true)
+      expect(test.isDraft).toBe(false)
+      expect(test.isPrerelease).toBe(true)
+      expect(test.latest).toBe(false)
       expect(test.assets.map((asset: { name: string }) => asset.name).sort()).toEqual([winName, macName, 'desktop-release.json', 'desktop-macos-release.json', 'SHA256SUMS'].sort())
       const stable = { ...draft, tagName: 'desktop-v0.2.3' }
       await record(stable)
       await run('publish', stable.tagName)
-      expect(JSON.parse(await readFile(state, 'utf8')).isDraft).toBe(false)
+      expect(JSON.parse(await readFile(state, 'utf8'))).toMatchObject({ isDraft: false, isPrerelease: false })
       for (const failure of [{ corrupt: true }, { refuse: true }, { targetCommitish: 'b'.repeat(40) }]) {
         await record({ ...stable, ...failure })
         await expect(run('publish', stable.tagName)).rejects.toThrow()

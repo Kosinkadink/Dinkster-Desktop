@@ -293,6 +293,11 @@ describe('desktop workflows', () => {
     expect(steps.find((step) => step.name === 'Keep the signed installer')?.with?.['name']).toBe('desktop-signed-installer')
     expect(steps.find((step) => step.name === 'Create release')?.if).toBe("github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')")
     expect(steps.filter((step) => step.run?.includes('gh release create'))).toHaveLength(1)
+    const publish = steps.find((step) => step.name === 'Create release')!.run!
+    expect(publish).toContain('gh api --method POST repos/Kosinkadink/Dinkster-Desktop/git/refs --raw-field "ref=refs/tags/$env:DESKTOP_TAG" --raw-field "sha=$env:GITHUB_SHA"')
+    expect(publish).toContain("if ($LASTEXITCODE -ne 0) { throw 'Could not create the immutable release tag; refusing to publish' }")
+    expect(publish).toContain('--verify-tag')
+    expect(publish).not.toContain('--target')
   })
 
   it('admits only matching source and verified Mac bytes into the shared release', async () => {

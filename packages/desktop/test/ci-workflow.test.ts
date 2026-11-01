@@ -221,10 +221,12 @@ describe('desktop workflows', () => {
     expect(job.steps?.flatMap(step => step.run ?? [])).toContain('pnpm --filter @dinkster/desktop package:mac')
     const verification = job.steps?.find(step => step.name === 'Verify the extracted Apple Silicon app')
     expect(verification?.run).toContain('test "$(lipo -archs "$executable")" = arm64')
+    expect(verification?.run).toContain('verify-installed-tools.mjs "$RUNNER_TEMP/dinkster-macos-installed/Dinkster Desktop.app/Contents/Resources" > installed-tools.json')
     expect(verification?.run).toContain('shasum -a 256')
     const upload = job.steps?.find(step => step.uses === 'actions/upload-artifact@v4')
     expect(upload?.with?.['path']).toContain('*-macos-arm64.zip')
     expect(upload?.with?.['path']).toContain('installer-SHA256SUMS')
+    expect(upload?.with?.['path']).toContain('installed-tools.json')
     expect(upload?.with?.['if-no-files-found']).toBe('error')
   })
 

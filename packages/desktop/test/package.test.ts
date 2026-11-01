@@ -79,6 +79,7 @@ describe('desktop package inputs', () => {
     expect(manifest.build.win).not.toHaveProperty('azureSignOptions')
     expect(manifest.scripts['package:win:signed']).toBe('pnpm package:win --config electron-builder.signed.mjs')
     expect(manifest.scripts['package:mac']).toContain('pnpm build:all')
+    expect(manifest.scripts['package:mac']).toContain('pnpm prepare:tools && node scripts/clean-output.mjs release')
     expect(manifest.scripts['package:mac']).toContain('clean-output.mjs release')
     expect(manifest.scripts['package:mac']).toContain('electron-builder --mac --publish never')
     expect(manifest.build.mac.target).toEqual([{ target: 'zip', arch: ['arm64'] }])

@@ -21,7 +21,7 @@ pnpm typecheck
 pnpm test
 ```
 
-`pnpm --filter @dinkster/desktop package:win` produces an unsigned Windows installer; `package:linux` produces a Linux AppImage. Both include the native standalone environment tools ZIP and its engine manifest, not backend source, engine wheels or base bundles. `packages/desktop/src/environment-tools-release.json` pins the tools release, sizes, SHA256 digests and pin date independently of the checkout-development backend. Build preparation downloads and verifies those public inputs before packaging. The Windows release uses `package:win:signed` through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release.
+`pnpm --filter @dinkster/desktop package:win` produces an unsigned Windows installer; `package:linux` produces a Linux AppImage; `package:mac` produces an unsigned Apple Silicon ZIP. All include the native standalone environment tools ZIP and its engine manifest, not backend source, engine wheels or base bundles. `packages/desktop/src/environment-tools-release.json` pins the tools release, sizes, SHA256 digests and pin date independently of the checkout-development backend. Build preparation downloads and verifies those public inputs before packaging. The Windows release uses `package:win:signed` through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release.
 
 Both signing workflows reference the `desktop-signing` GitHub environment. Its
 approval gate is off while the program is being established: no required
@@ -44,7 +44,9 @@ source metadata and SHA256 in `desktop-unsigned-macos-arm64`. Packaging
 changes also run this job on pull requests without signing credentials.
 Version-tag releases publish the same verified Mac ZIP alongside the signed
 Windows installer, with separate source metadata and shared `SHA256SUMS`.
-The shell-only packaging limitation above still applies.
+The extracted Mac app's bundled tools archive and manifest are checked against
+the same immutable pin used by Windows and Linux packaging. Engine and base
+payloads are acquired during setup, not included in the app.
 
 Verify the ZIP's checksum, extract it with app permissions preserved, and
 copy the app to a directory you control. Gatekeeper may require right-click

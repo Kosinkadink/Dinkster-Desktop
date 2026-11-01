@@ -67,6 +67,7 @@ jobs:
           executable="$RUNNER_TEMP/dinkster-macos-installed/Dinkster Desktop.app/Contents/MacOS/Dinkster Desktop"
           test -x "$executable"
           test "$(lipo -archs "$executable")" = arm64
+          node ../scripts/verify-installed-tools.mjs "$RUNNER_TEMP/dinkster-macos-installed/Dinkster Desktop.app/Contents/Resources" > installed-tools.json
           shasum -a 256 "${archives[0]}" > installer-SHA256SUMS
       - name: Record source and artifact identity
         working-directory: packages/desktop
@@ -90,6 +91,7 @@ jobs:
             packages/desktop/release/*-macos-arm64.zip
             packages/desktop/release/desktop-macos-release.json
             packages/desktop/release/installer-SHA256SUMS
+            packages/desktop/release/installed-tools.json
           retention-days: 14
           if-no-files-found: error
 

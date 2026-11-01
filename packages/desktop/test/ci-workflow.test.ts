@@ -45,6 +45,7 @@ const load = async (name: string): Promise<Workflow> =>
 const ci = await load('ci.yml')
 const full = await load('full-validation.yml')
 const release = await load('release-desktop.yml')
+const publish = await load('publish-desktop.yml')
 const signed = await load('signed-package.yml')
 const published = await load('verify-published-desktop.yml')
 
@@ -62,12 +63,14 @@ describe('desktop workflows', () => {
     )
   })
 
-  it('gates tag and manual signing on the same owner-approved environment without publishing', () => {
+  it('shares installer builds with draft publication and isolates manual signing', () => {
     expect(release.on).toMatchObject({
-      push: { branches: ['main'], tags: ['v*.*.*'] },
+      push: { branches: ['main'] },
       pull_request: { paths: expect.arrayContaining(['.github/workflows/release-desktop.yml', 'packages/desktop/src/environment-tools-release.json']) },
-      workflow_dispatch: null,
+      workflow_call: { inputs: { source: { required: true }, signed: { default: false } } },
     })
+    expect(release.on.push).not.toHaveProperty('tags')
+    expect(publish.jobs['build']!.uses).toBe('./.github/workflows/release-desktop.yml')
     expect(signed.on).toEqual({ workflow_dispatch: null })
     expect(signed.permissions).toEqual({ contents: 'read' })
     expect(Object.keys(signed.jobs)).toEqual(['package'])
@@ -198,7 +201,7 @@ describe('desktop workflows', () => {
   })
 
   it('uses hosted macOS directly and the runner variable for existing platforms', () => {
-    for (const workflow of [ci, full, release, signed, published]) {
+    for (const workflow of [ci, full, release, signed, published, publish]) {
       for (const [name, job] of Object.entries(workflow.jobs)) {
         if (job.uses) continue
         if (workflow === release && name === 'macos') {
@@ -248,7 +251,7 @@ describe('desktop workflows', () => {
   })
 
   it('uses clean checkouts without persisting credentials', () => {
-    for (const workflow of [ci, full, release, signed, published]) {
+    for (const workflow of [ci, full, release, signed, published, publish]) {
       for (const job of Object.values(workflow.jobs)) {
         for (const step of (job.steps ?? []).filter(
           (entry) => entry.uses === 'actions/checkout@v4',
@@ -282,17 +285,17 @@ describe('desktop workflows', () => {
     )
   })
 
-  it('validates signing only on tags and keeps test-tag output without publishing', () => {
-    expect(release.jobs['validation']).toEqual({
-      if: "github.repository == 'Kosinkadink/Dinkster-Desktop' && startsWith(github.ref, 'refs/tags/v')",
-      uses: './.github/workflows/full-validation.yml',
-    })
-    expect(release.jobs['release']!.needs).toEqual(['validation', 'macos'])
-    expect(release.jobs['release']!.if).toBe(release.jobs['validation']!.if)
+  it('builds signed assets only for validated drafts without creating releases or refs', () => {
+    expect(release.jobs['release']!.needs).toEqual(['macos'])
+    expect(release.jobs['release']!.if).toBe("github.repository == 'Kosinkadink/Dinkster-Desktop' && inputs.signed")
     const steps = release.jobs['release']!.steps!
     expect(steps.find((step) => step.name === 'Keep the signed installer')?.with?.['name']).toBe('desktop-signed-installer')
-    expect(steps.find((step) => step.name === 'Create release')?.if).toBe("github.ref == 'refs/heads/main' || !contains(github.ref_name, '-')")
-    expect(steps.filter((step) => step.run?.includes('gh release create'))).toHaveLength(1)
+    expect(JSON.stringify([release, publish])).not.toMatch(/gh release create|git push|git\/refs/)
+    expect(publish.on).toHaveProperty('workflow_dispatch')
+    expect(publish.permissions).toEqual({ contents: 'read' })
+    expect(publish.jobs['publish']).toHaveProperty('permissions', { contents: 'write' })
+    expect(publish.jobs['publish']!.needs).toEqual(['draft', 'build'])
+    expect(publish.jobs['draft']!.if).toContain("github.ref == 'refs/heads/main'")
   })
 
   it('admits only matching source and verified Mac bytes into the shared release', async () => {
@@ -302,9 +305,9 @@ describe('desktop workflows', () => {
     expect(download.with?.['name']).toBe(upload.with?.['name'])
     const verify = steps.find(step => step.name === 'Verify the Mac installer belongs to this release')!
     const script = verify.run!.match(/<<'JS'\n([\s\S]*)\nJS\n?$/)![1]!
-    const publish = steps.find(step => step.name === 'Create release')!
-    expect(publish.run).toContain('packages/desktop/macos-release/*-macos-arm64.zip')
-    expect(publish.run).toContain('packages/desktop/macos-release/desktop-macos-release.json')
+    const assets = steps.find(step => step.name === 'Keep the complete verified release asset set')!
+    expect(assets.with?.['path']).toContain('packages/desktop/macos-release/*-macos-arm64.zip')
+    expect(assets.with?.['path']).toContain('packages/desktop/macos-release/desktop-macos-release.json')
     const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-macos-release-'))
     const directory = resolve(scratch, 'packages/desktop')
     const name = 'Dinkster-Desktop-0.2.0-macos-arm64.zip'
@@ -312,7 +315,7 @@ describe('desktop workflows', () => {
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     const metadata = { repository: 'Kosinkadink/Dinkster-Desktop', commit: 'source-head', frontend: 'frontend-head', version: '0.2.0', archive: name, platform: { os: 'macos', arch: 'arm64' }, signed: false, notarized: false, size: bytes.length, sha256 }
     const execute = promisify(execFile)
-    const run = () => execute(process.execPath, ['--input-type=module', '-e', script], { cwd: scratch, env: { ...process.env, GITHUB_SHA: metadata.commit, DINKSTER_FRONTEND_REF: metadata.frontend } })
+    const run = () => execute(process.execPath, ['--input-type=module', '-e', script], { cwd: scratch, env: { ...process.env, DESKTOP_SOURCE_COMMIT: metadata.commit, DINKSTER_FRONTEND_REF: metadata.frontend } })
     const record = (value: object) => writeFile(resolve(directory, 'macos-release/desktop-macos-release.json'), JSON.stringify(value))
     try {
       await mkdir(resolve(directory, 'macos-release'), { recursive: true })
@@ -355,6 +358,86 @@ describe('desktop workflows', () => {
     const smoke = full.jobs['desktop-smoke']!.steps!.map((step) => step.run ?? '')
     expect(smoke.indexOf('pnpm --filter @dinkster/desktop prepare:tools')).toBeLessThan(smoke.indexOf('pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never'))
     expect(smoke).toContain('node packages/desktop/scripts/verify-installed-tools.mjs packages/desktop/release/linux-unpacked/resources')
+  })
+
+  it('refuses invalid drafts and verifies uploaded bytes before making a release public', async () => {
+    const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-draft-'))
+    const execute = promisify(execFile)
+    const commit = 'a'.repeat(40)
+    const state = resolve(scratch, 'state.json')
+    const mock = resolve(scratch, 'gh.cjs')
+    const output = resolve(scratch, 'output')
+    const summary = resolve(scratch, 'summary')
+    const macName = 'Dinkster-Desktop-0.2.3-macos-arm64.zip'
+    const winName = 'Dinkster-Desktop-0.2.3-Setup.exe'
+    const record = (value: object) => writeFile(state, JSON.stringify(value))
+    const draft = { tagName: 'desktop-v0.2.3-probe', isDraft: true, targetCommitish: commit, assets: [] }
+    const run = (mode: string, tag = draft.tagName) => execute(process.execPath, ['--import', mock, resolve(root, 'scripts/publish-desktop.mjs'), mode], {
+      cwd: scratch,
+      env: { ...process.env, RELEASE_TAG: tag, DESKTOP_SOURCE_COMMIT: commit, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary, DRAFT_TEST_STATE: state },
+    })
+    try {
+      // Replace only the external CLI boundary; the actual publication program runs unchanged.
+      await writeFile(mock, `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+cp.execFileSync = (file, args) => {
+  if (file !== 'gh') throw Error('Unexpected executable');
+  const location = process.env.DRAFT_TEST_STATE;
+  const state = JSON.parse(fs.readFileSync(location));
+  if (args[0] === 'api') return Buffer.from(JSON.stringify({version:'0.2.3'})).toString('base64');
+  if (args[1] === 'view') return JSON.stringify(state);
+  if (args[1] === 'upload') {
+    state.assets = args.slice(3, args.indexOf('--repo')).map(file => ({name:path.basename(file), bytes:fs.readFileSync(file).toString('base64')}));
+  } else if (args[1] === 'download') {
+    const asset = state.assets.find(asset => asset.name === args[args.indexOf('--pattern') + 1]);
+    fs.writeFileSync(args[args.indexOf('--output') + 1], state.corrupt ? 'corrupt' : Buffer.from(asset.bytes, 'base64'));
+  } else if (args[1] === 'edit') {
+    if (state.refuse) throw Error('Publication refused');
+    state.isDraft = false;
+  } else throw Error('Unexpected operation');
+  fs.writeFileSync(location, JSON.stringify(state));
+  return '';
+};
+require('node:module').syncBuiltinESMExports();
+`)
+      await record(draft)
+      await run('resolve')
+      expect(await readFile(output, 'utf8')).toBe(`source=${commit}\n`)
+      for (const invalid of [{ isDraft: false }, { tagName: 'desktop-v0.2.4-probe' }, { tagName: 'v0.2.3' }, { targetCommitish: 'main' }]) {
+        await record({ ...draft, ...invalid })
+        await expect(run('resolve', invalid.tagName ?? draft.tagName)).rejects.toThrow()
+      }
+      await mkdir(resolve(scratch, 'release-assets/release'), { recursive: true })
+      await mkdir(resolve(scratch, 'release-assets/macos-release'))
+      const metadata = async (folder: string, name: string, bytes: string, extra = {}) => {
+        const sha256 = createHash('sha256').update(bytes).digest('hex')
+        await writeFile(resolve(scratch, `release-assets/${folder}/${name}`), bytes)
+        return { repository: 'Kosinkadink/Dinkster-Desktop', commit, version: '0.2.3', archive: name, size: Buffer.byteLength(bytes), sha256, ...extra }
+      }
+      const windows = await metadata('release', winName, 'signed installer')
+      const mac = await metadata('macos-release', macName, 'unsigned arm64 ZIP', { platform: { os: 'macos', arch: 'arm64' }, signed: false, notarized: false })
+      await writeFile(resolve(scratch, 'release-assets/release/desktop-release.json'), JSON.stringify(windows))
+      await writeFile(resolve(scratch, 'release-assets/macos-release/desktop-macos-release.json'), JSON.stringify(mac))
+      await writeFile(resolve(scratch, 'release-assets/release/SHA256SUMS'), `${windows.sha256}  ${winName}\r\n${mac.sha256}  ${macName}\n`)
+      await record(draft)
+      await run('publish')
+      const test = JSON.parse(await readFile(state, 'utf8'))
+      expect(test.isDraft).toBe(true)
+      expect(test.assets.map((asset: { name: string }) => asset.name).sort()).toEqual([winName, macName, 'desktop-release.json', 'desktop-macos-release.json', 'SHA256SUMS'].sort())
+      const stable = { ...draft, tagName: 'desktop-v0.2.3' }
+      await record(stable)
+      await run('publish', stable.tagName)
+      expect(JSON.parse(await readFile(state, 'utf8')).isDraft).toBe(false)
+      for (const failure of [{ corrupt: true }, { refuse: true }, { targetCommitish: 'b'.repeat(40) }]) {
+        await record({ ...stable, ...failure })
+        await expect(run('publish', stable.tagName)).rejects.toThrow()
+        expect(JSON.parse(await readFile(state, 'utf8')).isDraft).toBe(true)
+      }
+    } finally {
+      await rm(scratch, { recursive: true, force: true })
+    }
   })
 
   it('keeps published verification disabled and read-only', () => {

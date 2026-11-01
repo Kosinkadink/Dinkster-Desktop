@@ -107,9 +107,9 @@ No workflow change or secret move is required. Leave "Prevent self-review" off
 if the owner will approve runs they started. Agents never approve a deployment.
 Do not copy secret values into source, workflow inputs, issues or build logs.
 
-The desk pushes a version tag only after the user's approval on the issue.
-A prerelease tag keeps the signed installer as an artifact and does not publish
-a release. Once required reviewers are configured, both tag and manual signing
+The desk creates a draft release at the qualified landed commit and starts
+the publication workflow. Suffix test releases remain drafts. Once required
+reviewers are configured, both publication and manual signing
 runs wait for that approval. Before approving, inspect the exact commit and
 workflow source; stop if either differs from the reviewed head. Require
 successful publisher-signature and installed-app checks and record the run link
@@ -129,21 +129,17 @@ creates a tag or release and does not run the main validation gate, so it is
 the fastest way to prove the signing setup or to hand testers a signed build.
 Actions -> Windows signed package -> Run workflow -> pick a reviewed branch.
 
-The **Windows Desktop release** workflow runs on `vX.Y.Z` and
-`vX.Y.Z-test-suffix` tag pushes, or manually on main. It runs full validation
-through `workflow_call` at that exact commit, then runs signing and installed-app
-checks, waiting for owner approval only when required reviewers are enabled.
-Every successful run keeps the
-signed installer and checksums as the `desktop-signed-installer` artifact.
-A tag with a prerelease suffix never creates a GitHub release: use that path
-to prove signing and full validation without publication, plus the approval
-pause when enabled. Stable
-tags and manual main runs additionally create the GitHub release. The version is not an
-input: it is `version` in
-[packages/desktop/package.json](../packages/desktop/package.json), and the
-tag is `desktop-v<version>`. The workflow refuses to publish when that tag
-already exists, so every release starts with a commit on main that bumps the
-version.
+The **Publish Desktop draft** workflow runs only when the desk dispatches it
+at main with an existing draft tag. It invokes **Desktop installer builds**
+at the draft's exact target, retaining signing, signature and installed-app
+checks, waiting for approval only when required reviewers are enabled. Every
+successful build retains the signed installer and checksums as the
+`desktop-signed-installer` artifact. The version comes from the target's
+[packages/desktop/package.json](../packages/desktop/package.json); the tag is
+`desktop-v<version>` with an optional test suffix. The workflow never creates a
+release or directly mutates a ref. It uploads and verifies all assets before
+publishing; suffix releases stay drafts. The complete desk procedure and
+publication-refusal recovery are in [Publishing installers](desktop.md#publishing-installers).
 
 ### Sign locally
 
@@ -279,11 +275,11 @@ password-protected `.p12` over a secure channel, never through Git.
 
 ### Build integration
 
-There is no macOS packaging path yet: the engine packaging script requires the
-pinned Windows runtime profile and Windows Aimdo wheel, and no macOS target,
-entitlements, or notarization wiring exist. Account activation does not
-produce a macOS build. When a macOS engine payload exists, the desktop
-package's `build.mac` needs at least:
+The existing Apple Silicon packaging path produces an unsigned ZIP with native
+environment tools; it does not sign or notarize the app. Account activation
+alone does not change that. Developer ID distribution additionally needs
+entitlements, signing and notarization wiring. A signed configuration would
+extend the desktop package's `build.mac` with at least:
 
 ```json
 {

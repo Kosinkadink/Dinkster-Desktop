@@ -4,9 +4,24 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from '../src/local-files.js'
+import { assetLocations, chooseDirectory, fileCapabilities, grantedFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from '../src/local-files.js'
 
 describe('local file authority', () => {
+  it('scripts development folder choices without reading the hook in packaged apps', async () => {
+    const selected = join(tmpdir(), 'chosen folder with spaces')
+    const native = async () => ({ canceled: false, filePaths: [join(tmpdir(), 'native folder')] })
+    const unexpectedDialog = async (): Promise<never> => { throw new Error('Unexpected native dialog') }
+    const environment = { DINKSTER_TEST_FOLDER_CHOICE: JSON.stringify(selected) }
+    expect(await chooseDirectory(false, unexpectedDialog, environment)).toEqual({ canceled: false, filePaths: [selected] })
+    environment.DINKSTER_TEST_FOLDER_CHOICE = 'null'
+    expect(await chooseDirectory(false, unexpectedDialog, environment)).toEqual({ canceled: true, filePaths: [] })
+    expect(await chooseDirectory(false, native, {})).toEqual(await native())
+    environment.DINKSTER_TEST_FOLDER_CHOICE = '42'
+    await expect(chooseDirectory(false, unexpectedDialog, environment)).rejects.toThrow('Invalid test folder choice')
+    Object.defineProperty(environment, 'DINKSTER_TEST_FOLDER_CHOICE', { get: () => { throw new Error('Packaged hook read') } })
+    expect(await chooseDirectory(true, native, environment)).toEqual(await native())
+  })
+
   it('binds capabilities and requests to the running managed connection only', () => {
     const managed = 'http://127.0.0.1:5011'
     expect(fileCapabilities(`${managed}/`, managed, true)).toEqual({ nativeFolderChoice: true, reveal: false })

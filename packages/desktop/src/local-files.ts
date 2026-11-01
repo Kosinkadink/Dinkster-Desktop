@@ -4,6 +4,22 @@ import { pathToFileURL } from 'node:url'
 import type { DesktopAssetIdentity, DesktopDroppedFileResult, DesktopFileCapabilities } from './types.js'
 import { validProjectId } from './window-layout.js'
 
+export async function chooseDirectory(
+  packaged: boolean,
+  openDialog: () => Promise<{ canceled: boolean; filePaths: string[] }>,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<{ canceled: boolean; filePaths: string[] }> {
+  // Script only the Electron boundary; packaged apps never read the test hook.
+  const scripted = packaged ? undefined : environment.DINKSTER_TEST_FOLDER_CHOICE
+  if (scripted !== undefined) {
+    const path: unknown = JSON.parse(scripted)
+    if (path === null) return { canceled: true, filePaths: [] }
+    if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) throw new Error('Invalid test folder choice')
+    return { canceled: false, filePaths: [path] }
+  }
+  return openDialog()
+}
+
 export function fileCapabilities(backendUrl: unknown, managedUrl: string | undefined, running: boolean, exactLookup = false): DesktopFileCapabilities {
   let local = false
   try {

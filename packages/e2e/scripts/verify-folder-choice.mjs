@@ -201,7 +201,8 @@ async function register(id, path, mode) {
     ),
   )
   assert.equal(persisted.path, path)
-  assert.equal(persisted.mode, mode)
+  // The backend omits the default read mode from mounts.toml.
+  assert.equal(persisted.mode ?? 'read', mode)
   await writeFile(
     join(root, `${id}.json`),
     JSON.stringify({ ipcPath, registered, persisted }),

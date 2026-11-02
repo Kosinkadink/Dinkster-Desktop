@@ -107,9 +107,9 @@ No workflow change or secret move is required. Leave "Prevent self-review" off
 if the owner will approve runs they started. Agents never approve a deployment.
 Do not copy secret values into source, workflow inputs, issues or build logs.
 
-The desk creates a draft release at the qualified landed commit and starts
-the publication workflow. Suffix tests publish as prereleases without moving
-latest; the desk deletes them after recording evidence. Once required
+The desk applies `Release` to a version PR before its qualified squash merge,
+which tags and dispatches publication. Release candidates publish without moving
+latest; the desk deletes test releases after recording evidence. Once required
 reviewers are configured, both publication and manual signing
 runs wait for that approval. Before approving, inspect the exact commit and
 workflow source; stop if either differs from the reviewed head. Require
@@ -130,17 +130,17 @@ creates a tag or release and does not run the main validation gate, so it is
 the fastest way to prove the signing setup or to hand testers a signed build.
 Actions -> Windows signed package -> Run workflow -> pick a reviewed branch.
 
-The **Publish Desktop draft** workflow runs only when the desk dispatches it
-at main with an existing draft tag. It invokes **Desktop installer builds**
-at the draft's exact target, retaining signing, signature and installed-app
+The **Publish Desktop release** workflow runs at an existing version tag,
+dispatched by the merged labelled version PR or by the desk for recovery.
+It invokes **Desktop installer builds** at that tag's exact commit, retaining signing, signature and installed-app
 checks, waiting for approval only when required reviewers are enabled. Every
 successful build retains the signed installer and checksums as the
 `desktop-signed-installer` artifact. The version comes from the target's
 [packages/desktop/package.json](../packages/desktop/package.json); the tag is
-`desktop-v<version>` with an optional test suffix. The workflow never creates a
-release or directly mutates a ref. It uploads and verifies all assets before
-publishing; suffix releases are prereleases, never latest. The complete desk procedure and
-publication-refusal recovery are in [Publishing installers](desktop.md#publishing-installers).
+`desktop-v<version>`, with `-rc.N` for a release candidate. The publisher uses
+`gh release create --verify-tag` with the five verified assets and no `--target`;
+it never mutates a ref. Release candidates are prereleases, never latest.
+The complete procedure is in [Publishing installers](desktop.md#publishing-installers).
 
 ### Sign locally
 

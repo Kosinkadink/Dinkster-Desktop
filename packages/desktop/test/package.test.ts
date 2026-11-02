@@ -11,13 +11,13 @@ import { verifyUpdateFeed } from '../scripts/verify-update-feed.mjs'
 const root = resolve(import.meta.dirname, '../../..')
 const execute = promisify(execFile)
 
-async function writeFeedFixture(release: string, overrides: { url?: string; size?: number; sha512?: string } = {}): Promise<void> {
+async function writeFeedFixture(release: string, overrides: { url?: string; size?: number; sha512?: string } = {}, manifestName = 'latest.yml'): Promise<void> {
   const artifactName = 'Dinkster-Desktop-test-Setup.exe'
   const artifact = Buffer.from('test installer')
   const sha512 = createHash('sha512').update(artifact).digest('base64')
   await mkdir(release, { recursive: true })
   await writeFile(resolve(release, artifactName), artifact)
-  await writeFile(resolve(release, 'latest.yml'), [
+  await writeFile(resolve(release, manifestName), [
     'version: 0.2.0',
     'files:',
     `  - url: ${overrides.url ?? artifactName}`,
@@ -192,22 +192,22 @@ describe('desktop package inputs', () => {
     expect(main.match(/return shellUpdater.manualStatus\(\)/g)).toHaveLength(2)
   })
 
-  it('validates the updater files entry against the release artifact', async () => {
+  it.each([['0.2.4', 'latest.yml'], ['0.2.4-rc.1', 'rc.yml']])('validates the %s updater files entry against the release artifact', async (version, manifestName) => {
     const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-update-feed-'))
     try {
       const valid = resolve(scratch, 'valid')
-      await writeFeedFixture(valid)
+      await writeFeedFixture(valid, {}, manifestName)
       const wrongUrl = resolve(scratch, 'wrong-url')
-      await writeFeedFixture(wrongUrl, { url: 'missing.exe' })
+      await writeFeedFixture(wrongUrl, { url: 'missing.exe' }, manifestName)
       const wrongSize = resolve(scratch, 'wrong-size')
-      await writeFeedFixture(wrongSize, { size: 1 })
+      await writeFeedFixture(wrongSize, { size: 1 }, manifestName)
       const wrongHash = resolve(scratch, 'wrong-hash')
-      await writeFeedFixture(wrongHash, { sha512: 'invalid' })
+      await writeFeedFixture(wrongHash, { sha512: 'invalid' }, manifestName)
       await Promise.all([
-        expect(verifyUpdateFeed(valid)).resolves.toBeUndefined(),
-        expect(verifyUpdateFeed(wrongUrl)).rejects.toThrow(),
-        expect(verifyUpdateFeed(wrongSize)).rejects.toThrow(),
-        expect(verifyUpdateFeed(wrongHash)).rejects.toThrow(),
+        expect(verifyUpdateFeed(valid, version)).resolves.toBeUndefined(),
+        expect(verifyUpdateFeed(wrongUrl, version)).rejects.toThrow(),
+        expect(verifyUpdateFeed(wrongSize, version)).rejects.toThrow(),
+        expect(verifyUpdateFeed(wrongHash, version)).rejects.toThrow(),
       ])
     } finally {
       await rm(scratch, { recursive: true, force: true })

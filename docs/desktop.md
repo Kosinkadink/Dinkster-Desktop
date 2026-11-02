@@ -24,10 +24,12 @@ installer hashes, unsigned Apple Silicon ZIP and `desktop-macos-release.json`.
 The CLI uploads those files before making the release public.
 
 An `X.Y.Z-rc.N` version PR follows the same chain but publishes a prerelease
-with `--latest=false`; stable versions become latest. The desk records the
-test run and assets before deleting the test prerelease and tag. Failed runs
-are recorded on the issue, never rerun by the owner; existing releases and
-assets are not overwritten. There is no manual asset or release step.
+with `--latest=false`; stable versions become latest. The desk retains RC
+releases and tags, including failed RC tags, until the next stable release is
+published and the test runs and assets are recorded. It then deletes the test
+prereleases and their tags. Failed runs are recorded on the issue, never rerun
+by the owner; existing releases and assets are not overwritten. There is no
+manual asset or release step.
 
 ## Native identity
 

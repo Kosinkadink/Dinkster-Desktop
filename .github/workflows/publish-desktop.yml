@@ -1,53 +1,48 @@
-name: Publish Desktop draft
+name: Publish Desktop release
 
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: Existing desk-created draft tag (desktop-vX.Y.Z or desktop-vX.Y.Z-suffix)
-        type: string
-        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-publish-${{ inputs.release_tag }}
+  group: desktop-publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  draft:
-    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.ref == 'refs/heads/main'
+  validate:
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop'
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 5
     outputs:
-      source: ${{ steps.draft.outputs.source }}
+      source: ${{ steps.validate.outputs.source }}
     steps:
       - uses: actions/checkout@v4
         with:
           clean: true
           persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26.12.0
-      - name: Resolve and validate the existing draft
-        id: draft
+      - name: Validate the existing version tag
+        id: validate
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/publish-desktop.mjs resolve
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/publish-desktop.mjs validate
 
   build:
-    needs: draft
+    needs: validate
     uses: ./.github/workflows/release-desktop.yml
     with:
-      source: ${{ needs.draft.outputs.source }}
+      source: ${{ needs.validate.outputs.source }}
       signed: true
     secrets: inherit
 
   publish:
-    needs: [draft, build]
+    needs: [validate, build]
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 15
     permissions:
@@ -57,7 +52,7 @@ jobs:
         with:
           clean: true
           persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ needs.validate.outputs.source }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26.12.0
@@ -65,9 +60,9 @@ jobs:
         with:
           name: desktop-release-assets
           path: release-assets
-      - name: Upload verified assets and publish the existing draft
+      - name: Publish verified assets on the existing tag
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          DESKTOP_SOURCE_COMMIT: ${{ needs.draft.outputs.source }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          DESKTOP_SOURCE_COMMIT: ${{ needs.validate.outputs.source }}
         run: node scripts/publish-desktop.mjs publish

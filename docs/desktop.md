@@ -2,37 +2,32 @@
 
 ## Publishing installers
 
-The owner records the landed Desktop commit, package version and
-`desktop-vX.Y.Z` tag on the tracking issue. The desk creates an empty draft
-release with that tag and the exact 40-character commit as `target_commitish`,
-using its workflow-scoped token. Draft creation does not create a Git tag.
-The desk then starts **Publish Desktop draft** (`publish-desktop.yml`) at
-`main`, supplying `release_tag`. Owners do not dispatch publication runs.
+The owner opens a version PR changing `packages/desktop/package.json`.
+The desk applies the `Release` label when publication is wanted. After fresh
+LOW verification and green checks, the owner lands the PR by squash. A merged
+PR without the label or without a version change releases nothing.
 
-The workflow refuses non-drafts, unrelated prefixes, version mismatches,
-non-commit targets and existing assets before building. It checks out the
-draft's target, not the dispatch commit. The reusable **Desktop installer
-builds** workflow is also the main/packaging-validation build definition.
-Publication retains Windows Artifact Signing, signature, isolated install and
-installed-app checks, plus the unsigned Mac archive's source and byte binding.
-Only the final upload/publication job has `contents: write`.
+**Release from version PR** tags the squash commit as `desktop-vX.Y.Z` and
+dispatches **Publish Desktop release** at that existing tag. It refuses to
+move an existing tag to another commit. The publisher refuses unrelated
+prefixes, version/source mismatches and existing releases before building.
+It creates no refs and uses `gh release create --verify-tag`, never `--target`.
+The desk can dispatch that publisher at the tag for recovery; owners do not
+dispatch or rerun release workflows.
 
-The workflow uploads exactly five assets to the existing draft: signed Windows
-installer, `desktop-release.json`, `SHA256SUMS` with both installer hashes,
-unsigned Apple Silicon ZIP and `desktop-macos-release.json`. It downloads and
-hash-verifies the uploaded bytes before publishing the draft. No job creates a
-release or runs a Git ref operation. GitHub creates the version tag when the
-draft is published. A `desktop-vX.Y.Z-suffix` test draft receives the same
-assets and checks, then is published as a prerelease with `--latest=false`.
-This measures workflow-token publication on the behind-main test target
-without moving latest. The desk records the run, asset set and permission
-result, then deletes the test release and its GitHub-created tag.
+The reusable **Desktop installer builds** definition is shared with main
+validation. It retains Windows Artifact Signing, signature, isolated install
+and installed-app checks, plus the unsigned Mac archive's source/byte binding.
+Only final publication has `contents: write`. The release carries exactly five
+assets: signed Windows installer, `desktop-release.json`, `SHA256SUMS` with both
+installer hashes, unsigned Apple Silicon ZIP and `desktop-macos-release.json`.
+The CLI uploads those files before making the release public.
 
-A failed run is recorded on the issue, not rerun by the owner. Existing assets
-are never overwritten. If GitHub refuses workflow-token publication after
-verified upload, the draft and assets remain intact for the desk to publish
-with its workflow-scoped token after inspecting the run. There is no manual
-asset-upload procedure and no empty public release.
+An `X.Y.Z-rc.N` version PR follows the same chain but publishes a prerelease
+with `--latest=false`; stable versions become latest. The desk records the
+test run and assets before deleting the test prerelease and tag. Failed runs
+are recorded on the issue, never rerun by the owner; existing releases and
+assets are not overwritten. There is no manual asset or release step.
 
 ## Native identity
 

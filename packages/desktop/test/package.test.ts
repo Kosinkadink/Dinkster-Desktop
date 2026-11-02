@@ -151,7 +151,7 @@ describe('desktop package inputs', () => {
     }
     const publication = publisher.jobs['publish']!.steps!
     expect(publication.filter(step => step.env?.['GH_TOKEN'] !== undefined)).toEqual([
-      publication.find(step => step.name === 'Upload verified assets and publish the existing draft'),
+      publication.find(step => step.name === 'Publish verified assets on the existing tag'),
     ])
     for (const file of ['release-desktop.yml', 'signed-package.yml', 'full-validation.yml']) {
       const packaging = await readFile(resolve(root, '.github/workflows', file), 'utf8')

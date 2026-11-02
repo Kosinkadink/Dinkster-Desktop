@@ -1,16 +1,15 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { appendFileSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 const repository = 'Kosinkadink/Dinkster-Desktop'
 const tag = process.env.RELEASE_TAG
 assert.match(
   tag ?? '',
-  /^desktop-v\d+\.\d+\.\d+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$/,
-  'Expected desktop-vX.Y.Z or desktop-vX.Y.Z-suffix',
+  /^desktop-v\d+\.\d+\.\d+(?:-rc\.\d+)?$/,
+  'Expected desktop-vX.Y.Z or desktop-vX.Y.Z-rc.N',
 )
 const gh = (...args) =>
   execFileSync('gh', [...args, '--repo', repository], { encoding: 'utf8' })
@@ -24,49 +23,55 @@ const view = () =>
       'tagName,isDraft,isPrerelease,targetCommitish,assets',
     ),
   )
-const draft = view()
-assert.equal(draft.isDraft, true, 'Release must be a draft')
-assert.equal(draft.tagName, tag, 'Release tag changed')
-assert.match(
-  draft.targetCommitish,
-  /^[0-9a-f]{40}$/,
-  'Draft target must be an exact commit',
+assert.equal(
+  process.env.GITHUB_REF,
+  `refs/tags/${tag}`,
+  'Publication requires a tag ref',
 )
-const pkg = JSON.parse(
-  Buffer.from(
-    execFileSync(
-      'gh',
-      [
-        'api',
-        `repos/${repository}/contents/packages/desktop/package.json?ref=${draft.targetCommitish}`,
-        '--jq',
-        '.content',
-      ],
-      { encoding: 'utf8' },
-    ),
-    'base64',
-  ).toString('utf8'),
+const source = execFileSync('git', ['rev-parse', 'HEAD'], {
+  encoding: 'utf8',
+}).trim()
+const pkg = JSON.parse(readFileSync('packages/desktop/package.json', 'utf8'))
+assert.equal(
+  tag,
+  `desktop-v${pkg.version}`,
+  'Tag does not match package version',
 )
-const stableTag = `desktop-v${pkg.version}`
-assert.ok(
-  tag === stableTag || tag.startsWith(`${stableTag}-`),
-  'Draft tag does not match the target package version',
+const tagged = JSON.parse(
+  execFileSync('gh', ['api', `repos/${repository}/commits/refs/tags/${tag}`], {
+    encoding: 'utf8',
+  }),
+)
+assert.equal(tagged.sha, source, 'Tag no longer matches the checked-out commit')
+const existing = JSON.parse(
+  execFileSync(
+    'gh',
+    [
+      'api',
+      'graphql',
+      '-f',
+      'query=query($tag:String!){repository(owner:"Kosinkadink",name:"Dinkster-Desktop"){release(tagName:$tag){id}}}',
+      '-f',
+      `tag=${tag}`,
+    ],
+    { encoding: 'utf8' },
+  ),
+)
+assert.equal(existing.errors, undefined, 'Release lookup failed')
+assert.equal(
+  existing.data.repository.release,
+  null,
+  'Release already exists; refusing to overwrite',
 )
 const mode = process.argv[2]
-if (mode === 'resolve') {
-  assert.equal(draft.assets.length, 0, 'Draft must have no existing assets')
-  appendFileSync(process.env.GITHUB_OUTPUT, `source=${draft.targetCommitish}\n`)
+if (mode === 'validate') {
+  appendFileSync(process.env.GITHUB_OUTPUT, `source=${source}\n`)
 } else {
-  assert.equal(mode, 'publish', 'Expected resolve or publish')
+  assert.equal(mode, 'publish', 'Expected validate or publish')
   assert.equal(
-    draft.targetCommitish,
+    source,
     process.env.DESKTOP_SOURCE_COMMIT,
-    'Draft target changed during build',
-  )
-  assert.equal(
-    draft.assets.length,
-    0,
-    'Draft already has assets; refusing to overwrite',
+    'Publication source changed during build',
   )
   const root = 'release-assets'
   const windows = JSON.parse(
@@ -90,7 +95,7 @@ if (mode === 'resolve') {
     ['macos-release', mac],
   ]) {
     assert.equal(metadata.repository, repository)
-    assert.equal(metadata.commit, draft.targetCommitish)
+    assert.equal(metadata.commit, source)
     assert.equal(metadata.version, pkg.version)
     const path = join(root, folder, metadata.archive)
     assert.equal(readFileSync(path).length, metadata.size)
@@ -114,58 +119,29 @@ if (mode === 'resolve') {
     join(root, 'macos-release', mac.archive),
     join(root, 'macos-release/desktop-macos-release.json'),
   ]
-  gh('release', 'upload', tag, ...files)
-  const uploaded = view()
-  assert.equal(uploaded.isDraft, true)
-  assert.equal(uploaded.targetCommitish, draft.targetCommitish)
-  assert.deepEqual(
-    uploaded.assets.map((asset) => asset.name).sort(),
-    files.map((file) => basename(file)).sort(),
-  )
-  const scratch = mkdtempSync(join(tmpdir(), 'dinkster-release-verify-'))
-  try {
-    for (const file of files) {
-      const output = join(scratch, basename(file))
-      gh(
-        'release',
-        'download',
-        tag,
-        '--pattern',
-        basename(file),
-        '--output',
-        output,
-      )
-      assert.equal(
-        checksum(output),
-        checksum(file),
-        `Uploaded bytes differ: ${basename(file)}`,
-      )
-    }
-  } finally {
-    rmSync(scratch, { recursive: true, force: true })
-  }
   const summary = (message) => {
     console.log(message)
     if (process.env.GITHUB_STEP_SUMMARY)
       appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n`)
   }
-  const test = tag !== stableTag
-  try {
-    gh(
-      'release',
-      'edit',
-      tag,
-      '--draft=false',
-      ...(test ? ['--prerelease', '--latest=false'] : []),
-    )
-  } catch (error) {
-    summary(
-      `Publication refused for ${tag}; all five uploaded assets were verified. Draft retained for desk publication after run inspection.`,
-    )
-    throw error
-  }
+  const test = /-rc\.\d+$/.test(pkg.version)
+  gh(
+    'release',
+    'create',
+    tag,
+    ...files,
+    '--verify-tag',
+    '--title',
+    `Dinkster Desktop ${pkg.version}`,
+    ...(test ? ['--prerelease', '--latest=false'] : ['--latest']),
+  )
   const published = view()
   assert.equal(published.isDraft, false, 'Publication did not complete')
+  assert.equal(published.tagName, tag)
+  assert.deepEqual(
+    published.assets.map((asset) => asset.name).sort(),
+    files.map((file) => basename(file)).sort(),
+  )
   if (test)
     assert.equal(
       published.isPrerelease,

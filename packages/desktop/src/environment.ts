@@ -135,7 +135,7 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
       || (base['origin'] !== 'published' && base['origin'] !== 'user-defined')
       || !(base['torchVersion'] === null || typeof base['torchVersion'] === 'string')
       || !(base['torchIndex'] === null || typeof base['torchIndex'] === 'string')
-      || !(base['label'] === undefined || base['label'] === null || typeof base['label'] === 'string')) {
+      || !(base['label'] === undefined || base['label'] === null || (typeof base['label'] === 'string' && base['label'].length > 0))) {
       throw new Error('unsupported dinkster-env base response')
     }
   }
@@ -144,7 +144,7 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     if (!engine || typeof engine !== 'object'
       || typeof engine['release'] !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(engine['release'])
       || typeof engine['version'] !== 'string' || !engine['version']
-      || !(engine['label'] === null || typeof engine['label'] === 'string')) {
+      || !(engine['label'] === null || (typeof engine['label'] === 'string' && engine['label'].length > 0))) {
       throw new Error('unsupported dinkster-env engine response')
     }
   }

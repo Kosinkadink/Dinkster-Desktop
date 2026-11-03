@@ -51,6 +51,12 @@ export interface EnvironmentResult {
     readonly origin: 'published' | 'user-defined'
     readonly torchVersion: string | null
     readonly torchIndex: string | null
+    readonly label?: string | null
+  }
+  readonly engine?: {
+    readonly release: string
+    readonly version: string
+    readonly label: string | null
   }
   readonly variants?: readonly {
     readonly variant: string
@@ -128,8 +134,18 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     if (!base || typeof base !== 'object' || typeof base['variant'] !== 'string'
       || (base['origin'] !== 'published' && base['origin'] !== 'user-defined')
       || !(base['torchVersion'] === null || typeof base['torchVersion'] === 'string')
-      || !(base['torchIndex'] === null || typeof base['torchIndex'] === 'string')) {
+      || !(base['torchIndex'] === null || typeof base['torchIndex'] === 'string')
+      || !(base['label'] === undefined || base['label'] === null || typeof base['label'] === 'string')) {
       throw new Error('unsupported dinkster-env base response')
+    }
+  }
+  if (row['engine'] !== undefined) {
+    const engine = row['engine'] as Record<string, unknown> | null
+    if (!engine || typeof engine !== 'object'
+      || typeof engine['release'] !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(engine['release'])
+      || typeof engine['version'] !== 'string' || !engine['version']
+      || !(engine['label'] === null || typeof engine['label'] === 'string')) {
+      throw new Error('unsupported dinkster-env engine response')
     }
   }
   if (operation === 'catalog' && row['status'] !== 'error') {

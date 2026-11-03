@@ -314,9 +314,19 @@ describe('Desktop dinkster-env command client', () => {
     const client = new EnvironmentClient(process.execPath, [script])
     await writeFile(script, `console.log(${JSON.stringify(JSON.stringify(response))});`)
     expect((await client.run({ root, operation: 'doctor' })).base).toEqual(base)
-    for (const invalid of [null, { ...base, origin: 'local' }, { ...base, origin: ['user-defined'] }, { ...base, torchVersion: 2.14 }, { ...base, torchIndex: [] }, { ...base, variant: undefined }]) {
+    const engine = { release: `sha256:${'b'.repeat(64)}`, version: '0.4.2', label: '2026-11-02-0.4.2' }
+    for (const label of [null, '2026-11-01-py3.14.10-torch2.14.1-cu130-12345678']) {
+      const labelled = { ...response, base: { ...base, label }, engine }
+      await writeFile(script, `console.log(${JSON.stringify(JSON.stringify(labelled))});`)
+      expect(await client.run({ root, operation: 'doctor' })).toEqual(labelled)
+    }
+    for (const invalid of [null, { ...base, origin: 'local' }, { ...base, origin: ['user-defined'] }, { ...base, torchVersion: 2.14 }, { ...base, torchIndex: [] }, { ...base, variant: undefined }, { ...base, label: 7 }]) {
       await writeFile(script, `console.log(${JSON.stringify(JSON.stringify({ ...response, base: invalid }))});`)
       await expect(client.run({ root, operation: 'doctor' })).rejects.toThrow('unsupported dinkster-env base response')
+    }
+    for (const invalid of [null, { ...engine, release: 'sha256:bad' }, { ...engine, version: '' }, { ...engine, label: [] }]) {
+      await writeFile(script, `console.log(${JSON.stringify(JSON.stringify({ ...response, engine: invalid }))});`)
+      await expect(client.run({ root, operation: 'doctor' })).rejects.toThrow('unsupported dinkster-env engine response')
     }
   })
 

@@ -46,6 +46,11 @@ function showPlan(result: EnvironmentResult, token?: string): void {
   document.querySelector<HTMLElement>('#plan-panel')!.hidden = false
   const base = result.base
   const label = base ? [`Variant: ${base.variant} (${base.origin})`, `Torch: ${base.torchVersion ?? 'none'}`, `Torch index: ${base.torchIndex ?? 'none'}`] : []
+  if (base?.label) label.push(`Base label: ${base.label}`)
+  if (result.engine) {
+    label.push(`Engine: ${result.engine.version} (${result.engine.release})`)
+    if (result.engine.label) label.push(`Engine label: ${result.engine.label}`)
+  }
   document.querySelector<HTMLElement>('#plan')!.textContent = [result.status, ...label, ...result.plan, ...(result.changes ?? [])].join('\n')
   document.querySelector<HTMLButtonElement>('#apply')!.hidden = token === undefined
   document.querySelector<HTMLElement>('#plan-panel')!.scrollIntoView({ block: 'nearest' })

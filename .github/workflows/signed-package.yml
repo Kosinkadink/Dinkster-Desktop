@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  DINKSTER_FRONTEND_REF: 54b24ecd8a7a7a079863cb751b14988f29047c46
+  DINKSTER_FRONTEND_REF: d454b31137ac839462e5a5e04803c75054511f70
 
 jobs:
   package:
@@ -82,6 +82,8 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
           "DINKSTER_DESKTOP_EXECUTABLE=$(Join-Path $destination 'Dinkster Desktop.exe')" >> $env:GITHUB_ENV
           "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
+          node packages/desktop/scripts/verify-installed-tools.mjs (Join-Path $destination resources)
+          if ($LASTEXITCODE -ne 0) { throw 'Installed tools verification failed' }
       - run: pnpm --filter @dinkster/desktop verify:installed
       - name: Preserve verification evidence
         if: always()

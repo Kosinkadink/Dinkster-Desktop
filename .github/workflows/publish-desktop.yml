@@ -1,0 +1,68 @@
+name: Publish Desktop release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop'
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 5
+    outputs:
+      source: ${{ steps.validate.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - name: Validate the existing version tag
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/publish-desktop.mjs validate
+
+  build:
+    needs: validate
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      source: ${{ needs.validate.outputs.source }}
+      signed: true
+    secrets: inherit
+
+  publish:
+    needs: [validate, build]
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.source }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-release-assets
+          path: release-assets
+      - name: Publish verified assets on the existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          DESKTOP_SOURCE_COMMIT: ${{ needs.validate.outputs.source }}
+        run: node scripts/publish-desktop.mjs publish

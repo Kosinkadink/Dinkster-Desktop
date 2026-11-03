@@ -6,3 +6,4 @@ packages/e2e/scripts/verify-desktop-install.mjs
 .dinkster/
 .smoke-backend/
 test-results/
+/.amp/in/

@@ -1,0 +1,39 @@
+name: Release from version PR
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: desktop-version-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: >-
+      github.repository == 'Kosinkadink/Dinkster-Desktop' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'Release')
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - name: Tag the changed version and dispatch publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/tag-desktop.mjs

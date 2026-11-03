@@ -1,5 +1,36 @@
 # Desktop environment boundaries
 
+## Publishing installers
+
+The owner opens a version PR changing `packages/desktop/package.json`.
+The desk applies the `Release` label when publication is wanted. After fresh
+LOW verification and green checks, the owner lands the PR by squash. A merged
+PR without the label or without a version change releases nothing.
+
+**Release from version PR** tags the squash commit as `desktop-vX.Y.Z` and
+dispatches **Publish Desktop release** at that existing tag. It refuses to
+move an existing tag to another commit. The publisher refuses unrelated
+prefixes, version/source mismatches and existing releases before building.
+It creates no refs and uses `gh release create --verify-tag`, never `--target`.
+The desk can dispatch that publisher at the tag for recovery; owners do not
+dispatch or rerun release workflows.
+
+The reusable **Desktop installer builds** definition is shared with main
+validation. It retains Windows Artifact Signing, signature, isolated install
+and installed-app checks, plus the unsigned Mac archive's source/byte binding.
+Only final publication has `contents: write`. The release carries exactly five
+assets: signed Windows installer, `desktop-release.json`, `SHA256SUMS` with both
+installer hashes, unsigned Apple Silicon ZIP and `desktop-macos-release.json`.
+The CLI uploads those files before making the release public.
+
+An `X.Y.Z-rc.N` version PR follows the same chain but publishes a prerelease
+with `--latest=false`; stable versions become latest. The desk retains RC
+releases and tags, including failed RC tags, until the next stable release is
+published and the test runs and assets are recorded. It then deletes the test
+prereleases and their tags. Failed runs are recorded on the issue, never rerun
+by the owner; existing releases and assets are not overwritten. There is no
+manual asset or release step.
+
 ## Native identity
 
 `pnpm prepare:frontend` copies native branding from the workflow-pinned
@@ -33,6 +64,28 @@ Two projects cannot bind the same install root.
 A remote-only project stores server URLs and no install root. Opening it loads
 the server's frontend in an isolated window without a Desktop preload or Node
 capabilities. It does not invoke environment commands or create a generation.
+
+## Native asset files
+
+Local engine windows receive only the file-capability, directory-choice,
+asset-reveal and native-drop methods, not project-manager, credential or shell
+lifecycle privileges. Each request checks the saved local binding and the
+environment tools' observed ready generation and URL. Requests from child
+frames, remote engines and unrelated connections have no native authority.
+Asynchronous file operations recheck ownership before returning a path or
+opening a file manager; changing generation invalidates an outstanding request.
+The folder-project context comes from the trusted main frame's document-load
+`dinksterProject` URL parameter, not the Desktop installation id or later
+same-document history edits. An absent
+parameter means `default`; malformed ids are refused. Reveal identities must
+match that context, and a context change invalidates an outstanding operation.
+
+The frontend supplies an asset identity, not a filesystem path, for reveal.
+The backend returns the exact location and active mount or vault grant. Both
+the file and grant are canonicalized; an escaping symlink is rejected. Windows
+and macOS select the file; Linux opens its containing folder. Native drops use
+Electron's File lookup and the backend's advertised mounted-path resolver,
+without treating transport failures as permission to upload instead.
 
 Desktop bindings are not environment state. The environment tools own
 `project.json`, generation records, `current`, `store`, journals, dependency

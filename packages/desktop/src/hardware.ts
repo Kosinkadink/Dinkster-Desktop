@@ -23,6 +23,7 @@ export async function detectNvidiaGpus(
   command: HardwareCommand = async (file, args) =>
     (await execute(file, [...args], { windowsHide: true, timeout: 5000 })).stdout,
 ): Promise<HardwareDetection> {
+  if (platform === 'darwin') return { gpus: [] }
   try {
     const csv = await command('nvidia-smi', [
       '--query-gpu=index,name,driver_version,compute_cap,memory.total',
@@ -75,6 +76,7 @@ export async function detectNvidiaGpus(
 export interface VariantHardware {
   readonly variant: string
   readonly platform: { readonly os: 'windows' | 'linux'; readonly arch: 'x86_64' }
+    | { readonly os: 'macos'; readonly arch: 'arm64' }
   readonly nvidia: {
     readonly minimumDriver: string
     readonly minimumComputeCapability: string
@@ -106,8 +108,8 @@ export function planVariant(
   override?: string,
   architecture: NodeJS.Architecture = process.arch,
 ): VariantPlan {
-  const os = platform === 'win32' ? 'windows' : platform === 'linux' ? 'linux' : undefined
-  const arch = architecture === 'x64' ? 'x86_64' : undefined
+  const os = platform === 'win32' ? 'windows' : platform === 'linux' ? 'linux' : platform === 'darwin' ? 'macos' : undefined
+  const arch = architecture === 'x64' ? 'x86_64' : architecture === 'arm64' ? 'arm64' : undefined
   const assigned = detection.gpus.filter((gpu) => assignedGpuIds.includes(gpu.id))
   const missing = assignedGpuIds.some((id) => !assigned.some((gpu) => gpu.id === id))
   const variants = manifests.filter((manifest) => os && arch && manifest.platform.os === os && manifest.platform.arch === arch)
@@ -117,7 +119,9 @@ export function planVariant(
     let supported = false
     if (limits === null) {
       supported = true
-      reason = 'CPU runs locally without an NVIDIA GPU. Select it explicitly; it can be much slower.'
+      reason = manifest.platform.os === 'macos'
+        ? 'Apple Silicon runs locally with the MPS backend; no NVIDIA GPU is required.'
+        : 'CPU runs locally without an NVIDIA GPU. Select it explicitly; it can be much slower.'
     } else if (missing || assigned.length === 0) {
       reason = `Assign an NVIDIA GPU with driver ${limits.minimumDriver} or newer and compute capability ${limits.minimumComputeCapability} or newer.`
     } else if (assigned.some((gpu) => !gpu.driver || compareVersions(gpu.driver, limits.minimumDriver) < 0)) {
@@ -140,6 +144,11 @@ export function planVariant(
     const choice = choices.find((candidate) => candidate.variant === override)
     if (!choice) throw new Error('the selected variant is not available for this platform')
     return { selected: override, reason: `Explicit override: ${choice.reason}`, choices }
+  }
+  const apple = variants.find((manifest) => manifest.platform.os === 'macos' && manifest.nvidia === null)
+  if (apple) {
+    const choice = choices.find((candidate) => candidate.variant === apple.variant)!
+    return { selected: choice.variant, reason: choice.reason, choices }
   }
   // Prefer the newest compatible base, independent of manifest input ordering.
   const preferred = variants.filter((manifest) => manifest.nvidia !== null)

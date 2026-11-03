@@ -2,7 +2,7 @@
   "name": "@dinkster/desktop",
   "productName": "Dinkster Desktop",
   "desktopName": "dinkster-desktop.desktop",
-  "version": "0.2.0",
+  "version": "0.2.4",
   "private": true,
   "type": "module",
   "description": "Dinkster Desktop Electron shell and local engine lifecycle",
@@ -12,8 +12,11 @@
   "scripts": {
     "build": "node scripts/clean-output.mjs dist && tsc -p tsconfig.json && esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
     "build:all": "pnpm --dir ../.. prepare:frontend && pnpm build",
-    "package:win": "pnpm build:all && node scripts/clean-output.mjs release && electron-builder --win nsis --publish never",
+    "prepare:tools": "node --import tsx scripts/prepare-tools.mjs",
+    "package:win": "pnpm build:all && pnpm prepare:tools && node scripts/clean-output.mjs release && electron-builder --win nsis --publish never",
+    "package:linux": "pnpm build:all && pnpm prepare:tools && node scripts/clean-output.mjs release && electron-builder --linux AppImage --publish never",
     "package:win:signed": "pnpm package:win --config electron-builder.signed.mjs",
+    "package:mac": "pnpm build:all && pnpm prepare:tools && node scripts/clean-output.mjs release && electron-builder --mac --publish never",
     "verify:update-feed": "node scripts/verify-update-feed.mjs",
     "verify:installed": "pnpm --filter @dinkster/e2e exec node --import tsx scripts/verify-desktop-install.mjs",
     "start": "pnpm build:all && electron .",
@@ -62,6 +65,10 @@
       {
         "from": "resources/branding",
         "to": "branding"
+      },
+      {
+        "from": "resources/tools",
+        "to": "tools"
       }
     ],
     "directories": {
@@ -97,7 +104,13 @@
     },
     "mac": {
       "icon": "resources/branding/platform/dinkster.icns",
-      "category": "public.app-category.graphics-design"
+      "category": "public.app-category.graphics-design",
+      "target": [{ "target": "zip", "arch": ["arm64"] }],
+      "artifactName": "Dinkster-Desktop-${version}-macos-${arch}.${ext}",
+      "minimumSystemVersion": "14.0.0",
+      "forceCodeSigning": false,
+      "identity": null,
+      "notarize": false
     },
     "linux": {
       "icon": "resources/branding/raster/color/512.png",

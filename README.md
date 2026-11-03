@@ -21,7 +21,7 @@ pnpm typecheck
 pnpm test
 ```
 
-`pnpm --filter @dinkster/desktop package:win` produces an unsigned shell installer without backend source or native wheel inputs. The release workflow uses `package:win:signed`, which signs through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). Version-tag release runs validate before signing; prerelease test tags keep artifacts without publishing a release. Local validation must not dispatch workflows or publish a release. Production local-project bootstrap remains incomplete until the standalone environment tools payload is packaged; a shell-only package is not a complete local installation.
+`pnpm --filter @dinkster/desktop package:win` produces an unsigned Windows installer; `package:linux` produces a Linux AppImage; `package:mac` produces an unsigned Apple Silicon ZIP. All include the native standalone environment tools ZIP and its engine manifest, not backend source, engine wheels or base bundles. `packages/desktop/src/environment-tools-release.json` pins the tools release, sizes, SHA256 digests and pin date independently of the checkout-development backend. Build preparation downloads and verifies those public inputs before packaging. The Windows release uses `package:win:signed` through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). A merged version PR carrying the desk-applied `Release` label tags its squash commit and dispatches the shared installer/publisher chain. All five verified assets publish on that existing `desktop-v<version>` tag. Release candidates publish without moving latest. See [Publishing installers](docs/desktop.md#publishing-installers). Local validation must not dispatch workflows or publish a release.
 
 Both signing workflows reference the `desktop-signing` GitHub environment. Its
 approval gate is off while the program is being established: no required
@@ -29,7 +29,34 @@ reviewers, wait timer or deployment-branch restrictions. Signing uses the
 existing repository-level `AZURE_*` secrets without moving them. To enable the
 approval gate later, the owner adds themselves as a required reviewer under
 Settings -> Environments -> desktop-signing; no workflow change is needed.
-The desk pushes a version tag only after the user's approval on the issue.
+The desk controls release timing through the `Release` label; the tag job creates the version ref and the publisher creates its release without moving that ref.
+
+## Apple Silicon macOS
+
+Apple Silicon on macOS 14 or newer is the supported Mac target. Intel Macs
+are not supported. `pnpm --filter @dinkster/desktop package:mac` builds an
+arm64 ZIP containing an unsigned `.app`, without an Apple signing identity
+or notarization. The engine uses the `mac-arm64` base and MPS, not CUDA.
+Local project setup selects the Apple Silicon base from the channel catalog
+without requiring an NVIDIA GPU or an explicit CPU fallback.
+
+The Desktop release workflow builds this ZIP on hosted `macos-latest`,
+checks the extracted executable's arm64 architecture, and retains the ZIP,
+source metadata and SHA256 in `desktop-unsigned-macos-arm64`. Packaging
+changes also run this job on pull requests without signing credentials.
+Publication on the existing version tag uploads the same verified Mac ZIP alongside the signed
+Windows installer, with separate source metadata and shared `SHA256SUMS`.
+The extracted Mac app's bundled tools archive and manifest are checked against
+the same immutable pin used by Windows and Linux packaging. Engine and base
+payloads are acquired during setup, not included in the app.
+
+Verify the ZIP's checksum, extract it with app permissions preserved, and
+copy the app to a directory you control. Gatekeeper may require right-click
+**Open** or removal of `com.apple.quarantine` from that verified app before
+launch. This unsigned-build procedure does not establish a signature or
+notarization. [Apple signing and notarization](https://github.com/Kosinkadink/comfy-vibe-station/issues/501)
+are separate from tools and engine setup, doctor, start, update and rollback.
+Local project commands use the native environment tools, not host Python or uv.
 
 ## Environment client development
 
@@ -42,20 +69,34 @@ fallback. Interpreter launches use `-I` and a child-only PATH containing the
 bundled scripts directory, not host Python or package managers. Inherited
 `PYTHON*` configuration is removed from that child and its engine descendants.
 
-The release-owned standalone tools pin is a declared input, not a latest lookup:
+Packaged Desktop uses the bundled tools for local operations without a runtime
+tools download. Extraction verifies the manifest and native ZIP, rejects links
+and escaping or duplicate paths, and preserves executable modes. The completed
+tree lives under the Desktop user-data `environment-tools/<archive-sha256>`
+directory, survives normal shutdown, and is reused on subsequent launches.
+A different pinned archive is extracted before the previous digest tree is
+removed. Remote projects never acquire tools. First setup and engine updates
+still acquire their engine and base artifacts from the configured mirrors.
+
+For development the runtime-download pin remains an explicit input:
 `DINKSTER_TOOLS_MANIFEST` identifies the immutable `dinkster.engine/1` manifest,
-`DINKSTER_TOOLS_MANIFEST_SHA256` pins its bytes, and `DINKSTER_TOOLS_RELEASE`
+`DINKSTER_TOOLS_MANIFEST_SHA256` (or `DINKSTER_TOOLS_SHA256`) pins its bytes, and `DINKSTER_TOOLS_RELEASE`
 identifies its release directory. Locations are absolute local paths or
 credential-free HTTPS. Desktop selects the existing native tools artifact row,
 verifies its size and SHA256 before standard ZIP extraction into a new owned
-directory, and preserves executable modes while rejecting links and escaping
-paths. Tools are acquired only for a local command, reused during that session,
-and removed after draining commands and stopping local engines on normal shutdown.
-A failed stop retains the tools and records a diagnostic. Downloads reject TLS
+temporary directory. These overrides take precedence over the bundled payload;
+their temporary trees are removed after commands drain and local engines stop.
+A failed stop retains those tools and records a diagnostic. Downloads reject TLS
 downgrades and stop at the artifact's declared size; engine metadata is bounded
-to 8 MiB. Explicit development
-interpreter/command overrides take precedence. Production publication supplies
-the pin; no production pin or separate tools manifest is invented here.
+to 8 MiB. Explicit development interpreter/command overrides take precedence.
+
+Before setup, update or catalog invokes an environment command, packaged Desktop
+reads the selected channel and enforces `minimumDesktopVersion`, reporting
+`DesktopVersionTooOld` when the shell must update first. Status, doctor, start,
+stop and other installed-generation operations do not fetch channel metadata.
+A trusted channel may explicitly supply a `tools` object with `manifest`,
+`sha256` and `release` to select newer tools through the same verified acquisition
+path. A newer engine alone does not force a tools download.
 
 Local operations review the command's plan before confirmation. A saved engine
 binding starts the existing generation through `dinkster-env start`; updates

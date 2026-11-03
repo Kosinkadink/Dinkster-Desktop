@@ -11,13 +11,13 @@ import { verifyUpdateFeed } from '../scripts/verify-update-feed.mjs'
 const root = resolve(import.meta.dirname, '../../..')
 const execute = promisify(execFile)
 
-async function writeFeedFixture(release: string, overrides: { url?: string; size?: number; sha512?: string } = {}): Promise<void> {
+async function writeFeedFixture(release: string, overrides: { url?: string; size?: number; sha512?: string } = {}, manifestName = 'latest.yml'): Promise<void> {
   const artifactName = 'Dinkster-Desktop-test-Setup.exe'
   const artifact = Buffer.from('test installer')
   const sha512 = createHash('sha512').update(artifact).digest('base64')
   await mkdir(release, { recursive: true })
   await writeFile(resolve(release, artifactName), artifact)
-  await writeFile(resolve(release, 'latest.yml'), [
+  await writeFile(resolve(release, manifestName), [
     'version: 0.2.0',
     'files:',
     `  - url: ${overrides.url ?? artifactName}`,
@@ -62,6 +62,7 @@ describe('desktop package inputs', () => {
         extraResources: { from: string; to: string }[]
         publish: { provider: string; owner: string; repo: string }[]
         win: { forceCodeSigning: boolean }
+        mac: { target: { target: string; arch: string[] }[]; forceCodeSigning: boolean; identity: string | null; notarize: boolean; minimumSystemVersion: string }
       }
     }
     expect(manifest.scripts['build']).toContain('clean-output.mjs dist')
@@ -71,11 +72,21 @@ describe('desktop package inputs', () => {
     expect(manifest.build.extraResources).toEqual([
       { from: '../app/dist', to: 'app' },
       { from: 'resources/branding', to: 'branding' },
+      { from: 'resources/tools', to: 'tools' },
     ])
     expect(manifest.build.publish).toEqual([{ provider: 'generic', url: 'https://updates.dinkster.invalid/desktop' }])
     expect(manifest.build.win.forceCodeSigning).toBe(false)
     expect(manifest.build.win).not.toHaveProperty('azureSignOptions')
     expect(manifest.scripts['package:win:signed']).toBe('pnpm package:win --config electron-builder.signed.mjs')
+    expect(manifest.scripts['package:mac']).toContain('pnpm build:all')
+    expect(manifest.scripts['package:mac']).toContain('pnpm prepare:tools && node scripts/clean-output.mjs release')
+    expect(manifest.scripts['package:mac']).toContain('clean-output.mjs release')
+    expect(manifest.scripts['package:mac']).toContain('electron-builder --mac --publish never')
+    expect(manifest.build.mac.target).toEqual([{ target: 'zip', arch: ['arm64'] }])
+    expect(manifest.build.mac.forceCodeSigning).toBe(false)
+    expect(manifest.build.mac.identity).toBeNull()
+    expect(manifest.build.mac.notarize).toBe(false)
+    expect(manifest.build.mac.minimumSystemVersion).toBe('14.0.0')
   })
 
   it('signs releases through the Artifact Signing profile and accepts both publishers on update', async () => {
@@ -134,9 +145,13 @@ describe('desktop package inputs', () => {
       jobs: { release: { steps: { name?: string; run?: string; env?: Record<string, string> }[] } }
     }
     const steps = workflow.jobs.release.steps
-    expect(steps.find((step) => step.run !== undefined)?.name).toBe('Validate version tag')
-    expect(steps.filter((step) => step.env?.['GH_TOKEN'] !== undefined)).toEqual([
-      steps.find((step) => step.name === 'Create release'),
+    expect(steps.filter((step) => step.env?.['GH_TOKEN'] !== undefined)).toEqual([])
+    const publisher = yaml.load(await readFile(resolve(root, '.github/workflows/publish-desktop.yml'), 'utf8')) as {
+      jobs: Record<string, { steps?: { name?: string; env?: Record<string, string> }[] }>
+    }
+    const publication = publisher.jobs['publish']!.steps!
+    expect(publication.filter(step => step.env?.['GH_TOKEN'] !== undefined)).toEqual([
+      publication.find(step => step.name === 'Publish verified assets on the existing tag'),
     ])
     for (const file of ['release-desktop.yml', 'signed-package.yml', 'full-validation.yml']) {
       const packaging = await readFile(resolve(root, '.github/workflows', file), 'utf8')
@@ -154,8 +169,7 @@ describe('desktop package inputs', () => {
     expect(steps.filter((step) => step.env && Object.keys(step.env).some((name) => name.startsWith('AZURE_')))).toEqual([signing])
     expect(steps.map((step) => step.name ?? step.run)).toContain('Verify publisher signatures')
     expect(steps.findIndex((step) => step.name === 'Verify publisher signatures')).toBeLessThan(steps.findIndex((step) => step.name === 'Install into an isolated directory'))
-    expect(steps.find((step) => step.name === 'Create release')?.env).toEqual({ GH_TOKEN: '${{ github.token }}' })
-    expect(steps.find((step) => step.name === 'Create release')?.run).not.toContain('Unsigned')
+    expect(steps.some((step) => step.run?.includes('gh release'))).toBe(false)
   })
 
   it('keeps both tinkerer launchers on the shared web runtime', async () => {
@@ -178,22 +192,22 @@ describe('desktop package inputs', () => {
     expect(main.match(/return shellUpdater.manualStatus\(\)/g)).toHaveLength(2)
   })
 
-  it('validates the updater files entry against the release artifact', async () => {
+  it.each([['0.2.4', 'latest.yml'], ['0.2.4-rc.1', 'rc.yml']])('validates the %s updater files entry against the release artifact', async (version, manifestName) => {
     const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-update-feed-'))
     try {
       const valid = resolve(scratch, 'valid')
-      await writeFeedFixture(valid)
+      await writeFeedFixture(valid, {}, manifestName)
       const wrongUrl = resolve(scratch, 'wrong-url')
-      await writeFeedFixture(wrongUrl, { url: 'missing.exe' })
+      await writeFeedFixture(wrongUrl, { url: 'missing.exe' }, manifestName)
       const wrongSize = resolve(scratch, 'wrong-size')
-      await writeFeedFixture(wrongSize, { size: 1 })
+      await writeFeedFixture(wrongSize, { size: 1 }, manifestName)
       const wrongHash = resolve(scratch, 'wrong-hash')
-      await writeFeedFixture(wrongHash, { sha512: 'invalid' })
+      await writeFeedFixture(wrongHash, { sha512: 'invalid' }, manifestName)
       await Promise.all([
-        expect(verifyUpdateFeed(valid)).resolves.toBeUndefined(),
-        expect(verifyUpdateFeed(wrongUrl)).rejects.toThrow(),
-        expect(verifyUpdateFeed(wrongSize)).rejects.toThrow(),
-        expect(verifyUpdateFeed(wrongHash)).rejects.toThrow(),
+        expect(verifyUpdateFeed(valid, version)).resolves.toBeUndefined(),
+        expect(verifyUpdateFeed(wrongUrl, version)).rejects.toThrow(),
+        expect(verifyUpdateFeed(wrongSize, version)).rejects.toThrow(),
+        expect(verifyUpdateFeed(wrongHash, version)).rejects.toThrow(),
       ])
     } finally {
       await rm(scratch, { recursive: true, force: true })

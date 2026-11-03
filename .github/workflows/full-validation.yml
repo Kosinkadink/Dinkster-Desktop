@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DINKSTER_FRONTEND_REF: 54b24ecd8a7a7a079863cb751b14988f29047c46
+  DINKSTER_FRONTEND_REF: d454b31137ac839462e5a5e04803c75054511f70
 
 jobs:
   linux:
@@ -92,7 +92,9 @@ jobs:
       - run: pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - run: pnpm --filter @dinkster/desktop prepare:tools
       - run: pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
+      - run: node packages/desktop/scripts/verify-installed-tools.mjs packages/desktop/release/linux-unpacked/resources
       - run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-environment-client.mjs
         env:
           DINKSTER_ELECTRON_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke

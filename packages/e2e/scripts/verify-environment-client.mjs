@@ -57,6 +57,18 @@ try {
   )
   const command = join(scratch, 'environment-command.cjs')
   const calls = join(scratch, 'calls.jsonl')
+  const installed = join(scratch, 'installed.json')
+  await writeFile(
+    installed,
+    JSON.stringify({
+      base: {
+        variant: 'studio-cuda',
+        origin: 'user-defined',
+        torchVersion: '2.14.1+cu130',
+        torchIndex: 'https://download.pytorch.org/whl/cu130',
+      },
+    }),
+  )
   await writeFile(
     command,
     String.raw`#!${process.execPath}
@@ -82,7 +94,7 @@ if (operation === 'catalog') {
 const url = ${JSON.stringify(urls)}[operation === 'update' ? 1 : 0];
 const row = {format:'dinkster.environment-result/1',operation,
 status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,current:operation === 'update' ? 2 : 1,
-...(operation === 'doctor' ? {base:{variant:'studio-cuda',origin:'user-defined',torchVersion:'2.14.1+cu130',torchIndex:'https://download.pytorch.org/whl/cu130'}} : {}),
+...(operation === 'doctor' ? JSON.parse(fs.readFileSync(${JSON.stringify(installed)}, 'utf8')) : {}),
 plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current'],url,
 engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]};
 if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
@@ -455,6 +467,54 @@ console.log(JSON.stringify(row));
     await manager.locator('#plan-panel').screenshot({
       path: join(artifacts, 'user-defined-base.png'),
     })
+  for (const labelled of [true, false]) {
+    const baseLabel = '2026-11-01-py3.14.10-torch2.14.1-cu130-12345678'
+    const engineLabel = '2026-11-02-0.4.2'
+    await writeFile(
+      installed,
+      JSON.stringify({
+        base: {
+          variant: 'linux-nvidia',
+          origin: 'published',
+          torchVersion: '2.14.1+cu130',
+          torchIndex: 'https://download.pytorch.org/whl/cu130',
+          label: labelled ? baseLabel : null,
+        },
+        engine: {
+          release: 'sha256:' + 'b'.repeat(64),
+          version: '0.4.2',
+          label: labelled ? engineLabel : null,
+        },
+      }),
+    )
+    await manager
+      .getByRole('button', { name: 'Review environment plan' })
+      .click()
+    await expect(manager.locator('#plan')).toContainText(
+      'Variant: linux-nvidia (published)',
+    )
+    await expect(manager.locator('#plan')).toContainText(
+      'Engine: 0.4.2 (sha256:' + 'b'.repeat(64) + ')',
+    )
+    if (labelled) {
+      await expect(manager.locator('#plan')).toContainText(
+        `Base label: ${baseLabel}`,
+      )
+      await expect(manager.locator('#plan')).toContainText(
+        `Engine label: ${engineLabel}`,
+      )
+    } else {
+      await expect(manager.locator('#plan')).not.toContainText('Base label:')
+      await expect(manager.locator('#plan')).not.toContainText('Engine label:')
+    }
+    if (artifacts)
+      await manager.locator('#plan-panel').screenshot({
+        path: join(
+          artifacts,
+          labelled ? 'installed-labels.png' : 'legacy-labels.png',
+        ),
+      })
+  }
   if (artifacts)
     await manager.screenshot({
       path: join(artifacts, 'local-applied.png'),

@@ -126,7 +126,7 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
   if (row['base'] !== undefined) {
     const base = row['base'] as Record<string, unknown> | null
     if (!base || typeof base !== 'object' || typeof base['variant'] !== 'string'
-      || !['published', 'user-defined'].includes(String(base['origin']))
+      || (base['origin'] !== 'published' && base['origin'] !== 'user-defined')
       || !(base['torchVersion'] === null || typeof base['torchVersion'] === 'string')
       || !(base['torchIndex'] === null || typeof base['torchIndex'] === 'string')) {
       throw new Error('unsupported dinkster-env base response')

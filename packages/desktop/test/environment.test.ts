@@ -314,7 +314,7 @@ describe('Desktop dinkster-env command client', () => {
     const client = new EnvironmentClient(process.execPath, [script])
     await writeFile(script, `console.log(${JSON.stringify(JSON.stringify(response))});`)
     expect((await client.run({ root, operation: 'doctor' })).base).toEqual(base)
-    for (const invalid of [null, { ...base, origin: 'local' }, { ...base, torchVersion: 2.14 }, { ...base, torchIndex: [] }, { ...base, variant: undefined }]) {
+    for (const invalid of [null, { ...base, origin: 'local' }, { ...base, origin: ['user-defined'] }, { ...base, torchVersion: 2.14 }, { ...base, torchIndex: [] }, { ...base, variant: undefined }]) {
       await writeFile(script, `console.log(${JSON.stringify(JSON.stringify({ ...response, base: invalid }))});`)
       await expect(client.run({ root, operation: 'doctor' })).rejects.toThrow('unsupported dinkster-env base response')
     }

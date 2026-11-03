@@ -114,6 +114,8 @@ requires stopping it first; the environment tools enforce that rule.
 The client consumes `dinkster.environment-result/1`. An update may start a new
 supervisor on a different port, so open local engine windows follow the ready
 URL returned by the command rather than reconstructing it from saved ports.
+Check drift shows the active base's variant, user-defined origin, torch version
+and torch index when the environment tools return custom-base metadata.
 Mirror discovery, artifact verification, generation construction, activation,
 recovery, and retention are responsibilities of the environment tools.
 

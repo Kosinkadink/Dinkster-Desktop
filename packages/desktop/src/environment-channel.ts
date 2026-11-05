@@ -1,9 +1,38 @@
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, normalize } from 'node:path'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { download } from './io.js'
 import type { EnvironmentRequest } from './environment.js'
 import type { EnvironmentToolsInput } from './environment-tools.js'
+
+function toolsLocation(location: string): URL | string {
+  if (isAbsolute(location)) return location
+  const url = new URL(location)
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('channel tools locations require an absolute path or credential-free HTTPS')
+  return url
+}
+
+function validToolsPin(tools: Record<string, unknown>): tools is Record<string, unknown> & EnvironmentToolsInput {
+  if (typeof tools['manifest'] !== 'string' || typeof tools['sha256'] !== 'string' || !/^[a-f0-9]{64}$/.test(tools['sha256'])
+    || typeof tools['release'] !== 'string' || (tools['label'] !== undefined && (typeof tools['label'] !== 'string' || !/^\d{4}-\d{2}-\d{2}-[A-Za-z0-9.+_-]+-[a-f0-9]{8}$/.test(tools['label'])))) return false
+  try {
+    const manifest = toolsLocation(tools['manifest'])
+    const release = toolsLocation(tools['release'])
+    if (tools['label'] === undefined) return true
+    if (typeof manifest === 'string' && typeof release === 'string') {
+      return normalize(manifest) === join(normalize(release), 'tools-manifest.json')
+        && normalize(release).endsWith(join('tools', tools['label']))
+    }
+    if (manifest instanceof URL && release instanceof URL) {
+      const directory = release.href.replace(/\/$/, '')
+      return manifest.href === `${directory}/tools-manifest.json`
+        && release.pathname.replace(/\/$/, '').endsWith(`/tools/${tools['label']}`)
+    }
+  } catch {
+    return false
+  }
+  return false
+}
 
 /** Installed engine operations never consult mutable channel metadata. */
 export async function channelTools(request: EnvironmentRequest, desktopVersion: string): Promise<EnvironmentToolsInput | undefined> {
@@ -45,6 +74,6 @@ export async function channelTools(request: EnvironmentRequest, desktopVersion: 
   }
   const tools = document['tools'] as Record<string, unknown> | undefined
   if (!tools) return undefined
-  if (typeof tools['manifest'] !== 'string' || typeof tools['sha256'] !== 'string' || !/^[a-f0-9]{64}$/.test(tools['sha256']) || typeof tools['release'] !== 'string') throw new Error('invalid channel tools pin')
-  return { manifest: tools['manifest'], sha256: tools['sha256'], release: tools['release'] }
+  if (!validToolsPin(tools)) throw new Error('invalid channel tools pin')
+  return { ...(tools.label === undefined ? {} : { label: tools.label }), manifest: tools.manifest, sha256: tools.sha256, release: tools.release }
 }

@@ -4,8 +4,9 @@ import { isAbsolute, join } from 'node:path'
 import extract from 'extract-zip'
 import { download, verifyFile } from './io.js'
 
-/** Inputs identify the publisher's existing engine manifest and release directory. */
+/** Inputs identify a verified engine or independently published tools release. */
 export interface EnvironmentToolsInput {
+  readonly label?: string
   readonly manifest: string
   readonly sha256: string
   readonly release: string
@@ -27,8 +28,42 @@ async function acquire(location: string, target: string, maximumBytes: number): 
   } else await download(input.href, target, undefined, maximumBytes)
 }
 
+type ToolsArtifact = { name: string; size: number; sha256: string }
+type ToolsManifest = {
+  format?: string
+  repository?: string
+  commit?: string
+  version?: string
+  builtAt?: string
+  label?: string
+  artifacts?: ToolsArtifact[]
+}
+
+function validArtifact(row: ToolsArtifact | undefined): row is ToolsArtifact {
+  return !!row && typeof row.name === 'string' && Number.isSafeInteger(row.size) && row.size > 0 && /^[a-f0-9]{64}$/.test(row.sha256)
+}
+
+export function validateToolsManifest(manifest: ToolsManifest, manifestSha256: string, inputLabel: string | undefined): ToolsArtifact[] {
+  if (!Array.isArray(manifest.artifacts)) throw new Error('unsupported tools manifest')
+  if (manifest.format === 'dinkster.engine/1' && inputLabel === undefined) return manifest.artifacts
+  if (manifest.format !== 'dinkster.tools/1'
+    || manifest.repository !== 'Kosinkadink/Dinkster'
+    || typeof manifest.commit !== 'string' || !/^[a-f0-9]{40}$/.test(manifest.commit)
+    || typeof manifest.version !== 'string' || !/^\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/.test(manifest.version)
+    || typeof manifest.builtAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|\+00:00)$/.test(manifest.builtAt) || Number.isNaN(Date.parse(manifest.builtAt))
+    || typeof manifest.label !== 'string' || !/^\d{4}-\d{2}-\d{2}-[A-Za-z0-9.+_-]+$/.test(manifest.label)
+    || manifest.label !== `${new Date(manifest.builtAt).toISOString().slice(0, 10)}-${manifest.version.split('+')[0]}`
+    || (inputLabel !== undefined && inputLabel !== `${manifest.label}-${manifestSha256.slice(0, 8)}`)) {
+    throw new Error('invalid independent tools manifest identity')
+  }
+  const expected = ['dinkster-tools-linux-x86_64.zip', 'dinkster-tools-windows-x86_64.zip', 'dinkster-tools-macos-arm64.zip']
+  if (manifest.artifacts.length !== expected.length || expected.some((name) => manifest.artifacts?.filter((row) => row.name === name).length !== 1)
+    || manifest.artifacts.some((row) => !validArtifact(row))) throw new Error('invalid independent tools manifest artifacts')
+  return manifest.artifacts
+}
+
 export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Promise<{ python: string; directory: string; persistent: boolean }> {
-  if (!/^[a-f0-9]{64}$/.test(input.sha256)) throw new Error('tools require an immutable engine manifest SHA256')
+  if (!/^[a-f0-9]{64}$/.test(input.sha256)) throw new Error('tools require an immutable manifest SHA256')
   if (input.cacheRoot && !isAbsolute(input.cacheRoot)) throw new Error('tools cache must be absolute')
   if (input.cacheRoot) await mkdir(input.cacheRoot, { recursive: true })
   const directory = await mkdtemp(join(input.cacheRoot ?? tmpdir(), 'dinkster-tools-'))
@@ -36,14 +71,15 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
     const manifestPath = join(directory, 'engine.json')
     await acquire(input.manifest, manifestPath, 8 * 1024 * 1024)
     await verifyFile(manifestPath, input.sha256)
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { format?: string; artifacts?: { name: string; size: number; sha256: string }[] }
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as ToolsManifest
     const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
     const arch = { x64: 'x86_64', arm64: 'arm64' }[process.arch as 'x64' | 'arm64']
-    if (!os || !arch || manifest.format !== 'dinkster.engine/1' || !Array.isArray(manifest.artifacts)) throw new Error('unsupported tools engine manifest or platform')
+    if (!os || !arch) throw new Error('unsupported tools platform')
+    const artifacts = validateToolsManifest(manifest, input.sha256, input.label)
     const name = `dinkster-tools-${os}-${arch}.zip`
-    const rows = manifest.artifacts.filter((row) => row.name === name)
+    const rows = artifacts.filter((row) => row.name === name)
     const row = rows[0]
-    if (rows.length !== 1 || !row || !Number.isSafeInteger(row.size) || row.size <= 0 || !/^[a-f0-9]{64}$/.test(row.sha256)) throw new Error('engine manifest has no unique pinned native tools archive')
+    if (rows.length !== 1 || !validArtifact(row)) throw new Error('tools manifest has no unique pinned native tools archive')
     const interpreter = process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'
     const cached = input.cacheRoot ? join(input.cacheRoot, row.sha256) : undefined
     if (cached) {

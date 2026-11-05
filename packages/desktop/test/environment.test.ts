@@ -7,10 +7,29 @@ import { setImmediate } from 'node:timers/promises'
 import { crc32, deflateRawSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EnvironmentClient, type EnvironmentOperation } from '../src/environment.js'
+import { channelTools } from '../src/environment-channel.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
 const roots: string[] = []
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
+
+function nativeToolsName(): string {
+  const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
+  return `dinkster-tools-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}.zip`
+}
+
+function independentManifest(artifacts: { name: string; size: number; sha256: string }[], overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    format: 'dinkster.tools/1',
+    repository: 'Kosinkadink/Dinkster',
+    commit: 'a'.repeat(40),
+    version: '1.2.3',
+    builtAt: '2026-11-05T18:36:00Z',
+    label: '2026-11-05-1.2.3',
+    artifacts,
+    ...overrides,
+  })
+}
 
 async function commandFixture(): Promise<{ root: string; client: EnvironmentClient }> {
   const root = await mkdtemp(join(tmpdir(), 'desktop-env-'))
@@ -174,6 +193,65 @@ describe('Desktop dinkster-env command client', () => {
     await expect(acquireEnvironmentTools(await input([{ ...row, sha256: 'b'.repeat(64) }]))).rejects.toThrow('checksum mismatch')
     await expect(acquireEnvironmentTools(await input([row, row]))).rejects.toThrow('unique pinned native tools')
     expect(await readFile(tools.python, 'utf8')).toBe('fixture')
+  })
+
+  it('uses an independent channel tools manifest without an engine ZIP and refuses changed publication inputs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop-independent-tools-'))
+    roots.push(root)
+    const archive = Buffer.from('UEsDBBQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAcHl0aG9uL2Jpbi9weXRob24zZml4dHVyZVBLAwQUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAHB5dGhvbi9weXRob24uZXhlZml4dHVyZVBLAQIUAxQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAAAAAAAAAAADtgQAAAABweXRob24vYmluL3B5dGhvbjNQSwECFAMUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAAAAAAAAAAAA7YE3AAAAcHl0aG9uL3B5dGhvbjNQSwUGAAAAAAIAAgB/AAAAbQAAAAAA', 'base64')
+    const row = { name: nativeToolsName(), size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }
+    const artifacts = [
+      row,
+      { ...row, name: 'dinkster-tools-linux-x86_64.zip' },
+      { ...row, name: 'dinkster-tools-windows-x86_64.zip' },
+      { ...row, name: 'dinkster-tools-macos-arm64.zip' },
+    ].filter((entry, index, values) => values.findIndex((other) => other.name === entry.name) === index)
+    const manifest = independentManifest(artifacts)
+    const sha256 = createHash('sha256').update(manifest).digest('hex')
+    const label = `2026-11-05-1.2.3-${sha256.slice(0, 8)}`
+    const release = join(root, 'tools', label)
+    await mkdir(join(root, 'channels'), { recursive: true })
+    await mkdir(release, { recursive: true })
+    await writeFile(join(release, 'tools-manifest.json'), manifest)
+    await writeFile(join(release, row.name), archive)
+    await writeFile(join(root, 'channels', 'main.json'), JSON.stringify({
+      format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0', signature: null,
+      tools: { label, manifest: join(release, 'tools-manifest.json'), sha256, release },
+    }))
+
+    const input = await channelTools({ root, operation: 'setup', channel: 'main', mirrors: [root] }, '0.2.0')
+    expect(input).toEqual({ label, manifest: join(release, 'tools-manifest.json'), sha256, release })
+    const tools = await acquireEnvironmentTools(input!)
+    roots.push(tools.directory)
+    expect(await readFile(tools.python, 'utf8')).toBe('fixture')
+
+    await expect(acquireEnvironmentTools({ ...input!, sha256: 'b'.repeat(64) })).rejects.toThrow('checksum mismatch')
+    const wrongSize = independentManifest([{ ...artifacts[0]!, size: row.size + 1 }, ...artifacts.slice(1)])
+    const wrongSizeSha256 = createHash('sha256').update(wrongSize).digest('hex')
+    await writeFile(join(release, 'tools-manifest.json'), wrongSize)
+    await expect(acquireEnvironmentTools({ ...input!, label: `2026-11-05-1.2.3-${wrongSizeSha256.slice(0, 8)}`, sha256: wrongSizeSha256 })).rejects.toThrow('size mismatch')
+    await writeFile(join(release, 'tools-manifest.json'), manifest)
+    await expect(acquireEnvironmentTools({ ...input!, label: `2026-11-05-1.2.3-${'a'.repeat(8)}` })).rejects.toThrow('identity')
+    for (const overrides of [
+      { builtAt: '2026-11-04T18:36:00Z' },
+      { version: 'not-a-version' },
+      { format: 'dinkster.engine/1' },
+    ]) {
+      const invalid = independentManifest(artifacts, overrides)
+      await writeFile(join(release, 'tools-manifest.json'), invalid)
+      await expect(acquireEnvironmentTools({ ...input!, sha256: createHash('sha256').update(invalid).digest('hex') })).rejects.toThrow('identity')
+    }
+    const localVersion = independentManifest(artifacts, { version: '1.2.3+build5', builtAt: '2026-11-05T18:36:00+00:00' })
+    const localSha256 = createHash('sha256').update(localVersion).digest('hex')
+    await writeFile(join(release, 'tools-manifest.json'), localVersion)
+    const localTools = await acquireEnvironmentTools({ ...input!, label: `2026-11-05-1.2.3-${localSha256.slice(0, 8)}`, sha256: localSha256 })
+    roots.push(localTools.directory)
+    expect(await readFile(localTools.python, 'utf8')).toBe('fixture')
+    await writeFile(join(release, 'tools-manifest.json'), manifest)
+    const wrongArchive = Buffer.from(archive)
+    wrongArchive[10] = 1
+    await writeFile(join(release, row.name), wrongArchive)
+    await expect(acquireEnvironmentTools(input!)).rejects.toThrow('checksum mismatch')
   })
 
   it('extracts deflated interpreter streams larger than a stream buffer without truncation', async () => {

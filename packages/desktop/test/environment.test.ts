@@ -232,6 +232,22 @@ describe('Desktop dinkster-env command client', () => {
     await expect(acquireEnvironmentTools({ ...input!, label: `2026-11-05-1.2.3-${wrongSizeSha256.slice(0, 8)}`, sha256: wrongSizeSha256 })).rejects.toThrow('size mismatch')
     await writeFile(join(release, 'tools-manifest.json'), manifest)
     await expect(acquireEnvironmentTools({ ...input!, label: `2026-11-05-1.2.3-${'a'.repeat(8)}` })).rejects.toThrow('identity')
+    for (const overrides of [
+      { builtAt: '2026-11-04T18:36:00Z' },
+      { version: 'not-a-version' },
+      { format: 'dinkster.engine/1' },
+    ]) {
+      const invalid = independentManifest(artifacts, overrides)
+      await writeFile(join(release, 'tools-manifest.json'), invalid)
+      await expect(acquireEnvironmentTools({ ...input!, sha256: createHash('sha256').update(invalid).digest('hex') })).rejects.toThrow('identity')
+    }
+    const localVersion = independentManifest(artifacts, { version: '1.2.3+build5', builtAt: '2026-11-05T18:36:00+00:00' })
+    const localSha256 = createHash('sha256').update(localVersion).digest('hex')
+    await writeFile(join(release, 'tools-manifest.json'), localVersion)
+    const localTools = await acquireEnvironmentTools({ ...input!, label: `2026-11-05-1.2.3-${localSha256.slice(0, 8)}`, sha256: localSha256 })
+    roots.push(localTools.directory)
+    expect(await readFile(localTools.python, 'utf8')).toBe('fixture')
+    await writeFile(join(release, 'tools-manifest.json'), manifest)
     const wrongArchive = Buffer.from(archive)
     wrongArchive[10] = 1
     await writeFile(join(release, row.name), wrongArchive)

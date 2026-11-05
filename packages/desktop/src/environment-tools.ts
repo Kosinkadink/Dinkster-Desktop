@@ -43,16 +43,16 @@ function validArtifact(row: ToolsArtifact | undefined): row is ToolsArtifact {
   return !!row && typeof row.name === 'string' && Number.isSafeInteger(row.size) && row.size > 0 && /^[a-f0-9]{64}$/.test(row.sha256)
 }
 
-function validateManifest(manifest: ToolsManifest, manifestSha256: string, inputLabel: string | undefined): ToolsArtifact[] {
+export function validateToolsManifest(manifest: ToolsManifest, manifestSha256: string, inputLabel: string | undefined): ToolsArtifact[] {
   if (!Array.isArray(manifest.artifacts)) throw new Error('unsupported tools manifest')
-  if (manifest.format === 'dinkster.engine/1') return manifest.artifacts
+  if (manifest.format === 'dinkster.engine/1' && inputLabel === undefined) return manifest.artifacts
   if (manifest.format !== 'dinkster.tools/1'
     || manifest.repository !== 'Kosinkadink/Dinkster'
     || typeof manifest.commit !== 'string' || !/^[a-f0-9]{40}$/.test(manifest.commit)
-    || typeof manifest.version !== 'string' || !manifest.version
-    || typeof manifest.builtAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T.*Z$/.test(manifest.builtAt) || Number.isNaN(Date.parse(manifest.builtAt))
+    || typeof manifest.version !== 'string' || !/^\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/.test(manifest.version)
+    || typeof manifest.builtAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|\+00:00)$/.test(manifest.builtAt) || Number.isNaN(Date.parse(manifest.builtAt))
     || typeof manifest.label !== 'string' || !/^\d{4}-\d{2}-\d{2}-[A-Za-z0-9.+_-]+$/.test(manifest.label)
-    || manifest.label.slice(11) !== manifest.version
+    || manifest.label !== `${new Date(manifest.builtAt).toISOString().slice(0, 10)}-${manifest.version.split('+')[0]}`
     || (inputLabel !== undefined && inputLabel !== `${manifest.label}-${manifestSha256.slice(0, 8)}`)) {
     throw new Error('invalid independent tools manifest identity')
   }
@@ -75,7 +75,7 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
     const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
     const arch = { x64: 'x86_64', arm64: 'arm64' }[process.arch as 'x64' | 'arm64']
     if (!os || !arch) throw new Error('unsupported tools platform')
-    const artifacts = validateManifest(manifest, input.sha256, input.label)
+    const artifacts = validateToolsManifest(manifest, input.sha256, input.label)
     const name = `dinkster-tools-${os}-${arch}.zip`
     const rows = artifacts.filter((row) => row.name === name)
     const row = rows[0]

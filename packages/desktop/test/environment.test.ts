@@ -18,6 +18,10 @@ function nativeToolsName(): string {
   return `dinkster-tools-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}.zip`
 }
 
+function toolsArtifacts(row: { name: string; size: number; sha256: string }): typeof row[] {
+  return ['linux-x86_64', 'windows-x86_64', 'macos-arm64'].map((platform) => ({ ...row, name: `dinkster-tools-${platform}.zip` }))
+}
+
 function independentManifest(artifacts: { name: string; size: number; sha256: string }[], overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     format: 'dinkster.tools/1',
@@ -151,9 +155,9 @@ describe('Desktop dinkster-env command client', () => {
     const name = `dinkster-tools-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}.zip`
     const row = { name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }
     await writeFile(join(root, name), archive)
-    const manifest = join(root, 'engine.json')
+    const manifest = join(root, 'tools-manifest.json')
     async function input(artifacts = [row]) {
-      const bytes = JSON.stringify({ format: 'dinkster.engine/1', artifacts })
+      const bytes = independentManifest([...toolsArtifacts(row).filter((entry) => entry.name !== row.name), ...artifacts])
       await writeFile(manifest, bytes)
       return { manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root }
     }
@@ -191,7 +195,7 @@ describe('Desktop dinkster-env command client', () => {
     await expect(acquireEnvironmentTools({ ...pin, sha256: 'a'.repeat(64) })).rejects.toThrow('checksum mismatch')
     await expect(acquireEnvironmentTools(await input([{ ...row, size: row.size + 1 }]))).rejects.toThrow('size mismatch')
     await expect(acquireEnvironmentTools(await input([{ ...row, sha256: 'b'.repeat(64) }]))).rejects.toThrow('checksum mismatch')
-    await expect(acquireEnvironmentTools(await input([row, row]))).rejects.toThrow('unique pinned native tools')
+    await expect(acquireEnvironmentTools(await input([row, row]))).rejects.toThrow('manifest artifacts')
     expect(await readFile(tools.python, 'utf8')).toBe('fixture')
   })
 
@@ -200,12 +204,7 @@ describe('Desktop dinkster-env command client', () => {
     roots.push(root)
     const archive = Buffer.from('UEsDBBQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAcHl0aG9uL2Jpbi9weXRob24zZml4dHVyZVBLAwQUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAHB5dGhvbi9weXRob24uZXhlZml4dHVyZVBLAQIUAxQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAAAAAAAAAAADtgQAAAABweXRob24vYmluL3B5dGhvbjNQSwECFAMUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAAAAAAAAAAAA7YE3AAAAcHl0aG9uL3B5dGhvbi5leGVQSwUGAAAAAAIAAgB/AAAAbQAAAAAA', 'base64')
     const row = { name: nativeToolsName(), size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }
-    const artifacts = [
-      row,
-      { ...row, name: 'dinkster-tools-linux-x86_64.zip' },
-      { ...row, name: 'dinkster-tools-windows-x86_64.zip' },
-      { ...row, name: 'dinkster-tools-macos-arm64.zip' },
-    ].filter((entry, index, values) => values.findIndex((other) => other.name === entry.name) === index)
+    const artifacts = [row, ...toolsArtifacts(row).filter((entry) => entry.name !== row.name)]
     const manifest = independentManifest(artifacts)
     const sha256 = createHash('sha256').update(manifest).digest('hex')
     const label = `2026-11-05-1.2.3-${sha256.slice(0, 8)}`
@@ -240,6 +239,9 @@ describe('Desktop dinkster-env command client', () => {
       const invalid = independentManifest(artifacts, overrides)
       await writeFile(join(release, 'tools-manifest.json'), invalid)
       await expect(acquireEnvironmentTools({ ...input!, sha256: createHash('sha256').update(invalid).digest('hex') })).rejects.toThrow('identity')
+      if (overrides.format === 'dinkster.engine/1') {
+        await expect(acquireEnvironmentTools({ ...input!, label: undefined, sha256: createHash('sha256').update(invalid).digest('hex') })).rejects.toThrow('identity')
+      }
     }
     const localVersion = independentManifest(artifacts, { version: '1.2.3+build5', builtAt: '2026-11-05T18:36:00+00:00' })
     const localSha256 = createHash('sha256').update(localVersion).digest('hex')
@@ -292,8 +294,8 @@ describe('Desktop dinkster-env command client', () => {
     const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
     const name = `dinkster-tools-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}.zip`
     await writeFile(join(root, name), archive)
-    const manifest = join(root, 'engine.json')
-    const document = JSON.stringify({ format: 'dinkster.engine/1', artifacts: [{ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }] })
+    const manifest = join(root, 'tools-manifest.json')
+    const document = independentManifest(toolsArtifacts({ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }))
     await writeFile(manifest, document)
     const tools = await acquireEnvironmentTools({ manifest, sha256: createHash('sha256').update(document).digest('hex'), release: root })
     roots.push(tools.directory)
@@ -311,8 +313,8 @@ describe('Desktop dinkster-env command client', () => {
     ]) {
       const archive = Buffer.from(encoded, 'base64')
       await writeFile(join(root, name), archive)
-      const bytes = JSON.stringify({ format: 'dinkster.engine/1', artifacts: [{ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }] })
-      const manifest = join(root, 'engine.json')
+      const bytes = independentManifest(toolsArtifacts({ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }))
+      const manifest = join(root, 'tools-manifest.json')
       await writeFile(manifest, bytes)
       await expect(acquireEnvironmentTools({ manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root })).rejects.toThrow(/invalid relative path|unsafe tools ZIP/)
     }
@@ -325,7 +327,9 @@ describe('Desktop dinkster-env command client', () => {
     // Stored ZIP: both interpreter paths and the published 2621A/2621a terminfo pair.
     const pair = Buffer.from('UEsDBBQAAAAAAAAAIQC3JjKwCwAAAAsAAAASAAAAcHl0aG9uL2Jpbi9weXRob24zaW50ZXJwcmV0ZXJQSwMEFAAAAAAAAAAhALcmMrALAAAACwAAABEAAABweXRob24vcHl0aG9uLmV4ZWludGVycHJldGVyUEsDBBQAAAAAAAAAIQCc319uBQAAAAUAAAAdAAAAcHl0aG9uL3NoYXJlL3Rlcm1pbmZvLzIvMjYyMUF1cHBlclBLAwQUAAAAAAAAACEAI3uaDgUAAAAFAAAAHQAAAHB5dGhvbi9zaGFyZS90ZXJtaW5mby8yLzI2MjFhbG93ZXJQSwECFAMUAAAAAAAAACEAtyYysAsAAAALAAAAEgAAAAAAAAAAAAAA7YEAAAAAcHl0aG9uL2Jpbi9weXRob24zUEsBAhQDFAAAAAAAAAAhALcmMrALAAAACwAAABEAAAAAAAAAAAAAAO2BOwAAAHB5dGhvbi9weXRob24uZXhlUEsBAhQDFAAAAAAAAAAhAJzfX24FAAAABQAAAB0AAAAAAAAAAAAAAO2BdQAAAHB5dGhvbi9zaGFyZS90ZXJtaW5mby8yLzI2MjFBUEsBAhQDFAAAAAAAAAAhACN7mg4FAAAABQAAAB0AAAAAAAAAAAAAAO2BtQAAAHB5dGhvbi9zaGFyZS90ZXJtaW5mby8yLzI2MjFhUEsFBgAAAAAEAAQAFQEAAPUAAAAAAA==', 'base64')
     const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch')!
     Object.defineProperty(process, 'platform', { value: platform })
+    Object.defineProperty(process, 'arch', { value: platform === 'darwin' ? 'arm64' : 'x64' })
     try {
       const os = { linux: 'linux', win32: 'windows', darwin: 'macos' }[platform]
       const name = `dinkster-tools-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}.zip`
@@ -333,8 +337,8 @@ describe('Desktop dinkster-env command client', () => {
         // Change both ZIP name records, leaving file contents and their CRCs intact.
         const archive = exactDuplicate ? Buffer.from(pair.toString('latin1').replaceAll('2621a', '2621A'), 'latin1') : pair
         await writeFile(join(root, name), archive)
-        const bytes = JSON.stringify({ format: 'dinkster.engine/1', artifacts: [{ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }] })
-        const manifest = join(root, 'engine.json')
+        const bytes = independentManifest(toolsArtifacts({ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }))
+        const manifest = join(root, 'tools-manifest.json')
         await writeFile(manifest, bytes)
         const pending = acquireEnvironmentTools({ manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root })
         if (platform === 'linux' && !exactDuplicate) {
@@ -349,6 +353,7 @@ describe('Desktop dinkster-env command client', () => {
       }
     } finally {
       Object.defineProperty(process, 'platform', descriptor)
+      Object.defineProperty(process, 'arch', archDescriptor)
     }
   })
 

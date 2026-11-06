@@ -21,7 +21,7 @@ pnpm typecheck
 pnpm test
 ```
 
-`pnpm --filter @dinkster/desktop package:win` produces an unsigned Windows installer; `package:linux` produces a Linux AppImage; `package:mac` produces an unsigned Apple Silicon ZIP. All include the native standalone environment tools ZIP and its engine manifest, not backend source, engine wheels or base bundles. `packages/desktop/src/environment-tools-release.json` pins the tools release, sizes, SHA256 digests and pin date independently of the checkout-development backend. Build preparation downloads and verifies those public inputs before packaging. The Windows release uses `package:win:signed` through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). A merged version PR carrying the desk-applied `Release` label tags its squash commit and dispatches the shared installer/publisher chain. All five verified assets publish on that existing `desktop-v<version>` tag. Release candidates publish without moving latest. See [Publishing installers](docs/desktop.md#publishing-installers). Local validation must not dispatch workflows or publish a release.
+`pnpm --filter @dinkster/desktop package:win` produces an unsigned Windows installer; `package:linux` produces a Linux AppImage; `package:mac` produces an unsigned Apple Silicon ZIP. All include the native standalone environment tools ZIP and its tools manifest, not backend source, engine wheels or base bundles. `packages/desktop/src/environment-tools-release.json` pins the independent tools publication label, sizes, SHA256 digests and pin date independently of the checkout-development backend. Build preparation downloads and verifies those public inputs from `https://releases.dinkster.org/tools/<label>` before packaging. The Windows release uses `package:win:signed` through the Artifact Signing account described in [Desktop signing](docs/desktop-signing.md). A merged version PR carrying the desk-applied `Release` label tags its squash commit and dispatches the shared installer/publisher chain. All five verified assets publish on that existing `desktop-v<version>` tag. Release candidates publish without moving latest. See [Publishing installers](docs/desktop.md#publishing-installers). Local validation must not dispatch workflows or publish a release.
 
 Both signing workflows reference the `desktop-signing` GitHub environment. Its
 approval gate is off while the program is being established: no required
@@ -79,7 +79,7 @@ removed. Remote projects never acquire tools. First setup and engine updates
 still acquire their engine and base artifacts from the configured mirrors.
 
 For development the runtime-download pin remains an explicit input:
-`DINKSTER_TOOLS_MANIFEST` identifies the immutable `dinkster.engine/1` manifest,
+`DINKSTER_TOOLS_MANIFEST` identifies the immutable `dinkster.tools/1` manifest,
 `DINKSTER_TOOLS_MANIFEST_SHA256` (or `DINKSTER_TOOLS_SHA256`) pins its bytes, and `DINKSTER_TOOLS_RELEASE`
 identifies its release directory. Locations are absolute local paths or
 credential-free HTTPS. Desktop selects the existing native tools artifact row,
@@ -87,14 +87,14 @@ verifies its size and SHA256 before standard ZIP extraction into a new owned
 temporary directory. These overrides take precedence over the bundled payload;
 their temporary trees are removed after commands drain and local engines stop.
 A failed stop retains those tools and records a diagnostic. Downloads reject TLS
-downgrades and stop at the artifact's declared size; engine metadata is bounded
+downgrades and stop at the artifact's declared size; tools metadata is bounded
 to 8 MiB. Explicit development interpreter/command overrides take precedence.
 
 Before setup, update or catalog invokes an environment command, packaged Desktop
 reads the selected channel and enforces `minimumDesktopVersion`, reporting
 `DesktopVersionTooOld` when the shell must update first. Status, doctor, start,
 stop and other installed-generation operations do not fetch channel metadata.
-A trusted channel may explicitly supply a `tools` object with `manifest`,
+A trusted channel may explicitly supply a `tools` object with `label`, `manifest`,
 `sha256` and `release` to select newer tools through the same verified acquisition
 path. A newer engine alone does not force a tools download.
 

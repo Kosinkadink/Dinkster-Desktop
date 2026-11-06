@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path'
 import extract from 'extract-zip'
 import { download, verifyFile } from './io.js'
 
-/** Inputs identify a verified engine or independently published tools release. */
+/** Inputs identify a verified independently published tools release. */
 export interface EnvironmentToolsInput {
   readonly label?: string
   readonly manifest: string
@@ -45,7 +45,6 @@ function validArtifact(row: ToolsArtifact | undefined): row is ToolsArtifact {
 
 export function validateToolsManifest(manifest: ToolsManifest, manifestSha256: string, inputLabel: string | undefined): ToolsArtifact[] {
   if (!Array.isArray(manifest.artifacts)) throw new Error('unsupported tools manifest')
-  if (manifest.format === 'dinkster.engine/1' && inputLabel === undefined) return manifest.artifacts
   if (manifest.format !== 'dinkster.tools/1'
     || manifest.repository !== 'Kosinkadink/Dinkster'
     || typeof manifest.commit !== 'string' || !/^[a-f0-9]{40}$/.test(manifest.commit)
@@ -68,7 +67,7 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
   if (input.cacheRoot) await mkdir(input.cacheRoot, { recursive: true })
   const directory = await mkdtemp(join(input.cacheRoot ?? tmpdir(), 'dinkster-tools-'))
   try {
-    const manifestPath = join(directory, 'engine.json')
+    const manifestPath = join(directory, 'tools-manifest.json')
     await acquire(input.manifest, manifestPath, 8 * 1024 * 1024)
     await verifyFile(manifestPath, input.sha256)
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as ToolsManifest

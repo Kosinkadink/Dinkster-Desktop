@@ -144,6 +144,16 @@ silently changing the renderer's storage origin. Generation, history, rollback
 and software integrity remain supervisor responsibilities. An opted-out gateway
 returns 404; missing or untrusted capabilities return 403 before invoking tools.
 
+The Electron client-boundary check is
+`pnpm --filter @dinkster/e2e exec node scripts/verify-environment-client.mjs`.
+It requires a built Desktop and its pinned branding resources plus a display
+(a private Xvfb display is sufficient on Linux). It exercises real Electron
+header injection and gateway routing with supervisor and engine fixtures:
+top-level plan/apply, denied subframe and unrelated-window requests, replay
+refusal, and backend replacement without losing the document or origin. It
+also checks native file permissions and whole-project update/rollback. This
+does not replace real importer, generation assembly or registry acceptance.
+
 Check drift shows the active base's variant, user-defined origin, torch version
 and torch index when the environment tools return base metadata. It also shows
 installed base and engine labels, and the engine version and full release

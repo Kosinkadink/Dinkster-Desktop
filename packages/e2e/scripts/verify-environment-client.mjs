@@ -218,6 +218,7 @@ console.log(JSON.stringify(row));
   await manager.getByRole('button', { name: 'Open main', exact: true }).click()
   const engine = await opened
   await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
+  const engineOrigin = new URL(engine.url()).origin
   await expect
     .poll(() =>
       engine
@@ -240,7 +241,7 @@ console.log(JSON.stringify(row));
   assert.deepEqual(
     await engine.evaluate(
       (url) => window.dinksterDesktop.fileCapabilities(url),
-      urls[0],
+      engineOrigin,
     ),
     { nativeFolderChoice: true, reveal: true, resolvePath: false },
   )
@@ -286,7 +287,7 @@ console.log(JSON.stringify(row));
         child.destroy()
       }
     },
-    urls[0],
+    engineOrigin,
   )
   assert.deepEqual(untrusted.capabilities, {
     nativeFolderChoice: false,
@@ -309,7 +310,7 @@ console.log(JSON.stringify(row));
   assert.deepEqual(
     await engine.evaluate(
       (url) => window.dinksterDesktop.fileCapabilities(url),
-      urls[0],
+      engineOrigin,
     ),
     { nativeFolderChoice: false, reveal: false, resolvePath: false },
   )
@@ -332,7 +333,7 @@ console.log(JSON.stringify(row));
       } catch (error) {
         return { error: error.message }
       }
-    }, urls[0])
+    }, engineOrigin)
     await expect
       .poll(() => app.evaluate(() => globalThis.folderDialogEntered))
       .toBe(true)
@@ -370,7 +371,7 @@ console.log(JSON.stringify(row));
     await writeFile(observedFile, JSON.stringify(observed))
     await writeFile(projectsFile, savedProjects)
   }
-  await engine.goto(`${urls[0]}/?dinksterProject=p-shared`)
+  await engine.goto(`${engineOrigin}/?dinksterProject=p-shared`)
   const identity = {
     digest: `blake3:${'a1'.repeat(32)}`,
     scope: 'local',
@@ -386,7 +387,7 @@ console.log(JSON.stringify(row));
           return error.message
         }
       },
-      { url: urls[0], asset },
+      { url: engineOrigin, asset },
     )
   assert.match(await deniedReveal(identity), /No verified local copy/)
   assert.equal(locationRequests.at(-1).searchParams.get('project'), 'p-shared')
@@ -405,15 +406,15 @@ console.log(JSON.stringify(row));
     await deniedReveal({ ...identity, project: 'p-other' }),
     /requesting project/,
   )
-  await engine.goto(`${urls[0]}/?dinksterProject=invalid_project`)
+  await engine.goto(`${engineOrigin}/?dinksterProject=invalid_project`)
   assert.deepEqual(
     await engine.evaluate(
       (url) => window.dinksterDesktop.fileCapabilities(url),
-      urls[0],
+      engineOrigin,
     ),
     { nativeFolderChoice: false, reveal: false, resolvePath: false },
   )
-  await engine.goto(urls[0])
+  await engine.goto(engineOrigin)
   await manager
     .getByRole('button', { name: 'Manage main', exact: true })
     .click()
@@ -445,7 +446,7 @@ console.log(JSON.stringify(row));
     await engine.screenshot({
       path: join(artifacts, 'chrome-engine-topbar.png'),
     })
-  assert.equal(new URL(engine.url()).origin, urls[1])
+  assert.equal(new URL(engine.url()).origin, engineOrigin)
   await manager
     .getByText('Environment operation completed.', { exact: false })
     .waitFor()
@@ -453,7 +454,7 @@ console.log(JSON.stringify(row));
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
-  assert.equal(new URL(engine.url()).origin, urls[0])
+  assert.equal(new URL(engine.url()).origin, engineOrigin)
   await manager
     .getByText('Environment operation completed.', { exact: false })
     .waitFor()

@@ -72,11 +72,15 @@ bundled scripts directory, not host Python or package managers. Inherited
 Packaged Desktop uses the bundled tools for local operations without a runtime
 tools download. Extraction verifies the manifest and native ZIP, rejects links
 and escaping or duplicate paths, and preserves executable modes. The completed
-tree lives under the Desktop user-data `environment-tools/<archive-sha256>`
-directory, survives normal shutdown, and is reused on subsequent launches.
-A different pinned archive is extracted before the previous digest tree is
-removed. Remote projects never acquire tools. First setup and engine updates
-still acquire their engine and base artifacts from the configured mirrors.
+tree lives under the Desktop user-data
+`environment-tools/<tools-date>-<version>-<os>-<arch>` directory, survives normal
+shutdown, and is reused by full archive SHA256, even if its label changes.
+Different archives sharing a label receive `--2`, `--3` suffixes. Existing
+digest-named extractions are reused in place. A different pinned archive is
+fully checked before the previous payload is removed; small identity records
+reserve those paths for later reuse. Remote projects never acquire tools. First
+setup and engine updates still acquire their engine and base artifacts from the
+configured mirrors.
 
 For development the runtime-download pin remains an explicit input:
 `DINKSTER_TOOLS_MANIFEST` identifies the immutable `dinkster.tools/1` manifest,

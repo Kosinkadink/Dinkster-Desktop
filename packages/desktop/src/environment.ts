@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { rm } from 'node:fs/promises'
+import { realpath, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
 import { promisify } from 'node:util'
 import type { VariantHardware } from './hardware.js'
@@ -8,7 +8,7 @@ import { channelTools } from './environment-channel.js'
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'start' | 'stop' | 'status' | 'catalog'
+export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'start' | 'stop' | 'status' | 'catalog' | 'packs-plan' | 'packs-apply'
 export type EnvironmentChannel = 'stable' | 'main'
 
 export interface EnvironmentRequest {
@@ -23,6 +23,9 @@ export interface EnvironmentRequest {
   readonly repair?: boolean
   readonly engine?: string
   readonly gpus?: readonly string[]
+  readonly packs?: readonly { readonly pack: string; readonly version: string }[]
+  readonly inputs?: string
+  readonly approval?: string
 }
 
 export interface EnvironmentEngine {
@@ -43,6 +46,9 @@ export interface EnvironmentResult {
   readonly url?: string
   readonly changes?: readonly string[]
   readonly error?: string
+  readonly packPlan?: Readonly<Record<string, unknown>>
+  readonly approval?: string
+  readonly expiresInSeconds?: number
   readonly engines?: readonly EnvironmentEngine[]
   readonly channel?: EnvironmentChannel | null
   readonly variant?: string | null
@@ -68,9 +74,30 @@ export interface EnvironmentResult {
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
-  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'start', 'stop', 'status', 'catalog'].includes(request.operation)) throw new Error('unsupported environment operation')
+  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'start', 'stop', 'status', 'catalog', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
   if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'main') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
+  if (request.operation === 'packs-plan' || request.operation === 'packs-apply') {
+    if (!request.inputs || !isAbsolute(request.inputs)) throw new Error('pack installation needs an absolute host-owned review directory')
+    if (['channel', 'variant', 'mirrors', 'data', 'port', 'destination', 'repair', 'engine', 'gpus'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) {
+      throw new Error('pack installation retains the current project software settings')
+    }
+    if (request.operation === 'packs-plan') {
+      if (confirmed || request.approval !== undefined || !request.packs || request.packs.length < 1 || request.packs.length > 64) throw new Error('pack planning needs unconfirmed exact selections')
+      const names = new Set<string>()
+      for (const { pack, version } of request.packs) {
+        if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(pack) || !version || !/^[a-zA-Z0-9][a-zA-Z0-9.+!-]*$/.test(version) || names.has(pack)) throw new Error('invalid or repeated exact pack selection')
+        names.add(pack)
+        args.push(`${pack}@${version}`)
+      }
+      args.push('--output', request.inputs)
+    } else {
+      if (!confirmed || request.packs !== undefined || !request.approval || !/^sha256:[a-f0-9]{64}$/.test(request.approval)) throw new Error('pack apply needs the confirmed supervisor approval digest')
+      args.push('--input', request.inputs, '--approval', request.approval)
+    }
+    return [...args, '--json']
+  }
+  if (request.packs !== undefined || request.inputs !== undefined || request.approval !== undefined) throw new Error('pack review inputs require a pack operation')
   if (request.operation === 'move') {
     if (!request.destination || !isAbsolute(request.destination)) throw new Error('move needs an absolute destination root')
     args.push(request.destination)
@@ -169,6 +196,18 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
         || (typeof nvidia[key] === 'string' && /^\d+(\.\d+)*$/.test(nvidia[key]))))
     })) throw new Error('unsupported dinkster-env catalog response')
   }
+  if (operation === 'packs-plan' && row['status'] !== 'error') {
+    const plan = row['packPlan'] as Record<string, unknown> | null
+    if (row['status'] !== 'planned' || row['current'] === null || !plan || typeof plan !== 'object' || Array.isArray(plan)
+      || plan['format'] !== 'dinkster.project-pack-plan/1' || plan['root'] !== row['root'] || plan['current'] !== row['current']
+      || typeof row['approval'] !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(row['approval']) || row['expiresInSeconds'] !== 900) {
+      throw new Error('unsupported dinkster-env pack plan response')
+    }
+  }
+  if (operation === 'packs-apply' && row['status'] !== 'error'
+    && (row['status'] !== 'applied' || row['current'] === null || !Array.isArray(row['engines']))) {
+    throw new Error('unsupported dinkster-env pack activation response')
+  }
   return value as EnvironmentResult
 }
 
@@ -254,6 +293,8 @@ export class EnvironmentClient {
       throw new Error(`dinkster-env ${request.operation} did not complete; inspect the project journal.`)
     }
     const result = resultFrom(stdout, request.operation)
+    if ((request.operation === 'packs-plan' || request.operation === 'packs-apply')
+      && await realpath(result.root) !== await realpath(request.root)) throw new Error('dinkster-env returned a different project root')
     if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))
     return result
   }

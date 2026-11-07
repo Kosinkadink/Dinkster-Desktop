@@ -114,6 +114,16 @@ requires stopping it first; the environment tools enforce that rule.
 The client consumes `dinkster.environment-result/1`. An update may start a new
 supervisor on a different port, so open local engine windows follow the ready
 URL returned by the command rather than reconstructing it from saved ports.
+The main-process command client also accepts supervisor `packs-plan` and
+`packs-apply` operations. Pack planning takes exact pack/version selections and
+an absolute host-owned review directory. Apply requires explicit confirmation
+and the supervisor's `sha256:` approval digest, not a renderer-supplied plan.
+These operations retain the current project's software settings and do not
+accept channel, variant, store, engine or device overrides. Successful reviews
+must identify the same project and current generation; successful apply results
+must name the resulting generation and engine states. This command support
+does not itself enable an HTTP install route or grant renderer authority.
+
 Check drift shows the active base's variant, user-defined origin, torch version
 and torch index when the environment tools return base metadata. It also shows
 installed base and engine labels, and the engine version and full release

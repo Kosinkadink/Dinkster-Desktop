@@ -104,6 +104,16 @@ and rollbacks route open windows to the newly returned supervisor URL, not the
 previous port. Desktop metadata stores bindings only; the environment command
 owns `project.json`, store discovery, generations and process identity.
 
+The local manager's **Cleanup status (read-only)** operation displays backend
+retention reasons, automatic-cleanup preference, quarantined generations and
+persistent retry warnings. **Generation cleanup / retry** reviews a plan before
+confirmation. Keep the preference to retry generation-only cleanup, or select
+on/off to change the backend preference without collecting immediately. Shared
+caches remain under the separate **Garbage collection** operation. Desktop
+does not duplicate retention policy, delete generation files or stop engines
+for cleanup. Older tools without cleanup details report that they are unavailable;
+this UI does not update the immutable bundled tools pin.
+
 The Linux Electron client boundary check runs with
 `node packages/e2e/scripts/verify-environment-client.mjs` under a display (or
 `xvfb-run --auto-servernum`). It uses subprocess response stubs to check plan

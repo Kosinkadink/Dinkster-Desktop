@@ -68,6 +68,12 @@
               <option value="setup">Install</option><option value="update">Update / change variant</option>
               <option value="rollback">Rollback</option><option value="move">Move</option>
               <option value="doctor">Check drift</option><option value="gc">Garbage collection</option>
+              <option value="status">Cleanup status (read-only)</option><option value="cleanup">Generation cleanup / retry</option>
+            </select></label>
+            <label>Automatic cleanup (Cleanup operation only)<select id="local-cleanup">
+              <option value="keep">Keep preference; retry unused generations</option>
+              <option value="off">Turn automatic cleanup off; do not collect</option>
+              <option value="on">Turn automatic cleanup on; do not collect now</option>
             </select></label>
             <label>Variant (override available)<select id="local-variant"><option value="">Keep current / inspect before installing</option></select></label>
             <label>Mirrors, in order (one per line)<textarea id="local-mirrors" rows="2" placeholder="Local mirror directory or HTTPS URL"></textarea></label>
@@ -80,6 +86,7 @@
             <p id="detected-gpus" style="white-space:pre-wrap"></p>
             <p id="hardware-reason" style="white-space:pre-wrap" aria-live="polite">Inspect the catalog and assigned GPUs before choosing a variant. CPU is never selected automatically.</p>
             <p>Environment operations run through dinkster-env. Review its plan before any install, update, rollback, move or collection. CPU is never selected automatically.</p>
+            <p>Cleanup uses the environment's retention policy. Review retained, collectible and deferred generations before confirming a retry. Shared caches require the separate Garbage collection operation.</p>
             <div class="actions"><button type="submit">Review environment plan</button><button id="bind-local" type="button">Save existing binding</button></div>
           </form>
         </details>

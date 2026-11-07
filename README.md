@@ -122,6 +122,20 @@ delegation. It is not a substitute for real CLI/generation file comparisons.
 `DINKSTER_ELECTRON_EXECUTABLE` optionally selects the installed Electron binary;
 `DINKSTER_SMOKE_ARTIFACTS` optionally retains screenshots.
 
+The Linux cleanup integration check uses the real Electron IPC and backend
+command on a newly generated disposable CPU installation. After preparing the
+pinned frontend/branding and building Desktop, set `DINKSTER_BACKEND_ROOT` to a
+backend checkout with its development `.venv` and run
+`node packages/e2e/scripts/verify-cleanup-integration.mjs`. It checks read-only
+status, disabled retry, preference persistence, lock deferral with persistent
+warnings, and confirmed collection while the current engine stays responsive.
+History, user-data sentinels, bindings and a shared-cache sentinel must remain
+byte-identical. It requires a display (or `xvfb-run`), accepts no existing
+installation root, and stops only its generated fixture during teardown. The printed fixture path
+is retained for inspection; `DINKSTER_SMOKE_ARTIFACTS` retains screenshots and
+the result report. The faster `verify-cleanup-dialog.mjs` uses protocol fixtures
+instead; `DINKSTER_CHROMIUM_PATH` can select an installed Chromium binary.
+
 Pull requests run formatting, types, unit tests, and the Linux build with a
 10-minute budget. Main adds the pinned frontend browser suite and Windows
 packaging in parallel, with a 20-minute end-to-end budget. The `CI_RUNNERS`

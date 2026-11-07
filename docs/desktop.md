@@ -121,8 +121,28 @@ and the supervisor's `sha256:` approval digest, not a renderer-supplied plan.
 These operations retain the current project's software settings and do not
 accept channel, variant, store, engine or device overrides. Successful reviews
 must identify the same project and current generation; successful apply results
-must name the resulting generation and engine states. This command support
-does not itself enable an HTTP install route or grant renderer authority.
+must name the resulting generation and engine states.
+
+Local project windows use a Desktop-owned loopback gateway for HTTP and
+WebSocket connections. Desktop opts that gateway into the shared
+`POST /api/packs/install/plan` and `POST /api/packs/install/apply` routes;
+remote project windows do not receive this capability. The main process adds
+an ephemeral request capability only for the bound top-level local window.
+The gateway checks the actual loopback peer, exact host and origin, rejects
+bearer credentials, and binds each single-use confirmation to its document
+and project. No project root, executable, approval digest or review-directory
+path is accepted from renderer code. Reviews expire after 900 seconds; replaced,
+consumed, expired and closed-window reviews release their temporary inputs.
+
+Successful pack installation switches the gateway to the supervisor's ready
+engine URLs after checking health and pack composition. The window is not
+navigated or re-imported, preserving its unsaved document. WebSockets reconnect
+to the new engine. Whole-project operations retain their existing window reload.
+The gateway port is saved per project/engine in Desktop's data directory so its
+origin survives shell restarts; an occupied saved port fails opening rather than
+silently changing the renderer's storage origin. Generation, history, rollback
+and software integrity remain supervisor responsibilities. An opted-out gateway
+returns 404; missing or untrusted capabilities return 403 before invoking tools.
 
 Check drift shows the active base's variant, user-defined origin, torch version
 and torch index when the environment tools return base metadata. It also shows

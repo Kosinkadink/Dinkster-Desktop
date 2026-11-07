@@ -20,6 +20,37 @@ if (process.platform !== 'linux')
 if (!process.env.DISPLAY)
   throw new Error('Electron requires DISPLAY (or run under xvfb-run)')
 const python = join(resolve(backend), '.venv/bin/python')
+async function cleanHead(directory) {
+  const status = (
+    await execute('git', ['status', '--porcelain', '--untracked-files=all'], {
+      cwd: directory,
+    })
+  ).stdout
+  if (status.trim())
+    throw new Error(
+      `integration requires a clean source checkout: ${directory}`,
+    )
+  return (
+    await execute('git', ['rev-parse', 'HEAD'], { cwd: directory })
+  ).stdout.trim()
+}
+const desktopHead = await cleanHead(desktop)
+const backendHead = await cleanHead(backend)
+const backendModuleRoot = (
+  await execute(python, [
+    '-I',
+    '-c',
+    'import dinkster_supervisor; print(next(iter(dinkster_supervisor.__path__)))',
+  ])
+).stdout.trim()
+assert.equal(
+  resolve(backendModuleRoot),
+  join(
+    resolve(backend),
+    'packages/dinkster-supervisor/src/dinkster_supervisor',
+  ),
+  'backend interpreter must import this source checkout',
+)
 const scratch = await mkdtemp(join(tmpdir(), 'dinkster-cleanup-electron-'))
 const artifacts = process.env.DINKSTER_SMOKE_ARTIFACTS
 if (artifacts) await mkdir(artifacts, { recursive: true })
@@ -52,6 +83,10 @@ await readFile(
     'packages/desktop/resources/branding/tokens/dinkster-colors.json',
   ),
 )
+await execute('pnpm', ['--filter', '@dinkster/desktop', 'build'], {
+  ...options,
+  cwd: desktop,
+})
 let app
 let fixture
 const command = async (...args) =>
@@ -329,13 +364,26 @@ with writer_lock(Path(sys.argv[1])):
   )
   for (const [path, bytes] of protectedFiles)
     assert.equal(digest(await readFile(path)), digest(bytes), path)
+  assert.equal(
+    await cleanHead(desktop),
+    desktopHead,
+    'Desktop source changed during integration',
+  )
+  assert.equal(
+    await cleanHead(backend),
+    backendHead,
+    'backend source changed during integration',
+  )
   const report = {
-    desktopHead: (
-      await execute('git', ['rev-parse', 'HEAD'], { cwd: desktop })
-    ).stdout.trim(),
-    backendHead: (
-      await execute('git', ['rev-parse', 'HEAD'], { cwd: backend })
-    ).stdout.trim(),
+    desktopSourceHead: desktopHead,
+    backendSourceHead: backendHead,
+    provenance: {
+      cleanSourceWorktreesBeforeAndAfter: true,
+      desktopBuildCommand: 'pnpm --filter @dinkster/desktop build',
+      backendModuleRoot,
+      limitation:
+        'Dependencies and prepared branding assets are not attested; this is source-checkout integration, not packaged-release verification.',
+    },
     fixture: scratch,
     collected: [1],
     retained: [2, 3],

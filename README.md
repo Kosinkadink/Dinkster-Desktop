@@ -124,7 +124,7 @@ delegation. It is not a substitute for real CLI/generation file comparisons.
 
 The Linux cleanup integration check uses the real Electron IPC and backend
 command on a newly generated disposable CPU installation. After preparing the
-pinned frontend/branding and building Desktop, set `DINKSTER_BACKEND_ROOT` to a
+pinned frontend/branding and installing dependencies, set `DINKSTER_BACKEND_ROOT` to a
 backend checkout with its development `.venv` and run
 `node packages/e2e/scripts/verify-cleanup-integration.mjs`. It checks read-only
 status, disabled retry, preference persistence, lock deferral with persistent
@@ -135,6 +135,10 @@ installation root, and stops only its generated fixture during teardown. The pri
 is retained for inspection; `DINKSTER_SMOKE_ARTIFACTS` retains screenshots and
 the result report. The faster `verify-cleanup-dialog.mjs` uses protocol fixtures
 instead; `DINKSTER_CHROMIUM_PATH` can select an installed Chromium binary.
+The real integration requires clean source checkouts before and after the run,
+rebuilds Desktop before launch, and verifies that the backend interpreter imports
+the specified source tree. Its report identifies source commits, not a verified
+packaged release; installed dependencies and prepared branding are not attested.
 
 Pull requests run formatting, types, unit tests, and the Linux build with a
 10-minute budget. Main adds the pinned frontend browser suite and Windows

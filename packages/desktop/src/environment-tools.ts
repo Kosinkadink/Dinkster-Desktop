@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import extract from 'extract-zip'
@@ -61,10 +61,24 @@ export function validateToolsManifest(manifest: ToolsManifest, manifestSha256: s
   return manifest.artifacts
 }
 
-export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Promise<{ python: string; directory: string; persistent: boolean }> {
+// Electron's user-data instance lock excludes other Desktop writers. Serialize
+// requests within that instance as well, including failed acquisitions.
+let cacheWriter: Promise<unknown> = Promise.resolve()
+
+export function acquireEnvironmentTools(input: EnvironmentToolsInput): Promise<{ python: string; directory: string; persistent: boolean }> {
+  if (!input.cacheRoot) return acquireTools(input)
+  const pending = cacheWriter.then(() => acquireTools(input))
+  cacheWriter = pending.catch(() => undefined)
+  return pending
+}
+
+async function acquireTools(input: EnvironmentToolsInput): Promise<{ python: string; directory: string; persistent: boolean }> {
   if (!/^[a-f0-9]{64}$/.test(input.sha256)) throw new Error('tools require an immutable manifest SHA256')
   if (input.cacheRoot && !isAbsolute(input.cacheRoot)) throw new Error('tools cache must be absolute')
-  if (input.cacheRoot) await mkdir(input.cacheRoot, { recursive: true })
+  if (input.cacheRoot) {
+    await mkdir(input.cacheRoot, { recursive: true })
+    if (!(await lstat(input.cacheRoot)).isDirectory()) throw new Error('tools cache must be a real directory')
+  }
   const directory = await mkdtemp(join(input.cacheRoot ?? tmpdir(), 'dinkster-tools-'))
   try {
     const manifestPath = join(directory, 'tools-manifest.json')
@@ -80,16 +94,45 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
     const row = rows[0]
     if (rows.length !== 1 || !validArtifact(row)) throw new Error('tools manifest has no unique pinned native tools archive')
     const interpreter = process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'
-    const cached = input.cacheRoot ? join(input.cacheRoot, row.sha256) : undefined
-    if (cached) {
-      try {
-        if (await readFile(join(cached, 'complete'), 'utf8') === row.sha256 && (await stat(join(cached, 'payload', interpreter))).isFile()) {
-          console.info(`Reusing environment tools ${row.sha256}`)
-          await rm(directory, { recursive: true, force: true })
-          return { python: join(cached, 'payload', interpreter), directory: cached, persistent: true }
+    const allocations: { name: string; sha256: string }[] = []
+    let cached: string | undefined
+    if (input.cacheRoot) {
+      const entries = await readdir(input.cacheRoot, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!/^(?:[a-f0-9]{64}|\d{4}-\d{2}-\d{2}-.+-(?:linux|windows|macos)-(?:x86_64|arm64)(?:--(?:[2-9]|[1-9]\d+))?)$/i.test(entry.name)) continue
+        if (!entry.isDirectory()) throw new Error('tools allocation must be a real directory')
+        const marker = join(input.cacheRoot, entry.name, 'complete')
+        try {
+          if (!(await lstat(marker)).isFile()) throw new Error('invalid tools identity metadata')
+          const sha256 = await readFile(marker, 'utf8')
+          if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('invalid tools identity metadata')
+          allocations.push({ name: entry.name, sha256 })
+          if (sha256 === row.sha256) {
+            if (cached) throw new Error('duplicate tools identity metadata')
+            cached = join(input.cacheRoot, entry.name)
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      if (cached) {
+        try {
+          const payload = join(cached, 'payload')
+          if (!(await lstat(payload)).isDirectory() || !(await lstat(join(payload, 'python'))).isDirectory()
+            || (process.platform !== 'win32' && !(await lstat(join(payload, 'python', 'bin'))).isDirectory())
+            || !(await lstat(join(payload, interpreter))).isFile()) throw new Error('unsafe cached tools interpreter')
+          console.info(`Reusing environment tools ${cached}`)
+          await rm(directory, { recursive: true, force: true })
+          return { python: join(payload, interpreter), directory: cached, persistent: true }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        }
+      } else {
+        const label = `${manifest.label!.slice(0, 120)}-${os}-${arch}`
+        const occupied = new Set(entries.map((entry) => entry.name.toLowerCase()))
+        let name = label
+        for (let suffix = 2; occupied.has(name.toLowerCase()); suffix++) name = `${label}--${suffix}`
+        cached = join(input.cacheRoot, name)
       }
     }
     const release = source(input.release)
@@ -115,13 +158,22 @@ export async function acquireEnvironmentTools(input: EnvironmentToolsInput): Pro
     if (!(await stat(python)).isFile()) throw new Error('tools archive lacks its interpreter')
     if (cached && input.cacheRoot) {
       await writeFile(join(directory, 'complete'), row.sha256)
-      // Publish only a fully checked extraction; failed replacements leave the old tree intact.
-      await rm(cached, { recursive: true, force: true })
-      await rename(directory, cached)
-      for (const entry of await readdir(input.cacheRoot)) {
-        if (/^[a-f0-9]{64}$/.test(entry) && entry !== row.sha256) await rm(join(input.cacheRoot, entry), { recursive: true, force: true })
+      // A checked tree is its own recovery record. Never rename an existing
+      // interpreter; evicted identities retain their original folder reservation.
+      if (allocations.some((entry) => join(input.cacheRoot!, entry.name) === cached)) {
+        await rm(join(cached, 'payload'), { recursive: true, force: true })
+        await rename(payload, join(cached, 'payload'))
+        await rm(directory, { recursive: true, force: true })
+      } else await rename(directory, cached)
+      for (const entry of allocations) {
+        const previous = join(input.cacheRoot, entry.name)
+        if (previous === cached) continue
+        await rm(join(previous, 'payload'), { recursive: true, force: true })
+        for (const artifact of ['linux-x86_64', 'windows-x86_64', 'macos-arm64']) {
+          await rm(join(previous, `dinkster-tools-${artifact}.zip`), { force: true })
+        }
       }
-      console.info(`Extracted environment tools ${row.sha256}`)
+      console.info(`Extracted environment tools ${cached}`)
       return { python: join(cached, 'payload', interpreter), directory: cached, persistent: true }
     }
     return { python, directory, persistent: false }

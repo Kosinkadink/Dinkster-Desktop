@@ -278,7 +278,7 @@ executable_release(Path(fixture['mirror']),json.loads(Path(fixture['baseManifest
     'Automatic generation cleanup: on',
   )
   assert.deepEqual(await generations(), ['1', '2', '3'])
-  await manager.locator('#local-cleanup').selectOption('keep')
+  await expect(manager.locator('#local-cleanup')).toHaveValue('keep')
   await manager.locator('#local-keep-previous').fill('2')
   await review()
   await apply()
@@ -287,7 +287,7 @@ executable_release(Path(fixture['mirror']),json.loads(Path(fixture['baseManifest
     2,
   )
   assert.deepEqual(await generations(), ['1', '2', '3'])
-  await manager.locator('#local-keep-previous').fill('')
+  await expect(manager.locator('#local-keep-previous')).toHaveValue('')
   await review()
   await apply()
   await expect(manager.locator('#message')).toContainText('returned complete')
@@ -300,7 +300,7 @@ executable_release(Path(fixture['mirror']),json.loads(Path(fixture['baseManifest
     1,
   )
   assert.deepEqual(await generations(), ['1', '2', '3'])
-  await manager.locator('#local-keep-previous').fill('')
+  await expect(manager.locator('#local-keep-previous')).toHaveValue('')
   const holder = spawn(
     python,
     [
@@ -363,7 +363,7 @@ with writer_lock(Path(sys.argv[1])):
   await review()
   await apply()
   assert.deepEqual(await generations(), ['2', '3'])
-  await manager.locator('#local-keep-previous').fill('')
+  await expect(manager.locator('#local-keep-previous')).toHaveValue('')
   await manager.locator('#local-cleanup').selectOption('off')
   await review()
   await apply()

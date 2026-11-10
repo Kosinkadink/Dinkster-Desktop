@@ -254,6 +254,10 @@ document.querySelector<HTMLButtonElement>('#apply')!.addEventListener('click', (
     planToken = undefined
     document.querySelector<HTMLButtonElement>('#apply')!.hidden = true
     const result = await bridge.apply(token)
+    if (result.operation === 'cleanup' && result.status === 'applied') {
+      document.querySelector<HTMLInputElement>('#local-keep-previous')!.value = ''
+      document.querySelector<HTMLSelectElement>('#local-cleanup')!.value = 'keep'
+    }
     showPlan(result)
     await render()
     newProjectId = `project-${crypto.randomUUID()}`

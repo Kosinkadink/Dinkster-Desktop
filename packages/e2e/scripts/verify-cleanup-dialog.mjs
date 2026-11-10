@@ -48,6 +48,7 @@ try {
     window.fixture = 'default'
     let previousCount = 1
     let pendingCount
+    let pendingAutomatic
     const result = (operation, status) => ({
       format: 'dinkster.environment-result/1',
       operation,
@@ -104,6 +105,7 @@ try {
       plan: async (_project, request) => {
         window.calls.push(request)
         pendingCount = request.keepPreviousGenerations
+        pendingAutomatic = request.automaticCleanup
         return {
           ...(request.operation === 'status' ? {} : { token: 'reviewed' }),
           result: result(
@@ -116,7 +118,11 @@ try {
         if (pendingCount !== undefined) previousCount = pendingCount
         return result(
           'cleanup',
-          window.fixture === 'disabled' ? 'disabled' : 'deferred',
+          pendingCount !== undefined || pendingAutomatic !== undefined
+            ? 'applied'
+            : window.fixture === 'disabled'
+              ? 'disabled'
+              : 'deferred',
         )
       },
     }
@@ -161,8 +167,12 @@ try {
     await page
       .locator('#plan-panel')
       .screenshot({ path: resolve(artifacts, 'cleanup-count-two.png') })
-  await page.locator('#local-keep-previous').fill('')
+  await expect(page.locator('#local-keep-previous')).toHaveValue('')
   await page.getByRole('button', { name: 'Review environment plan' }).click()
+  assert.equal(
+    await page.evaluate(() => window.calls.at(-1).keepPreviousGenerations),
+    undefined,
+  )
   await page.locator('#apply').click()
   await expect(page.locator('#message')).toContainText('returned deferred')
   await expect(page.locator('#plan')).toContainText('Runtime is busy.')
@@ -179,7 +189,7 @@ try {
   await expect(page.locator('#plan')).toContainText(
     'Automatic generation cleanup: off',
   )
-  await expect(page.locator('#message')).toContainText('returned disabled')
+  await expect(page.locator('#message')).toContainText('returned applied')
   assert.equal(
     await page.evaluate(() => window.calls.at(-1).automaticCleanup),
     false,
@@ -188,6 +198,12 @@ try {
     await page
       .locator('#plan-panel')
       .screenshot({ path: resolve(artifacts, 'cleanup-disabled.png') })
+  await expect(page.locator('#local-cleanup')).toHaveValue('keep')
+  await page.getByRole('button', { name: 'Review environment plan' }).click()
+  assert.equal(
+    await page.evaluate(() => window.calls.at(-1).automaticCleanup),
+    undefined,
+  )
   await page.evaluate(() => {
     window.fixture = 'old'
   })

@@ -22,6 +22,7 @@ const artifacts = process.env.DINKSTER_SMOKE_ARTIFACTS
 if (artifacts) await mkdir(artifacts, { recursive: true })
 const servers = []
 const locationRequests = []
+let activationFailure
 let app
 try {
   for (const heading of ['Original supervisor', 'Updated supervisor']) {
@@ -31,8 +32,23 @@ try {
         response.end(
           JSON.stringify(
             request.url === '/api/health'
-              ? { ok: true, compositionState: { epoch: 2, failed: 0 } }
-              : { packs: { 'dinkster-text': { state: 'announced' } } },
+              ? {
+                  ok: true,
+                  compositionState: {
+                    epoch: 2,
+                    failed: activationFailure === 'health' ? 1 : 0,
+                  },
+                }
+              : {
+                  packs: {
+                    'dinkster-text': {
+                      state:
+                        activationFailure === 'composition'
+                          ? 'failed'
+                          : 'announced',
+                    },
+                  },
+                },
           ),
         )
         return
@@ -539,8 +555,45 @@ console.log(JSON.stringify(row));
   await engine.evaluate(() => {
     window.retainedPackInstallDocument = 'unchanged'
   })
+  for (const failure of ['health', 'composition']) {
+    activationFailure = failure
+    const refusedReview = await postInstall('plan', selection)
+    assert.equal(refusedReview.status, 200)
+    const refused = await postInstall('apply', {
+      confirmation: refusedReview.body.confirmation,
+    })
+    assert.equal(refused.status, 409, JSON.stringify(refused))
+    assert.deepEqual(refused.body, {
+      error: 'activation-failed',
+      generation: 2,
+    })
+    assert.equal(new URL(engine.url()).origin, engineOrigin)
+    assert.equal(
+      await engine.evaluate(() => window.retainedPackInstallDocument),
+      'unchanged',
+    )
+    assert.equal(
+      await engine.evaluate(() =>
+        fetch('/')
+          .then((response) => response.text())
+          .then((text) => text.includes('Original supervisor')),
+      ),
+      true,
+    )
+    assert.equal(
+      (
+        await postInstall('apply', {
+          confirmation: refusedReview.body.confirmation,
+        })
+      ).status,
+      409,
+    )
+  }
+  activationFailure = undefined
+  const healthyReview = await postInstall('plan', selection)
+  assert.equal(healthyReview.status, 200)
   const packApplied = await postInstall('apply', {
-    confirmation: packReview.body.confirmation,
+    confirmation: healthyReview.body.confirmation,
   })
   assert.equal(packApplied.status, 200, JSON.stringify(packApplied))
   assert.equal(packApplied.body.generation, 2)
@@ -551,8 +604,11 @@ console.log(JSON.stringify(row));
   )
   assert.equal(new URL(engine.url()).origin, engineOrigin)
   assert.equal(
-    (await postInstall('apply', { confirmation: packReview.body.confirmation }))
-      .status,
+    (
+      await postInstall('apply', {
+        confirmation: healthyReview.body.confirmation,
+      })
+    ).status,
     409,
   )
   assert.equal(

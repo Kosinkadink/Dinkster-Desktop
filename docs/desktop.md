@@ -150,8 +150,9 @@ It requires a built Desktop and its pinned branding resources plus a display
 (a private Xvfb display is sufficient on Linux). It exercises real Electron
 header injection and gateway routing with supervisor and engine fixtures:
 top-level plan/apply, denied subframe and unrelated-window requests, replay
-refusal, and backend replacement without losing the document or origin. It
-also checks native file permissions and whole-project update/rollback. This
+refusal, failed-health and failed-composition activation refusal, and backend
+replacement without losing the document or origin. It also checks native file
+permissions and whole-project update/rollback. This
 does not replace real importer, generation assembly or registry acceptance.
 
 Check drift shows the active base's variant, user-defined origin, torch version

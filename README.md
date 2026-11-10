@@ -108,6 +108,20 @@ and rollbacks route open windows to the newly returned supervisor URL, not the
 previous port. Desktop metadata stores bindings only; the environment command
 owns `project.json`, store discovery, generations and process identity.
 
+The local manager's **Cleanup status (read-only)** operation displays backend
+retention reasons, automatic-cleanup preference, quarantined generations and
+persistent retry warnings. **Generation cleanup / retry** reviews a plan before
+confirmation. Keep the preference to retry generation-only cleanup, or select
+on/off to change the backend preference without collecting immediately. The
+adjacent previous-generations field accepts 1-100 (default 1), in addition to
+current; leave it blank to keep the saved count. Both settings use the backend's
+project policy. A count change takes effect on the next eligible cleanup, not
+while saving it. Preview and status show the effective count. Shared
+caches remain under the separate **Garbage collection** operation. Desktop
+does not duplicate retention policy, delete generation files or stop engines
+for cleanup. Older tools without cleanup details report that they are unavailable;
+this UI does not update the immutable bundled tools pin.
+
 The Linux Electron client boundary check runs with
 `node packages/e2e/scripts/verify-environment-client.mjs` under a display (or
 `xvfb-run --auto-servernum`). It uses subprocess response stubs to check plan
@@ -115,6 +129,24 @@ confirmation, changed-port handoff, rollback, remote-only routing and shutdown
 delegation. It is not a substitute for real CLI/generation file comparisons.
 `DINKSTER_ELECTRON_EXECUTABLE` optionally selects the installed Electron binary;
 `DINKSTER_SMOKE_ARTIFACTS` optionally retains screenshots.
+
+The Linux cleanup integration check uses the real Electron IPC and backend
+command on a newly generated disposable CPU installation. After preparing the
+pinned frontend/branding and installing dependencies, set `DINKSTER_BACKEND_ROOT` to a
+backend checkout with its development `.venv` and run
+`node packages/e2e/scripts/verify-cleanup-integration.mjs`. It checks read-only
+status, disabled retry, preference persistence, lock deferral with persistent
+warnings, and confirmed collection while the current engine stays responsive.
+History, user-data sentinels, bindings and a shared-cache sentinel must remain
+byte-identical. It requires a display (or `xvfb-run`), accepts no existing
+installation root, and stops only its generated fixture during teardown. The printed fixture path
+is retained for inspection; `DINKSTER_SMOKE_ARTIFACTS` retains screenshots and
+the result report. The faster `verify-cleanup-dialog.mjs` uses protocol fixtures
+instead; `DINKSTER_CHROMIUM_PATH` can select an installed Chromium binary.
+The real integration requires clean source checkouts before and after the run,
+rebuilds Desktop before launch, and verifies that the backend interpreter imports
+the specified source tree. Its report identifies source commits, not a verified
+packaged release; installed dependencies and prepared branding are not attested.
 
 Pull requests run formatting, types, unit tests, and the Linux build with a
 10-minute budget. Main adds the pinned frontend browser suite and Windows

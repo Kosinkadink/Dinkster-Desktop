@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { crc32, deflateRawSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EnvironmentClient, type EnvironmentOperation } from '../src/environment.js'
+import { EnvironmentClient, type EnvironmentOperation, type EnvironmentRequest } from '../src/environment.js'
 import { channelTools } from '../src/environment-channel.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
@@ -417,6 +417,60 @@ describe('Desktop dinkster-env command client', () => {
       if (operation === 'move') expect(args[3]).toBe(join(root, 'moved project'))
     }
     await expect(client.run({ root, operation: 'doctor', repair: true }, true)).rejects.toThrow('generation drift needs offline repair')
+  })
+
+  it('delegates cleanup preference and retry, preserving deferred status and warnings', async () => {
+    const { root } = await commandFixture()
+    const cleanup = {
+      policy: { automatic: false, previousSuccessfulActivations: 1, minimumAgeSeconds: 0 },
+      generations: [{ generation: 7, status: 'deferred', reasons: ['unreadable history'] }],
+      quarantine: [{ journal: '600.json', stage: 'complete', generations: [2] }],
+      warnings: ['generation 2 awaits deletion'],
+      lastAttempt: { status: 'deferred', warnings: ['sharing violation'] },
+    }
+    const response = join(root, 'response.json')
+    const script = join(root, 'cleanup.cjs')
+    await writeFile(response, JSON.stringify(cleanup))
+    await writeFile(script, `
+      const fs=require('node:fs');const args=process.argv.slice(2);
+      fs.writeFileSync(${JSON.stringify(join(root, 'arguments.json'))},JSON.stringify(args));
+      const operation=args[2];const cleanup=JSON.parse(fs.readFileSync(${JSON.stringify(response)}));
+      console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,root:${JSON.stringify(root)},current:3,plan:[],cleanup,
+        status:operation==='status'?'clean':args.includes('--plan')?'planned':'deferred',
+        ...(args.includes('--yes')?{cleanupAttempt:cleanup.lastAttempt}:{})}));
+    `)
+    const client = new EnvironmentClient(process.execPath, [script])
+    for (const automaticCleanup of [undefined, false, true]) {
+      const request = { root, operation: 'cleanup' as const, ...(automaticCleanup === undefined ? {} : { automaticCleanup }) }
+      expect((await client.run(request)).cleanup).toEqual(cleanup)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+        '--root', root, 'cleanup', ...(automaticCleanup === undefined ? [] : ['--automatic', automaticCleanup ? 'on' : 'off']), '--json', '--plan',
+      ])
+    }
+    for (const keepPreviousGenerations of [1, 2, 100]) {
+      expect((await client.run({ root, operation: 'cleanup', keepPreviousGenerations })).cleanup).toEqual(cleanup)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+        '--root', root, 'cleanup', '--keep-previous', String(keepPreviousGenerations), '--json', '--plan',
+      ])
+    }
+    for (const keepPreviousGenerations of [0, -1, 101, 1.5, NaN, true, '2']) {
+      await expect(client.run({ root, operation: 'cleanup', keepPreviousGenerations } as unknown as EnvironmentRequest)).rejects.toThrow('retained generation count')
+    }
+    await expect(client.run({ root, operation: 'status', keepPreviousGenerations: 2 })).rejects.toThrow('retained generation count')
+    const retried = await client.run({ root, operation: 'cleanup' }, true)
+    expect(retried.status).toBe('deferred')
+    expect(retried.cleanupAttempt).toEqual(cleanup.lastAttempt)
+    expect((await client.run({ root, operation: 'status' })).cleanup).toEqual(cleanup)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'status', '--json'])
+    await writeFile(response, JSON.stringify({ generations: [], quarantine: [], warnings: ['corrupt policy; cleanup deferred'] }))
+    expect((await client.run({ root, operation: 'status' })).cleanup?.warnings).toEqual(['corrupt policy; cleanup deferred'])
+    for (const malformed of [{ ...cleanup, policy: { ...cleanup.policy, automatic: 'false' } },
+      ...[0, 101].map((previousSuccessfulActivations) => ({ ...cleanup, policy: { ...cleanup.policy, previousSuccessfulActivations } })),
+      { ...cleanup, lastAttempt: { status: 'deferred', warnings: [false] } }]) {
+      await writeFile(response, JSON.stringify(malformed))
+      await expect(client.run({ root, operation: 'status' })).rejects.toThrow('cleanup response')
+    }
+    await expect(client.run({ root, operation: 'status', automaticCleanup: false })).rejects.toThrow('preference requires cleanup')
   })
 
   it('preserves validated user-defined base metadata and refuses malformed labels', async () => {

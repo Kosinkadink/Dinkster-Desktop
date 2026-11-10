@@ -450,7 +450,7 @@ ipcMain.handle('desktop:projects-plan', (event, value: unknown, input: Environme
   pendingProjectPlan = undefined
   const project = parseProject(value)
   if (!project.root || input.root !== project.root
-    || !['setup', 'update', 'rollback', 'move', 'doctor', 'gc'].includes(input.operation)) throw new Error('invalid local project operation')
+    || !['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'status'].includes(input.operation)) throw new Error('invalid local project operation')
   // Validate the shell binding before asking the environment owner to mutate it.
   saveProject(await readProjects(dataDirectory), project)
   if (input.operation === 'move') saveProject(await readProjects(dataDirectory), { ...project, root: input.destination })
@@ -472,6 +472,7 @@ ipcMain.handle('desktop:projects-apply', (event, token: unknown) => serializeLif
   saveProject(await readProjects(dataDirectory), planned.project)
   if (planned.request.operation === 'move') saveProject(await readProjects(dataDirectory), { ...planned.project, root: planned.request.destination })
   const result = await environmentClient.run(planned.request, true)
+  if (planned.request.operation === 'cleanup') return result
   if (result.status !== 'applied' && result.status !== 'clean') throw new Error('dinkster-env did not apply the confirmed operation')
   const project = parseProject({
     ...planned.project,

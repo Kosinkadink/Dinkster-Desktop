@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -156,8 +156,8 @@ describe('Desktop dinkster-env command client', () => {
     const row = { name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }
     await writeFile(join(root, name), archive)
     const manifest = join(root, 'tools-manifest.json')
-    async function input(artifacts = [row]) {
-      const bytes = independentManifest([...toolsArtifacts(row).filter((entry) => entry.name !== row.name), ...artifacts])
+    async function input(artifacts = [row], overrides = {}) {
+      const bytes = independentManifest([...toolsArtifacts(row).filter((entry) => entry.name !== row.name), ...artifacts], overrides)
       await writeFile(manifest, bytes)
       return { manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root }
     }
@@ -168,13 +168,24 @@ describe('Desktop dinkster-env command client', () => {
     if (process.platform !== 'win32') expect((await stat(tools.python)).mode & 0o777).toBe(0o755)
     const cacheRoot = join(root, 'desktop-cache')
     const cached = await acquireEnvironmentTools({ ...pin, cacheRoot })
-    expect(cached.directory).toBe(join(cacheRoot, row.sha256))
+    const label = `2026-11-05-1.2.3-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}`
+    expect(cached.directory).toBe(join(cacheRoot, label))
+    expect(await readFile(join(cached.directory, 'complete'), 'utf8')).toBe(row.sha256)
     expect(cached.persistent).toBe(true)
     const originalTime = (await stat(cached.python)).mtimeMs
     await rm(join(root, name))
     const reused = await acquireEnvironmentTools({ ...pin, cacheRoot })
     expect(reused).toEqual(cached)
     expect((await stat(reused.python)).mtimeMs).toBe(originalTime)
+    const relabeled = await input([row], { builtAt: '2026-11-06T18:36:00Z', label: '2026-11-06-1.2.3' })
+    expect(await acquireEnvironmentTools({ ...relabeled, cacheRoot })).toEqual(cached)
+    // An existing digest-only extraction is reused in place, without its ZIP.
+    const legacyRoot = join(root, 'legacy-cache')
+    await mkdir(legacyRoot)
+    const legacy = join(legacyRoot, row.sha256)
+    await rename(cached.directory, legacy)
+    expect((await acquireEnvironmentTools({ ...relabeled, cacheRoot: legacyRoot })).directory).toBe(legacy)
+    await rename(legacy, cached.directory)
     // ZIP timestamp changes its digest without changing file bytes or CRCs.
     const replacement = Buffer.from(archive)
     replacement[10] = 1
@@ -184,13 +195,32 @@ describe('Desktop dinkster-env command client', () => {
     await writeFile(join(root, name), archive)
     await expect(acquireEnvironmentTools({ ...replacementPin, cacheRoot })).rejects.toThrow('checksum mismatch')
     expect(await readFile(cached.python, 'utf8')).toBe('fixture')
-    await expect(stat(join(cacheRoot, replacementRow.sha256))).rejects.toThrow()
+    await expect(stat(join(cacheRoot, `${label}--2`))).rejects.toThrow()
     await writeFile(join(root, name), replacement)
-    const replaced = await acquireEnvironmentTools({ ...replacementPin, cacheRoot })
-    expect(replaced.directory).toBe(join(cacheRoot, replacementRow.sha256))
+    const [replaced, simultaneous] = await Promise.all([
+      acquireEnvironmentTools({ ...replacementPin, cacheRoot }),
+      acquireEnvironmentTools({ ...replacementPin, cacheRoot }),
+    ])
+    expect(simultaneous).toEqual(replaced)
+    expect(replaced.directory).toBe(join(cacheRoot, `${label}--2`))
     expect(await readFile(replaced.python, 'utf8')).toBe('fixture')
-    await expect(stat(cached.directory)).rejects.toThrow()
+    await expect(stat(cached.python)).rejects.toThrow()
+    expect(await readFile(join(cached.directory, 'complete'), 'utf8')).toBe(row.sha256)
+    // Restoring evicted content uses its first allocation, not the latest label.
     await writeFile(join(root, name), archive)
+    expect((await acquireEnvironmentTools({ ...await input([row], { builtAt: '2026-11-07T18:36:00Z', label: '2026-11-07-1.2.3' }), cacheRoot })).directory).toBe(cached.directory)
+    expect(await readFile(cached.python, 'utf8')).toBe('fixture')
+    // Reservations at and beyond --10 must still resolve by full identity.
+    await rename(cached.directory, join(cacheRoot, `${label.toUpperCase()}--10`))
+    expect((await acquireEnvironmentTools({ ...await input(), cacheRoot })).directory).toBe(join(cacheRoot, `${label.toUpperCase()}--10`))
+    await rename(join(cacheRoot, `${label.toUpperCase()}--10`), cached.directory)
+    const blocked = join(cacheRoot, '2026-11-08-1.2.3-LINUX-x86_64')
+    await symlink(root, blocked, process.platform === 'win32' ? 'junction' : 'dir')
+    await expect(acquireEnvironmentTools({ ...await input(), cacheRoot })).rejects.toThrow('real directory')
+    await rm(blocked)
+    await writeFile(join(cached.directory, 'complete'), 'invalid')
+    await expect(acquireEnvironmentTools({ ...await input(), cacheRoot })).rejects.toThrow('identity metadata')
+    await writeFile(join(cached.directory, 'complete'), row.sha256)
     await input()
     await expect(acquireEnvironmentTools({ ...pin, sha256: 'a'.repeat(64) })).rejects.toThrow('checksum mismatch')
     await expect(acquireEnvironmentTools(await input([{ ...row, size: row.size + 1 }]))).rejects.toThrow('size mismatch')

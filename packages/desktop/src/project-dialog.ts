@@ -51,6 +51,17 @@ function showPlan(result: EnvironmentResult, token?: string): void {
     label.push(`Engine: ${result.engine.version} (${result.engine.release})`)
     if (result.engine.label) label.push(`Engine label: ${result.engine.label}`)
   }
+  if (result.cleanup) {
+    const cleanup = result.cleanup
+    label.push(`Automatic generation cleanup: ${cleanup.policy ? (cleanup.policy.automatic ? 'on' : 'off') : 'unavailable'}`)
+    if (cleanup.policy) label.push(`Keep current and ${cleanup.policy.previousSuccessfulActivations} previous successful activation(s); minimum age ${cleanup.policy.minimumAgeSeconds}s.`)
+    for (const row of cleanup.generations) label.push(`Generation ${row.generation}: ${row.status} - ${row.reasons.join('; ')}`)
+    for (const row of cleanup.quarantine) label.push(`Quarantine ${row.journal} (${row.stage}): generations ${row.generations.join(', ')} await retry.`)
+    label.push(...cleanup.warnings.map((warning) => `Cleanup warning: ${warning}`))
+    if (cleanup.lastAttempt) label.push(`Last cleanup attempt: ${cleanup.lastAttempt.status}`, ...(cleanup.lastAttempt.warnings ?? []).map((warning) => `Cleanup warning: ${warning}`))
+    label.push('Generation-only cleanup never prunes shared caches or stops engines.')
+  } else if (result.operation === 'status') label.push('Cleanup details unavailable from these environment tools.')
+  if (result.cleanupAttempt) label.push(`Cleanup attempt: ${result.cleanupAttempt.status}`, ...(result.cleanupAttempt.warnings ?? []).map((warning) => `Cleanup warning: ${warning}`))
   document.querySelector<HTMLElement>('#plan')!.textContent = [result.status, ...label, ...result.plan, ...(result.changes ?? [])].join('\n')
   document.querySelector<HTMLButtonElement>('#apply')!.hidden = token === undefined
   document.querySelector<HTMLElement>('#plan-panel')!.scrollIntoView({ block: 'nearest' })
@@ -217,6 +228,8 @@ document.querySelector<HTMLFormElement>('#local')!.addEventListener('submit', (e
       ...(operation === 'setup' ? { mirrors: field('local-mirrors').split('\n').map((mirror) => mirror.trim()).filter(Boolean), port: Number(field('local-port')), engine: field('local-engine') } : {}),
       ...(['setup', 'move'].includes(operation) && field('local-data') ? { data: field('local-data') } : {}),
       ...(operation === 'move' ? { destination: field('local-destination') } : {}),
+      ...(operation === 'cleanup' && field('local-cleanup') !== 'keep' ? { automaticCleanup: field('local-cleanup') === 'on' } : {}),
+      ...(operation === 'cleanup' && field('local-keep-previous') !== '' ? { keepPreviousGenerations: Number(field('local-keep-previous')) } : {}),
     }
     const planned = await bridge.plan(project, request)
     showPlan(planned.result, planned.token)
@@ -241,10 +254,16 @@ document.querySelector<HTMLButtonElement>('#apply')!.addEventListener('click', (
     planToken = undefined
     document.querySelector<HTMLButtonElement>('#apply')!.hidden = true
     const result = await bridge.apply(token)
+    if (result.operation === 'cleanup' && result.status === 'applied') {
+      document.querySelector<HTMLInputElement>('#local-keep-previous')!.value = ''
+      document.querySelector<HTMLSelectElement>('#local-cleanup')!.value = 'keep'
+    }
     showPlan(result)
     await render()
     newProjectId = `project-${crypto.randomUUID()}`
-    message.textContent = 'Environment operation completed. Open the engine to start working.'
+    message.textContent = result.operation === 'cleanup'
+      ? `Cleanup request returned ${result.status}. Review retained generations and warnings above.`
+      : 'Environment operation completed. Open the engine to start working.'
   })
 })
 

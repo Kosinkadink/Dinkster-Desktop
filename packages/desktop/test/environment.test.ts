@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { crc32, deflateRawSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EnvironmentClient, type EnvironmentOperation } from '../src/environment.js'
+import { EnvironmentClient, type EnvironmentOperation, type EnvironmentRequest } from '../src/environment.js'
 import { channelTools } from '../src/environment-channel.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
@@ -207,8 +207,8 @@ describe('Desktop dinkster-env command client', () => {
     const row = { name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }
     await writeFile(join(root, name), archive)
     const manifest = join(root, 'tools-manifest.json')
-    async function input(artifacts = [row]) {
-      const bytes = independentManifest([...toolsArtifacts(row).filter((entry) => entry.name !== row.name), ...artifacts])
+    async function input(artifacts = [row], overrides = {}) {
+      const bytes = independentManifest([...toolsArtifacts(row).filter((entry) => entry.name !== row.name), ...artifacts], overrides)
       await writeFile(manifest, bytes)
       return { manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root }
     }
@@ -219,13 +219,24 @@ describe('Desktop dinkster-env command client', () => {
     if (process.platform !== 'win32') expect((await stat(tools.python)).mode & 0o777).toBe(0o755)
     const cacheRoot = join(root, 'desktop-cache')
     const cached = await acquireEnvironmentTools({ ...pin, cacheRoot })
-    expect(cached.directory).toBe(join(cacheRoot, row.sha256))
+    const label = `2026-11-05-1.2.3-${os}-${process.arch === 'x64' ? 'x86_64' : 'arm64'}`
+    expect(cached.directory).toBe(join(cacheRoot, label))
+    expect(await readFile(join(cached.directory, 'complete'), 'utf8')).toBe(row.sha256)
     expect(cached.persistent).toBe(true)
     const originalTime = (await stat(cached.python)).mtimeMs
     await rm(join(root, name))
     const reused = await acquireEnvironmentTools({ ...pin, cacheRoot })
     expect(reused).toEqual(cached)
     expect((await stat(reused.python)).mtimeMs).toBe(originalTime)
+    const relabeled = await input([row], { builtAt: '2026-11-06T18:36:00Z', label: '2026-11-06-1.2.3' })
+    expect(await acquireEnvironmentTools({ ...relabeled, cacheRoot })).toEqual(cached)
+    // An existing digest-only extraction is reused in place, without its ZIP.
+    const legacyRoot = join(root, 'legacy-cache')
+    await mkdir(legacyRoot)
+    const legacy = join(legacyRoot, row.sha256)
+    await rename(cached.directory, legacy)
+    expect((await acquireEnvironmentTools({ ...relabeled, cacheRoot: legacyRoot })).directory).toBe(legacy)
+    await rename(legacy, cached.directory)
     // ZIP timestamp changes its digest without changing file bytes or CRCs.
     const replacement = Buffer.from(archive)
     replacement[10] = 1
@@ -235,13 +246,32 @@ describe('Desktop dinkster-env command client', () => {
     await writeFile(join(root, name), archive)
     await expect(acquireEnvironmentTools({ ...replacementPin, cacheRoot })).rejects.toThrow('checksum mismatch')
     expect(await readFile(cached.python, 'utf8')).toBe('fixture')
-    await expect(stat(join(cacheRoot, replacementRow.sha256))).rejects.toThrow()
+    await expect(stat(join(cacheRoot, `${label}--2`))).rejects.toThrow()
     await writeFile(join(root, name), replacement)
-    const replaced = await acquireEnvironmentTools({ ...replacementPin, cacheRoot })
-    expect(replaced.directory).toBe(join(cacheRoot, replacementRow.sha256))
+    const [replaced, simultaneous] = await Promise.all([
+      acquireEnvironmentTools({ ...replacementPin, cacheRoot }),
+      acquireEnvironmentTools({ ...replacementPin, cacheRoot }),
+    ])
+    expect(simultaneous).toEqual(replaced)
+    expect(replaced.directory).toBe(join(cacheRoot, `${label}--2`))
     expect(await readFile(replaced.python, 'utf8')).toBe('fixture')
-    await expect(stat(cached.directory)).rejects.toThrow()
+    await expect(stat(cached.python)).rejects.toThrow()
+    expect(await readFile(join(cached.directory, 'complete'), 'utf8')).toBe(row.sha256)
+    // Restoring evicted content uses its first allocation, not the latest label.
     await writeFile(join(root, name), archive)
+    expect((await acquireEnvironmentTools({ ...await input([row], { builtAt: '2026-11-07T18:36:00Z', label: '2026-11-07-1.2.3' }), cacheRoot })).directory).toBe(cached.directory)
+    expect(await readFile(cached.python, 'utf8')).toBe('fixture')
+    // Reservations at and beyond --10 must still resolve by full identity.
+    await rename(cached.directory, join(cacheRoot, `${label.toUpperCase()}--10`))
+    expect((await acquireEnvironmentTools({ ...await input(), cacheRoot })).directory).toBe(join(cacheRoot, `${label.toUpperCase()}--10`))
+    await rename(join(cacheRoot, `${label.toUpperCase()}--10`), cached.directory)
+    const blocked = join(cacheRoot, '2026-11-08-1.2.3-LINUX-x86_64')
+    await symlink(root, blocked, process.platform === 'win32' ? 'junction' : 'dir')
+    await expect(acquireEnvironmentTools({ ...await input(), cacheRoot })).rejects.toThrow('real directory')
+    await rm(blocked)
+    await writeFile(join(cached.directory, 'complete'), 'invalid')
+    await expect(acquireEnvironmentTools({ ...await input(), cacheRoot })).rejects.toThrow('identity metadata')
+    await writeFile(join(cached.directory, 'complete'), row.sha256)
     await input()
     await expect(acquireEnvironmentTools({ ...pin, sha256: 'a'.repeat(64) })).rejects.toThrow('checksum mismatch')
     await expect(acquireEnvironmentTools(await input([{ ...row, size: row.size + 1 }]))).rejects.toThrow('size mismatch')
@@ -438,6 +468,60 @@ describe('Desktop dinkster-env command client', () => {
       if (operation === 'move') expect(args[3]).toBe(join(root, 'moved project'))
     }
     await expect(client.run({ root, operation: 'doctor', repair: true }, true)).rejects.toThrow('generation drift needs offline repair')
+  })
+
+  it('delegates cleanup preference and retry, preserving deferred status and warnings', async () => {
+    const { root } = await commandFixture()
+    const cleanup = {
+      policy: { automatic: false, previousSuccessfulActivations: 1, minimumAgeSeconds: 0 },
+      generations: [{ generation: 7, status: 'deferred', reasons: ['unreadable history'] }],
+      quarantine: [{ journal: '600.json', stage: 'complete', generations: [2] }],
+      warnings: ['generation 2 awaits deletion'],
+      lastAttempt: { status: 'deferred', warnings: ['sharing violation'] },
+    }
+    const response = join(root, 'response.json')
+    const script = join(root, 'cleanup.cjs')
+    await writeFile(response, JSON.stringify(cleanup))
+    await writeFile(script, `
+      const fs=require('node:fs');const args=process.argv.slice(2);
+      fs.writeFileSync(${JSON.stringify(join(root, 'arguments.json'))},JSON.stringify(args));
+      const operation=args[2];const cleanup=JSON.parse(fs.readFileSync(${JSON.stringify(response)}));
+      console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,root:${JSON.stringify(root)},current:3,plan:[],cleanup,
+        status:operation==='status'?'clean':args.includes('--plan')?'planned':'deferred',
+        ...(args.includes('--yes')?{cleanupAttempt:cleanup.lastAttempt}:{})}));
+    `)
+    const client = new EnvironmentClient(process.execPath, [script])
+    for (const automaticCleanup of [undefined, false, true]) {
+      const request = { root, operation: 'cleanup' as const, ...(automaticCleanup === undefined ? {} : { automaticCleanup }) }
+      expect((await client.run(request)).cleanup).toEqual(cleanup)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+        '--root', root, 'cleanup', ...(automaticCleanup === undefined ? [] : ['--automatic', automaticCleanup ? 'on' : 'off']), '--json', '--plan',
+      ])
+    }
+    for (const keepPreviousGenerations of [1, 2, 100]) {
+      expect((await client.run({ root, operation: 'cleanup', keepPreviousGenerations })).cleanup).toEqual(cleanup)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+        '--root', root, 'cleanup', '--keep-previous', String(keepPreviousGenerations), '--json', '--plan',
+      ])
+    }
+    for (const keepPreviousGenerations of [0, -1, 101, 1.5, NaN, true, '2']) {
+      await expect(client.run({ root, operation: 'cleanup', keepPreviousGenerations } as unknown as EnvironmentRequest)).rejects.toThrow('retained generation count')
+    }
+    await expect(client.run({ root, operation: 'status', keepPreviousGenerations: 2 })).rejects.toThrow('retained generation count')
+    const retried = await client.run({ root, operation: 'cleanup' }, true)
+    expect(retried.status).toBe('deferred')
+    expect(retried.cleanupAttempt).toEqual(cleanup.lastAttempt)
+    expect((await client.run({ root, operation: 'status' })).cleanup).toEqual(cleanup)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'status', '--json'])
+    await writeFile(response, JSON.stringify({ generations: [], quarantine: [], warnings: ['corrupt policy; cleanup deferred'] }))
+    expect((await client.run({ root, operation: 'status' })).cleanup?.warnings).toEqual(['corrupt policy; cleanup deferred'])
+    for (const malformed of [{ ...cleanup, policy: { ...cleanup.policy, automatic: 'false' } },
+      ...[0, 101].map((previousSuccessfulActivations) => ({ ...cleanup, policy: { ...cleanup.policy, previousSuccessfulActivations } })),
+      { ...cleanup, lastAttempt: { status: 'deferred', warnings: [false] } }]) {
+      await writeFile(response, JSON.stringify(malformed))
+      await expect(client.run({ root, operation: 'status' })).rejects.toThrow('cleanup response')
+    }
+    await expect(client.run({ root, operation: 'status', automaticCleanup: false })).rejects.toThrow('preference requires cleanup')
   })
 
   it('preserves validated user-defined base metadata and refuses malformed labels', async () => {

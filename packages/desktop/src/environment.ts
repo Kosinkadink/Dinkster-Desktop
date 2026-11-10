@@ -8,7 +8,7 @@ import { channelTools } from './environment-channel.js'
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'start' | 'stop' | 'status' | 'catalog' | 'packs-plan' | 'packs-apply'
+export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'packs-plan' | 'packs-apply'
 export type EnvironmentChannel = 'stable' | 'main'
 
 export interface EnvironmentRequest {
@@ -26,6 +26,8 @@ export interface EnvironmentRequest {
   readonly packs?: readonly { readonly pack: string; readonly version: string }[]
   readonly inputs?: string
   readonly approval?: string
+  readonly automaticCleanup?: boolean
+  readonly keepPreviousGenerations?: number
 }
 
 export interface EnvironmentEngine {
@@ -35,11 +37,24 @@ export interface EnvironmentEngine {
   readonly url?: string
 }
 
+export interface CleanupAttempt {
+  readonly status: 'complete' | 'deferred' | 'disabled' | 'coalesced'
+  readonly warnings?: readonly string[]
+}
+
+export interface EnvironmentCleanup {
+  readonly policy?: { readonly automatic: boolean; readonly previousSuccessfulActivations: number; readonly minimumAgeSeconds: number }
+  readonly generations: readonly { readonly generation: number; readonly status: 'retained' | 'candidate' | 'deferred'; readonly reasons: readonly string[] }[]
+  readonly quarantine: readonly { readonly journal: string; readonly stage: string; readonly generations: readonly number[] }[]
+  readonly warnings: readonly string[]
+  readonly lastAttempt?: CleanupAttempt
+}
+
 /** The command owner's dinkster.environment-result/1 response, unchanged. */
 export interface EnvironmentResult {
   readonly format: 'dinkster.environment-result/1'
   readonly operation: EnvironmentOperation
-  readonly status: 'planned' | 'applied' | 'clean' | 'drift' | 'error'
+  readonly status: 'planned' | 'applied' | 'clean' | 'drift' | 'error' | CleanupAttempt['status']
   readonly root: string
   readonly current: number | null
   readonly plan: readonly string[]
@@ -50,6 +65,8 @@ export interface EnvironmentResult {
   readonly approval?: string
   readonly expiresInSeconds?: number
   readonly engines?: readonly EnvironmentEngine[]
+  readonly cleanup?: EnvironmentCleanup
+  readonly cleanupAttempt?: CleanupAttempt
   readonly channel?: EnvironmentChannel | null
   readonly variant?: string | null
   readonly base?: {
@@ -74,12 +91,12 @@ export interface EnvironmentResult {
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
-  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'start', 'stop', 'status', 'catalog', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
+  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
   if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'main') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
   if (request.operation === 'packs-plan' || request.operation === 'packs-apply') {
     if (!request.inputs || !isAbsolute(request.inputs)) throw new Error('pack installation needs an absolute host-owned review directory')
-    if (['channel', 'variant', 'mirrors', 'data', 'port', 'destination', 'repair', 'engine', 'gpus'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) {
+    if (['channel', 'variant', 'mirrors', 'data', 'port', 'destination', 'repair', 'engine', 'gpus', 'automaticCleanup', 'keepPreviousGenerations'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) {
       throw new Error('pack installation retains the current project software settings')
     }
     if (request.operation === 'packs-plan') {
@@ -98,6 +115,15 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     return [...args, '--json']
   }
   if (request.packs !== undefined || request.inputs !== undefined || request.approval !== undefined) throw new Error('pack review inputs require a pack operation')
+  if (request.automaticCleanup !== undefined) {
+    if (request.operation !== 'cleanup' || typeof request.automaticCleanup !== 'boolean') throw new Error('automatic cleanup preference requires cleanup and a boolean')
+    args.push('--automatic', request.automaticCleanup ? 'on' : 'off')
+  }
+  if (request.keepPreviousGenerations !== undefined) {
+    if (request.operation !== 'cleanup' || !Number.isSafeInteger(request.keepPreviousGenerations)
+      || request.keepPreviousGenerations < 1 || request.keepPreviousGenerations > 100) throw new Error('retained generation count requires cleanup and an integer from 1 to 100')
+    args.push('--keep-previous', String(request.keepPreviousGenerations))
+  }
   if (request.operation === 'move') {
     if (!request.destination || !isAbsolute(request.destination)) throw new Error('move needs an absolute destination root')
     args.push(request.destination)
@@ -133,12 +159,43 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
   return args
 }
 
+function validAttempt(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const row = value as Record<string, unknown>
+  return ['complete', 'deferred', 'disabled', 'coalesced'].includes(String(row['status']))
+    && (row['warnings'] === undefined || (Array.isArray(row['warnings']) && row['warnings'].every((warning) => typeof warning === 'string')))
+}
+
+function validCleanup(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const row = value as Record<string, unknown>
+  const policy = row['policy'] as Record<string, unknown> | undefined
+  return (policy === undefined || (!!policy && typeof policy['automatic'] === 'boolean'
+    && Number(policy['previousSuccessfulActivations']) >= 1 && Number(policy['previousSuccessfulActivations']) <= 100
+    && ['previousSuccessfulActivations', 'minimumAgeSeconds'].every((key) => Number.isSafeInteger(policy[key]) && Number(policy[key]) >= 0)))
+    && Array.isArray(row['warnings']) && row['warnings'].every((warning) => typeof warning === 'string')
+    && Array.isArray(row['generations']) && row['generations'].every((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return false
+      const item = entry as Record<string, unknown>
+      return Number.isSafeInteger(item['generation']) && Number(item['generation']) > 0
+        && ['retained', 'candidate', 'deferred'].includes(String(item['status']))
+        && Array.isArray(item['reasons']) && item['reasons'].every((reason) => typeof reason === 'string')
+    })
+    && Array.isArray(row['quarantine']) && row['quarantine'].every((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return false
+      const item = entry as Record<string, unknown>
+      return typeof item['journal'] === 'string' && typeof item['stage'] === 'string'
+        && Array.isArray(item['generations']) && item['generations'].every((number) => Number.isSafeInteger(number) && number > 0)
+    })
+    && (row['lastAttempt'] === undefined || validAttempt(row['lastAttempt']))
+}
+
 function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentResult {
   const value: unknown = JSON.parse(text)
   if (!value || typeof value !== 'object') throw new Error('invalid dinkster-env response')
   const row = value as Record<string, unknown>
   if (row['format'] !== 'dinkster.environment-result/1' || row['operation'] !== operation
-    || !['planned', 'applied', 'clean', 'drift', 'error'].includes(String(row['status']))
+    || !['planned', 'applied', 'clean', 'drift', 'error', ...(operation === 'cleanup' ? ['complete', 'deferred', 'disabled', 'coalesced'] : [])].includes(String(row['status']))
     || typeof row['root'] !== 'string' || !isAbsolute(row['root'])
     || !(row['current'] === null || (Number.isInteger(row['current']) && Number(row['current']) > 0))
     || !Array.isArray(row['plan']) || !row['plan'].every((line) => typeof line === 'string')
@@ -156,6 +213,8 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
   }
+  if ((row['cleanup'] !== undefined && !validCleanup(row['cleanup']))
+    || (row['cleanupAttempt'] !== undefined && !validAttempt(row['cleanupAttempt']))) throw new Error('unsupported dinkster-env cleanup response')
   if (row['base'] !== undefined) {
     const base = row['base'] as Record<string, unknown> | null
     if (!base || typeof base !== 'object' || typeof base['variant'] !== 'string'

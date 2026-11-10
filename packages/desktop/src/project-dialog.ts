@@ -229,6 +229,7 @@ document.querySelector<HTMLFormElement>('#local')!.addEventListener('submit', (e
       ...(['setup', 'move'].includes(operation) && field('local-data') ? { data: field('local-data') } : {}),
       ...(operation === 'move' ? { destination: field('local-destination') } : {}),
       ...(operation === 'cleanup' && field('local-cleanup') !== 'keep' ? { automaticCleanup: field('local-cleanup') === 'on' } : {}),
+      ...(operation === 'cleanup' && field('local-keep-previous') !== '' ? { keepPreviousGenerations: Number(field('local-keep-previous')) } : {}),
     }
     const planned = await bridge.plan(project, request)
     showPlan(planned.result, planned.token)

@@ -279,6 +279,28 @@ executable_release(Path(fixture['mirror']),json.loads(Path(fixture['baseManifest
   )
   assert.deepEqual(await generations(), ['1', '2', '3'])
   await manager.locator('#local-cleanup').selectOption('keep')
+  await manager.locator('#local-keep-previous').fill('2')
+  await review()
+  await apply()
+  assert.equal(
+    (await command('status')).cleanup.policy.previousSuccessfulActivations,
+    2,
+  )
+  assert.deepEqual(await generations(), ['1', '2', '3'])
+  await manager.locator('#local-keep-previous').fill('')
+  await review()
+  await apply()
+  await expect(manager.locator('#message')).toContainText('returned complete')
+  assert.deepEqual(await generations(), ['1', '2', '3'])
+  await manager.locator('#local-keep-previous').fill('1')
+  await review()
+  await apply()
+  assert.equal(
+    (await command('status')).cleanup.policy.previousSuccessfulActivations,
+    1,
+  )
+  assert.deepEqual(await generations(), ['1', '2', '3'])
+  await manager.locator('#local-keep-previous').fill('')
   const holder = spawn(
     python,
     [
@@ -337,6 +359,11 @@ with writer_lock(Path(sys.argv[1])):
     await manager
       .locator('#plan-panel')
       .screenshot({ path: join(artifacts, 'electron-cleanup-complete.png') })
+  await manager.locator('#local-keep-previous').fill('2')
+  await review()
+  await apply()
+  assert.deepEqual(await generations(), ['2', '3'])
+  await manager.locator('#local-keep-previous').fill('')
   await manager.locator('#local-cleanup').selectOption('off')
   await review()
   await apply()
@@ -356,6 +383,7 @@ with writer_lock(Path(sys.argv[1])):
       .screenshot({ path: join(artifacts, 'electron-cleanup-disabled.png') })
   const after = await command('status')
   assert.equal(after.cleanup.policy.automatic, false)
+  assert.equal(after.cleanup.policy.previousSuccessfulActivations, 2)
   const engineAfter = after.engines.find((entry) => entry.name === 'main')
   assert.deepEqual(engineAfter, engineBefore)
   assert.deepEqual(
@@ -393,6 +421,9 @@ with writer_lock(Path(sys.argv[1])):
       'status read-only',
       'disabled retry preserves backlog',
       'enable does not collect',
+      'Desktop count persists in backend policy and retains two previous generations',
+      'lower count takes effect only on next collection',
+      'raising count does not recreate already collected generations',
       'busy writer defers with persistent read-only warning',
       'plan does not collect',
       'confirmed retry collects',

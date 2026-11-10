@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { crc32, deflateRawSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EnvironmentClient, type EnvironmentOperation } from '../src/environment.js'
+import { EnvironmentClient, type EnvironmentOperation, type EnvironmentRequest } from '../src/environment.js'
 import { channelTools } from '../src/environment-channel.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
@@ -447,6 +447,16 @@ describe('Desktop dinkster-env command client', () => {
         '--root', root, 'cleanup', ...(automaticCleanup === undefined ? [] : ['--automatic', automaticCleanup ? 'on' : 'off']), '--json', '--plan',
       ])
     }
+    for (const keepPreviousGenerations of [1, 2, 100]) {
+      expect((await client.run({ root, operation: 'cleanup', keepPreviousGenerations })).cleanup).toEqual(cleanup)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+        '--root', root, 'cleanup', '--keep-previous', String(keepPreviousGenerations), '--json', '--plan',
+      ])
+    }
+    for (const keepPreviousGenerations of [0, -1, 101, 1.5, NaN, true, '2']) {
+      await expect(client.run({ root, operation: 'cleanup', keepPreviousGenerations } as unknown as EnvironmentRequest)).rejects.toThrow('retained generation count')
+    }
+    await expect(client.run({ root, operation: 'status', keepPreviousGenerations: 2 })).rejects.toThrow('retained generation count')
     const retried = await client.run({ root, operation: 'cleanup' }, true)
     expect(retried.status).toBe('deferred')
     expect(retried.cleanupAttempt).toEqual(cleanup.lastAttempt)
@@ -454,7 +464,9 @@ describe('Desktop dinkster-env command client', () => {
     expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'status', '--json'])
     await writeFile(response, JSON.stringify({ generations: [], quarantine: [], warnings: ['corrupt policy; cleanup deferred'] }))
     expect((await client.run({ root, operation: 'status' })).cleanup?.warnings).toEqual(['corrupt policy; cleanup deferred'])
-    for (const malformed of [{ ...cleanup, policy: { ...cleanup.policy, automatic: 'false' } }, { ...cleanup, lastAttempt: { status: 'deferred', warnings: [false] } }]) {
+    for (const malformed of [{ ...cleanup, policy: { ...cleanup.policy, automatic: 'false' } },
+      ...[0, 101].map((previousSuccessfulActivations) => ({ ...cleanup, policy: { ...cleanup.policy, previousSuccessfulActivations } })),
+      { ...cleanup, lastAttempt: { status: 'deferred', warnings: [false] } }]) {
       await writeFile(response, JSON.stringify(malformed))
       await expect(client.run({ root, operation: 'status' })).rejects.toThrow('cleanup response')
     }

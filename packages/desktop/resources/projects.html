@@ -75,6 +75,7 @@
               <option value="off">Turn automatic cleanup off; do not collect</option>
               <option value="on">Turn automatic cleanup on; do not collect now</option>
             </select></label>
+            <label>Previous generations to keep (Cleanup operation only)<input id="local-keep-previous" type="number" min="1" max="100" step="1" placeholder="Keep preference (default 1; allowed 1-100)"></label>
             <label>Variant (override available)<select id="local-variant"><option value="">Keep current / inspect before installing</option></select></label>
             <label>Mirrors, in order (one per line)<textarea id="local-mirrors" rows="2" placeholder="Local mirror directory or HTTPS URL"></textarea></label>
             <label>Wheel store (optional)<input id="local-data" placeholder="Use the registered store for this volume"></label>

@@ -24,6 +24,7 @@ export interface EnvironmentRequest {
   readonly engine?: string
   readonly gpus?: readonly string[]
   readonly automaticCleanup?: boolean
+  readonly keepPreviousGenerations?: number
 }
 
 export interface EnvironmentEngine {
@@ -91,6 +92,11 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     if (request.operation !== 'cleanup' || typeof request.automaticCleanup !== 'boolean') throw new Error('automatic cleanup preference requires cleanup and a boolean')
     args.push('--automatic', request.automaticCleanup ? 'on' : 'off')
   }
+  if (request.keepPreviousGenerations !== undefined) {
+    if (request.operation !== 'cleanup' || !Number.isSafeInteger(request.keepPreviousGenerations)
+      || request.keepPreviousGenerations < 1 || request.keepPreviousGenerations > 100) throw new Error('retained generation count requires cleanup and an integer from 1 to 100')
+    args.push('--keep-previous', String(request.keepPreviousGenerations))
+  }
   if (request.operation === 'move') {
     if (!request.destination || !isAbsolute(request.destination)) throw new Error('move needs an absolute destination root')
     args.push(request.destination)
@@ -138,6 +144,7 @@ function validCleanup(value: unknown): boolean {
   const row = value as Record<string, unknown>
   const policy = row['policy'] as Record<string, unknown> | undefined
   return (policy === undefined || (!!policy && typeof policy['automatic'] === 'boolean'
+    && Number(policy['previousSuccessfulActivations']) >= 1 && Number(policy['previousSuccessfulActivations']) <= 100
     && ['previousSuccessfulActivations', 'minimumAgeSeconds'].every((key) => Number.isSafeInteger(policy[key]) && Number(policy[key]) >= 0)))
     && Array.isArray(row['warnings']) && row['warnings'].every((warning) => typeof warning === 'string')
     && Array.isArray(row['generations']) && row['generations'].every((entry: unknown) => {

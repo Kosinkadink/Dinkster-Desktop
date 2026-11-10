@@ -46,6 +46,8 @@ try {
     }
     window.calls = []
     window.fixture = 'default'
+    let previousCount = 1
+    let pendingCount
     const result = (operation, status) => ({
       format: 'dinkster.environment-result/1',
       operation,
@@ -59,14 +61,14 @@ try {
             cleanup: {
               policy: {
                 automatic: window.fixture !== 'disabled',
-                previousSuccessfulActivations: 1,
+                previousSuccessfulActivations: previousCount,
                 minimumAgeSeconds: 0,
               },
               generations: [
                 {
                   generation: 1,
                   status: 'deferred',
-                  reasons: ['unrecorded pack payload'],
+                  reasons: ['live runtime requires exit proof'],
                 },
                 {
                   generation: 2,
@@ -101,6 +103,7 @@ try {
       open: async () => {},
       plan: async (_project, request) => {
         window.calls.push(request)
+        pendingCount = request.keepPreviousGenerations
         return {
           ...(request.operation === 'status' ? {} : { token: 'reviewed' }),
           result: result(
@@ -109,11 +112,13 @@ try {
           ),
         }
       },
-      apply: async () =>
-        result(
+      apply: async () => {
+        if (pendingCount !== undefined) previousCount = pendingCount
+        return result(
           'cleanup',
           window.fixture === 'disabled' ? 'disabled' : 'deferred',
-        ),
+        )
+      },
     }
   })
   await page.goto(`http://127.0.0.1:${server.address().port}`)
@@ -121,7 +126,7 @@ try {
   await page.locator('#local-operation').selectOption('status')
   await page.getByRole('button', { name: 'Review environment plan' }).click()
   await expect(page.locator('#plan')).toContainText(
-    'Generation 1: deferred - unrecorded pack payload',
+    'Generation 1: deferred - live runtime requires exit proof',
   )
   await expect(page.locator('#plan')).toContainText('Quarantine gc-example')
   await expect(page.locator('#apply')).toBeHidden()
@@ -130,6 +135,33 @@ try {
       .locator('#plan-panel')
       .screenshot({ path: resolve(artifacts, 'cleanup-status.png') })
   await page.locator('#local-operation').selectOption('cleanup')
+  await expect(page.locator('#local-keep-previous')).toHaveValue('')
+  if (artifacts)
+    await page
+      .locator('#local')
+      .screenshot({ path: resolve(artifacts, 'cleanup-count-default.png') })
+  await page.locator('#local-keep-previous').fill('0')
+  assert.equal(
+    await page
+      .locator('#local-keep-previous')
+      .evaluate((input) => input.checkValidity()),
+    false,
+  )
+  await page.locator('#local-keep-previous').fill('2')
+  await page.getByRole('button', { name: 'Review environment plan' }).click()
+  assert.equal(
+    await page.evaluate(() => window.calls.at(-1).keepPreviousGenerations),
+    2,
+  )
+  await page.locator('#apply').click()
+  await expect(page.locator('#plan')).toContainText(
+    'Keep current and 2 previous successful activation(s)',
+  )
+  if (artifacts)
+    await page
+      .locator('#plan-panel')
+      .screenshot({ path: resolve(artifacts, 'cleanup-count-two.png') })
+  await page.locator('#local-keep-previous').fill('')
   await page.getByRole('button', { name: 'Review environment plan' }).click()
   await page.locator('#apply').click()
   await expect(page.locator('#message')).toContainText('returned deferred')

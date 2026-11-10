@@ -112,7 +112,11 @@ The local manager's **Cleanup status (read-only)** operation displays backend
 retention reasons, automatic-cleanup preference, quarantined generations and
 persistent retry warnings. **Generation cleanup / retry** reviews a plan before
 confirmation. Keep the preference to retry generation-only cleanup, or select
-on/off to change the backend preference without collecting immediately. Shared
+on/off to change the backend preference without collecting immediately. The
+adjacent previous-generations field accepts 1-100 (default 1), in addition to
+current; leave it blank to keep the saved count. Both settings use the backend's
+project policy. A count change takes effect on the next eligible cleanup, not
+while saving it. Preview and status show the effective count. Shared
 caches remain under the separate **Garbage collection** operation. Desktop
 does not duplicate retention policy, delete generation files or stop engines
 for cleanup. Older tools without cleanup details report that they are unavailable;

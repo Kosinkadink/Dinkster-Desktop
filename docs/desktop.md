@@ -122,6 +122,14 @@ custom bases remain supported without inventing publication labels.
 Mirror discovery, artifact verification, generation construction, activation,
 recovery, and retention are responsibilities of the environment tools.
 
+Select **Disk space (read-only)** to show the environment tools' managed-software
+report. It shows allocated and shared space, generation retention reasons,
+shared stores, cleanup savings, and the current automatic-cleanup preferences.
+User data is excluded. Unknown sizes stay unavailable, not zero; shared row
+sizes overlap and must not be added. The report has no confirmation action.
+Change automatic cleanup and the previous-generation count using **Generation
+cleanup / retry**, reviewing its plan before confirmation.
+
 For development, `DINKSTER_ENV` selects an installed environment executable.
 Alternatively, `DINKSTER_TOOLS_PYTHON` selects an interpreter containing the
 tools and runs `-I -m dinkster_supervisor.environment` with bundled-only child

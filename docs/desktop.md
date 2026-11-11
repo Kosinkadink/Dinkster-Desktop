@@ -65,6 +65,11 @@ A remote-only project stores server URLs and no install root. Opening it loads
 the server's frontend in an isolated window without a Desktop preload or Node
 capabilities. It does not invoke environment commands or create a generation.
 
+Desktop starts its provisioned local engine with `--allow-settings-changes`.
+Runtime settings such as max running jobs can be edited in Backends and are
+kept in the engine's library across app restarts. A plain `dinkster-serve`
+without that flag still refuses settings edits.
+
 ## Native asset files
 
 Local engine windows receive only the file-capability, directory-choice,

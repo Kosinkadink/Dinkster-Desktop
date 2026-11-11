@@ -43,6 +43,8 @@ assert.equal(
     'packages/dinkster-supervisor/src/dinkster_supervisor',
   ),
 )
+for (const path of ['tokens/dinkster-colors.json', 'raster/color/32.png'])
+  await readFile(join(desktop, 'packages/desktop/resources/branding', path))
 const scratch = await mkdtemp(join(tmpdir(), 'dinkster-space-electron-'))
 const artifacts = process.env.DINKSTER_SMOKE_ARTIFACTS ?? scratch
 await mkdir(artifacts, { recursive: true })
@@ -252,14 +254,12 @@ print(json.dumps(build(Path(sys.argv[1]),'linux-cpu',port)))
       await (await fetch(`${engineAfter.url}/api/health`)).json(),
       { ok: true },
     )
-    await page
-      .locator('#plan-panel')
-      .screenshot({
-        path: join(
-          artifacts,
-          `electron-space-${automatic ? 'enabled' : 'disabled'}.png`,
-        ),
-      })
+    await page.locator('#plan-panel').screenshot({
+      path: join(
+        artifacts,
+        `electron-space-${automatic ? 'enabled' : 'disabled'}.png`,
+      ),
+    })
     records.push({
       automatic,
       report: cli.space,

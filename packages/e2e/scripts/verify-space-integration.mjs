@@ -11,11 +11,18 @@ import { _electron as electron, expect } from '@playwright/test'
 const execute = promisify(execFile)
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const backend = process.env.DINKSTER_BACKEND_ROOT
-if (!backend || process.platform !== 'linux' || !process.env.DISPLAY)
+const windows = process.platform === 'win32'
+if (
+  !backend ||
+  (!windows && (process.platform !== 'linux' || !process.env.DISPLAY))
+)
   throw new Error(
-    'Set DINKSTER_BACKEND_ROOT and DISPLAY for Linux Electron integration',
+    'Set DINKSTER_BACKEND_ROOT on Windows, or with DISPLAY on Linux',
   )
-const python = join(resolve(backend), '.venv/bin/python')
+const python = join(
+  resolve(backend),
+  windows ? '.venv/Scripts/python.exe' : '.venv/bin/python',
+)
 async function cleanHead(directory) {
   const { stdout } = await execute(
     'git',
@@ -50,12 +57,25 @@ const artifacts = process.env.DINKSTER_SMOKE_ARTIFACTS ?? scratch
 await mkdir(artifacts, { recursive: true })
 const environment = {
   ...Object.fromEntries(
-    ['PATH', 'HOME', 'DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR'].flatMap(
-      (key) =>
-        process.env[key] === undefined ? [] : [[key, process.env[key]]],
+    [
+      'PATH',
+      'HOME',
+      'USERPROFILE',
+      'SYSTEMROOT',
+      'SystemRoot',
+      'COMSPEC',
+      'PATHEXT',
+      'TEMP',
+      'TMP',
+      'DISPLAY',
+      'XAUTHORITY',
+      'XDG_RUNTIME_DIR',
+    ].flatMap((key) =>
+      process.env[key] === undefined ? [] : [[key, process.env[key]]],
     ),
   ),
   XDG_DATA_HOME: join(scratch, 'user-data'),
+  LOCALAPPDATA: join(scratch, 'user-data'),
   CUDA_VISIBLE_DEVICES: '',
   DINKSTER_ACCELERATOR: 'cpu',
 }
@@ -68,6 +88,7 @@ const options = {
 await execute('pnpm', ['--filter', '@dinkster/desktop', 'build'], {
   ...options,
   cwd: desktop,
+  shell: windows,
 })
 let fixture
 let app
@@ -135,7 +156,7 @@ from tests.fixtures.environments.build import build
 with socket.socket() as listener:
  listener.bind(('127.0.0.1',0))
  port=listener.getsockname()[1]
-print(json.dumps(build(Path(sys.argv[1]),'linux-cpu',port)))
+print(json.dumps(build(Path(sys.argv[1]),'fixture-cpu',port)))
 `,
           join(scratch, 'fixture'),
         ],
@@ -216,13 +237,50 @@ trees.extend(store.iterdir())
 generations=root/'generations'
 trees.remove(generations)
 trees.extend(generations.iterdir())
-# Prepare only this newly created fixture before the measured read-only window.
-for tree in trees:
- for path in [tree,*tree.rglob('*')] if tree.is_dir() else [tree]:
-  if stat.S_ISREG(path.lstat().st_mode):
-   with path.open('rb') as stream: os.fsync(stream.fileno())
-output=subprocess.check_output(['du','-s','--block-size=1','--',*map(str,trees)],text=True)
-print(sum(int(line.split()[0]) for line in output.splitlines()))
+if sys.platform=='win32':
+ import ctypes,struct
+ from ctypes import wintypes
+ kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+ native=ctypes.WinDLL('ntdll')
+ kernel.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.LPVOID,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+ kernel.CreateFileW.restype=wintypes.HANDLE
+ kernel.CloseHandle.argtypes=[wintypes.HANDLE]
+ kernel.GetVolumeInformationByHandleW.argtypes=[wintypes.HANDLE,wintypes.LPWSTR,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),ctypes.POINTER(wintypes.DWORD),ctypes.POINTER(wintypes.DWORD),wintypes.LPWSTR,wintypes.DWORD]
+ native.NtQueryInformationFile.argtypes=[wintypes.HANDLE,wintypes.LPVOID,wintypes.LPVOID,wintypes.ULONG,ctypes.c_int]
+ native.NtQueryInformationFile.restype=wintypes.LONG
+ seen=set()
+ volumes=set()
+ total=0
+ for tree in trees:
+  for path in [tree,*tree.rglob('*')] if tree.is_dir() else [tree]:
+   info=path.lstat()
+   assert not path.is_symlink() and not path.is_junction(),path
+   identity=(info.st_dev,info.st_ino)
+   if identity in seen: continue
+   seen.add(identity)
+   handle=kernel.CreateFileW(str(path),0x80,7,None,3,0x02200000,None)
+   assert handle!=ctypes.c_void_p(-1).value,(path,ctypes.get_last_error())
+   try:
+    if info.st_dev not in volumes:
+     flags=wintypes.DWORD()
+     assert kernel.GetVolumeInformationByHandleW(handle,None,0,None,None,ctypes.byref(flags),None,0),(path,ctypes.get_last_error())
+     assert not flags.value&0x08000000,'This independent file-allocation oracle cannot deduplicate cloned extents.'
+     volumes.add(info.st_dev)
+    status=ctypes.create_string_buffer(2*ctypes.sizeof(ctypes.c_void_p))
+    standard=ctypes.create_string_buffer(24)
+    result=native.NtQueryInformationFile(handle,status,standard,len(standard),5)
+    assert result==0,(path,result)
+    total+=struct.unpack_from('=q',standard.raw)[0]
+   finally: kernel.CloseHandle(handle)
+ print(total)
+else:
+ # Prepare only this newly created fixture before the measured read-only window.
+ for tree in trees:
+  for path in [tree,*tree.rglob('*')] if tree.is_dir() else [tree]:
+   if stat.S_ISREG(path.lstat().st_mode):
+    with path.open('rb') as stream: os.fsync(stream.fileno())
+ output=subprocess.check_output(['du','-s','--block-size=1','--',*map(str,trees)],text=True)
+ print(sum(int(line.split()[0]) for line in output.splitlines()))
 `,
             fixture.root,
             fixture.store,
@@ -295,7 +353,10 @@ print(sum(int(line.split()[0]) for line in output.splitlines()))
     records.push({
       automatic,
       report: cli.space,
-      expectedAllocatedBytesFromDu: expectedAllocated,
+      expectedAllocatedBytes: expectedAllocated,
+      allocationOracle: windows
+        ? 'NtQueryInformationFile FileStandardInformation, unique file identities'
+        : 'GNU du allocated bytes',
       observedPathsUnchanged: Object.keys(before).length,
       engine: engineAfter,
     })
@@ -305,11 +366,12 @@ print(sum(int(line.split()[0]) for line in output.splitlines()))
   const report = {
     desktopHead,
     backendHead,
+    platform: process.platform,
     moduleRoot,
     scratch,
     records,
     limitation:
-      'Source-checkout Electron integration with a disposable published CPU fixture; not packaged-release or native Windows proof. Access times are excluded from the filesystem comparison.',
+      'Source-checkout Electron integration with a disposable published CPU fixture, not a packaged release. Access times are excluded from the filesystem comparison. The Windows allocation oracle assumes a volume without block cloning; successful clone accounting needs separate native evidence.',
   }
   await writeFile(
     join(artifacts, 'electron-space-report.json'),

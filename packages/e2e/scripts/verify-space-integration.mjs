@@ -110,7 +110,7 @@ const command = async (...args) =>
       )
     ).stdout,
   )
-const snapshot = async () =>
+const snapshot = async (bindings) =>
   JSON.parse(
     (
       await execute(
@@ -136,6 +136,7 @@ print(json.dumps(rows,sort_keys=True))
           fixture.root,
           fixture.store,
           join(scratch, 'user-data'),
+          bindings,
         ],
         options,
       )
@@ -190,7 +191,6 @@ print(json.dumps(build(Path(sys.argv[1]),'fixture-cpu',port)))
       `${name} excluded private data`,
     )
   }
-  const bindingsBefore = await readFile(bindings)
   const engineBefore = (await command('status')).engines.find(
     (row) => row.name === 'main',
   )
@@ -289,7 +289,7 @@ else:
         )
       ).stdout.trim(),
     )
-    const before = await snapshot()
+    const before = await snapshot(bindings)
     const cli = await command('space')
     assert.equal(cli.space.complete, true, JSON.stringify(cli.space.warnings))
     assert.equal(cli.space.allocatedBytes, expectedAllocated)
@@ -327,14 +327,9 @@ else:
     )
     await expect(page.locator('#plan')).toContainText(cli.space.scope)
     assert.deepEqual(
-      await snapshot(),
+      await snapshot(bindings),
       before,
-      'report changed project, managed store or user data',
-    )
-    assert.deepEqual(
-      await readFile(bindings),
-      bindingsBefore,
-      'report changed Desktop bindings',
+      'report changed project, managed store, user data or Desktop bindings',
     )
     const engineAfter = (await command('status')).engines.find(
       (row) => row.name === 'main',

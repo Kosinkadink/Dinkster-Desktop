@@ -91,6 +91,7 @@ await execute('pnpm', ['--filter', '@dinkster/desktop', 'build'], {
   shell: windows,
 })
 let fixture
+let fixtureStarted = false
 let app
 const command = async (...args) =>
   JSON.parse(
@@ -171,6 +172,7 @@ print(json.dumps(build(Path(sys.argv[1]),'fixture-cpu',port)))
       -1,
     ),
   )
+  fixtureStarted = true
   const data = join(scratch, 'desktop')
   await mkdir(data)
   const project = {
@@ -376,6 +378,6 @@ else:
 } finally {
   await app?.close()
   // Teardown follows the final unchanged-state and live-health checks.
-  if (fixture) await command('stop', '--yes')
+  if (fixtureStarted) await command('stop', '--yes')
   console.log(`Disposable fixture retained at ${scratch}`)
 }

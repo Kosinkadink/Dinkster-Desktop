@@ -199,8 +199,42 @@ print(json.dumps(build(Path(sys.argv[1]),'linux-cpu',port)))
   const records = []
   for (const automatic of [true, false]) {
     if (!automatic) await command('cleanup', '--automatic', 'off', '--yes')
+    const expectedAllocated = Number(
+      (
+        await execute(
+          python,
+          [
+            '-I',
+            '-c',
+            `
+import os,stat,subprocess,sys
+from pathlib import Path
+root,store=map(Path,sys.argv[1:])
+trees=[root/name for name in ('generations','history','journal','current','project.json','store','cleanup.json','.lock')]
+trees=[path for path in trees if path.exists()]
+trees.extend(store.iterdir())
+generations=root/'generations'
+trees.remove(generations)
+trees.extend(generations.iterdir())
+# Prepare only this newly created fixture before the measured read-only window.
+for tree in trees:
+ for path in [tree,*tree.rglob('*')] if tree.is_dir() else [tree]:
+  if stat.S_ISREG(path.lstat().st_mode):
+   with path.open('rb') as stream: os.fsync(stream.fileno())
+output=subprocess.check_output(['du','-s','--block-size=1','--',*map(str,trees)],text=True)
+print(sum(int(line.split()[0]) for line in output.splitlines()))
+`,
+            fixture.root,
+            fixture.store,
+          ],
+          options,
+        )
+      ).stdout.trim(),
+    )
     const before = await snapshot()
     const cli = await command('space')
+    assert.equal(cli.space.complete, true, JSON.stringify(cli.space.warnings))
+    assert.equal(cli.space.allocatedBytes, expectedAllocated)
     const bridged = await page.evaluate(
       async (project) =>
         window.dinksterProjects.plan(project, {
@@ -261,6 +295,7 @@ print(json.dumps(build(Path(sys.argv[1]),'linux-cpu',port)))
     records.push({
       automatic,
       report: cli.space,
+      expectedAllocatedBytesFromDu: expectedAllocated,
       observedPathsUnchanged: Object.keys(before).length,
       engine: engineAfter,
     })

@@ -44,6 +44,7 @@ function localProject(): DesktopProject {
 function showPlan(result: EnvironmentResult, token?: string): void {
   planToken = token
   document.querySelector<HTMLElement>('#plan-panel')!.hidden = false
+  document.querySelector<HTMLElement>('#plan-title')!.textContent = result.operation === 'space' ? 'Managed software disk space' : 'Environment plan'
   const base = result.base
   const label = base ? [`Variant: ${base.variant} (${base.origin})`, `Torch: ${base.torchVersion ?? 'none'}`, `Torch index: ${base.torchIndex ?? 'none'}`] : []
   if (base?.label) label.push(`Base label: ${base.label}`)
@@ -62,6 +63,33 @@ function showPlan(result: EnvironmentResult, token?: string): void {
     label.push('Generation-only cleanup never prunes shared caches or stops engines.')
   } else if (result.operation === 'status') label.push('Cleanup details unavailable from these environment tools.')
   if (result.cleanupAttempt) label.push(`Cleanup attempt: ${result.cleanupAttempt.status}`, ...(result.cleanupAttempt.warnings ?? []).map((warning) => `Cleanup warning: ${warning}`))
+  if (result.space) {
+    const space = result.space
+    const bytes = (value: number | null): string => value === null ? 'unavailable' : `${value.toLocaleString()} bytes`
+    label.push(`Project: ${space.project}`, `Shared store: ${space.store ?? 'unavailable'}`, space.scope, space.sharing,
+      `Measurement: ${space.complete ? 'complete' : 'incomplete; unknown sizes are not zero'}`,
+      `Total allocated (shared files counted once): ${bytes(space.allocatedBytes)}`,
+      `Observed allocation lower bound: ${bytes(space.observedAllocatedBytes)}`,
+      `Shared allocation: ${bytes(space.sharedAllocatedBytes)}`,
+      `Automatic cleanup would free now: ${bytes(space.automaticReclaimableBytes)}`,
+      `Eligible generation cleanup: ${bytes(space.eligibleGenerationReclaimableBytes)}`,
+      `Additional explicit store cleanup: ${bytes(space.additionalExplicitReclaimableBytes)}`,
+      `Automatic generation cleanup: ${space.policy.automatic ? 'on' : 'off'}`,
+      `Keep current and ${space.policy.previousSuccessfulActivations} previous successful activation(s); minimum age ${space.policy.minimumAgeSeconds}s.`,
+      'Change both preferences above using Generation cleanup / retry, then review and confirm.',
+      space.settingsCommand, space.settingsHelp, '', 'Generations:')
+    const allocation = (group: string): string => `${bytes(space.groups[group]!.exclusiveAllocatedBytes)} exclusive; ${bytes(space.groups[group]!.sharedAllocatedBytes)} shared (do not add shared sizes)`
+    for (const row of space.generations) label.push(`Generation ${row.generation}: ${row.status} - ${row.reasons.join('; ')}\n  ${allocation(row.allocationGroup)}`)
+    label.push('', 'Shared stores (never automatically cleaned):')
+    for (const row of space.stores) label.push(`${row.label}: ${allocation(row.allocationGroup)}\n  ${row.reasons.join('; ')}`)
+    for (const [group] of Object.entries(space.groups)) {
+      if (!space.generations.some((row) => row.allocationGroup === group) && !space.stores.some((row) => row.allocationGroup === group)) label.push(`${group}: ${allocation(group)}`)
+    }
+    for (const [title, warnings] of [
+      ['Measurement warning', space.warnings], ['Cleanup warning', space.cleanupWarnings],
+      ['Eligibility warning', space.eligibilityWarnings], ['Reclaimability warning', space.reclaimabilityWarnings],
+    ] as const) label.push(...warnings.map((warning) => `${title}: ${warning}`))
+  }
   document.querySelector<HTMLElement>('#plan')!.textContent = [result.status, ...label, ...result.plan, ...(result.changes ?? [])].join('\n')
   document.querySelector<HTMLButtonElement>('#apply')!.hidden = token === undefined
   document.querySelector<HTMLElement>('#plan-panel')!.scrollIntoView({ block: 'nearest' })

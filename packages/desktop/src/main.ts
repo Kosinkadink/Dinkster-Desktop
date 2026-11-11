@@ -450,7 +450,7 @@ ipcMain.handle('desktop:projects-plan', (event, value: unknown, input: Environme
   pendingProjectPlan = undefined
   const project = parseProject(value)
   if (!project.root || input.root !== project.root
-    || !['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'status'].includes(input.operation)) throw new Error('invalid local project operation')
+    || !['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'status', 'space'].includes(input.operation)) throw new Error('invalid local project operation')
   // Validate the shell binding before asking the environment owner to mutate it.
   saveProject(await readProjects(dataDirectory), project)
   if (input.operation === 'move') saveProject(await readProjects(dataDirectory), { ...project, root: input.destination })

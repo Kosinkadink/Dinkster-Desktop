@@ -233,9 +233,7 @@ print(json.dumps(build(Path(sys.argv[1]),'linux-cpu',port)))
     await expect(page.locator('#plan')).toContainText(
       `Automatic generation cleanup: ${automatic ? 'on' : 'off'}`,
     )
-    await expect(page.locator('#plan')).toContainText(
-      'Models, outputs, workflows and mounts are excluded.',
-    )
+    await expect(page.locator('#plan')).toContainText(cli.space.scope)
     assert.deepEqual(
       await snapshot(),
       before,

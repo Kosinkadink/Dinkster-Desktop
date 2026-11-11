@@ -233,10 +233,10 @@ describe('EngineRuntime checkout lifecycle', () => {
     })).rejects.toThrow('did not become ready')
   })
 
-  it('enables durable local mount grants for both desktop launch paths', () => {
+  it('enables durable local mount and settings grants for both desktop launch paths', () => {
     const arguments_ = supervisorArguments('source', 'library', 3639, 'test-instance')
     expect(arguments_).toContain('test-instance')
-    expect(arguments_.slice(-3)).toEqual(['--library-root', 'library', '--allow-mount-changes'])
+    expect(arguments_.slice(-4)).toEqual(['--library-root', 'library', '--allow-mount-changes', '--allow-settings-changes'])
     expect(dirname(arguments_[arguments_.indexOf('--') + 1]!)).toContain('.venv')
   })
 })

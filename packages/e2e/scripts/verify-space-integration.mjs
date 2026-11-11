@@ -120,7 +120,7 @@ const snapshot = async (bindings) =>
           '-I',
           '-c',
           `
-import hashlib,json,os,stat,sys
+import hashlib,json,mmap,os,stat,sys
 from pathlib import Path
 rows={}
 for raw in sys.argv[1:]:
@@ -129,7 +129,17 @@ for raw in sys.argv[1:]:
  for path in [root,*sorted(root.rglob('*'))]:
   info=path.lstat()
   row=[info.st_mode,info.st_size,info.st_ino,info.st_nlink,info.st_mtime_ns,info.st_ctime_ns,getattr(info,'st_blocks',None)]
-  if stat.S_ISREG(info.st_mode): row.append(hashlib.sha256(path.read_bytes()).hexdigest())
+  if stat.S_ISREG(info.st_mode):
+   if sys.platform=='win32':
+    # Read-only mappings observe content without releasing supervisor byte-range locks.
+    with path.open('rb') as stream:
+     size=os.fstat(stream.fileno()).st_size
+     assert size==info.st_size,path
+     if size:
+      with mmap.mmap(stream.fileno(),0,access=mmap.ACCESS_READ) as contents:
+       row.append(hashlib.sha256(contents).hexdigest())
+     else: row.append(hashlib.sha256(b'').hexdigest())
+   else: row.append(hashlib.sha256(path.read_bytes()).hexdigest())
   elif stat.S_ISLNK(info.st_mode): row.append(os.readlink(path))
   rows[str(path)]=row
 print(json.dumps(rows,sort_keys=True))

@@ -8,7 +8,7 @@ import { channelTools } from './environment-channel.js'
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'packs-plan' | 'packs-apply'
+export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply'
 export type EnvironmentChannel = 'stable' | 'main'
 
 export interface EnvironmentRequest {
@@ -50,6 +50,32 @@ export interface EnvironmentCleanup {
   readonly lastAttempt?: CleanupAttempt
 }
 
+export interface EnvironmentSpace {
+  readonly format: 'dinkster.space/1'
+  readonly observedAt: number
+  readonly project: string
+  readonly store: string | null
+  readonly scope: string
+  readonly sharing: string
+  readonly complete: boolean
+  readonly allocatedBytes: number | null
+  readonly observedAllocatedBytes: number
+  readonly sharedAllocatedBytes: number | null
+  readonly eligibleGenerationReclaimableBytes: number | null
+  readonly automaticReclaimableBytes: number | null
+  readonly additionalExplicitReclaimableBytes: number | null
+  readonly policy: NonNullable<EnvironmentCleanup['policy']>
+  readonly settingsCommand: string
+  readonly settingsHelp: string
+  readonly generations: readonly (EnvironmentCleanup['generations'][number] & { readonly allocationGroup: string })[]
+  readonly stores: readonly { readonly allocationGroup: string; readonly label: string; readonly automaticCleanup: false; readonly reasons: readonly string[] }[]
+  readonly groups: Readonly<Record<string, { readonly exclusiveAllocatedBytes: number | null; readonly sharedAllocatedBytes: number | null }>>
+  readonly warnings: readonly string[]
+  readonly cleanupWarnings: readonly string[]
+  readonly eligibilityWarnings: readonly string[]
+  readonly reclaimabilityWarnings: readonly string[]
+}
+
 /** The command owner's dinkster.environment-result/1 response, unchanged. */
 export interface EnvironmentResult {
   readonly format: 'dinkster.environment-result/1'
@@ -67,6 +93,7 @@ export interface EnvironmentResult {
   readonly engines?: readonly EnvironmentEngine[]
   readonly cleanup?: EnvironmentCleanup
   readonly cleanupAttempt?: CleanupAttempt
+  readonly space?: EnvironmentSpace
   readonly channel?: EnvironmentChannel | null
   readonly variant?: string | null
   readonly base?: {
@@ -91,7 +118,7 @@ export interface EnvironmentResult {
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
-  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
+  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'space', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
   if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'main') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
   if (request.operation === 'packs-plan' || request.operation === 'packs-apply') {
@@ -155,7 +182,7 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     args.push('--gpu', gpu)
   }
   args.push('--json')
-  if (!['status', 'catalog'].includes(request.operation) && (request.operation !== 'doctor' || request.repair)) args.push(confirmed ? '--yes' : '--plan')
+  if (!['status', 'catalog', 'space'].includes(request.operation) && (request.operation !== 'doctor' || request.repair)) args.push(confirmed ? '--yes' : '--plan')
   return args
 }
 
@@ -190,6 +217,35 @@ function validCleanup(value: unknown): boolean {
     && (row['lastAttempt'] === undefined || validAttempt(row['lastAttempt']))
 }
 
+function validSpace(value: unknown, root: string): boolean {
+  if (!value || typeof value !== 'object') return false
+  const row = value as Record<string, unknown>
+  const groups = row['groups'] as Record<string, unknown> | null
+  const bytes = (size: unknown): boolean => size === null || (Number.isSafeInteger(size) && Number(size) >= 0)
+  const strings = (lines: unknown): boolean => Array.isArray(lines) && lines.every((line) => typeof line === 'string')
+  if (row['format'] !== 'dinkster.space/1' || row['project'] !== root
+    || !(row['store'] === null || (typeof row['store'] === 'string' && isAbsolute(row['store'])))
+    || typeof row['complete'] !== 'boolean' || typeof row['observedAt'] !== 'number' || !Number.isFinite(row['observedAt']) || row['observedAt'] <= 0
+    || !['scope', 'sharing', 'settingsCommand', 'settingsHelp'].every((key) => typeof row[key] === 'string')
+    || !['allocatedBytes', 'sharedAllocatedBytes', 'eligibleGenerationReclaimableBytes', 'automaticReclaimableBytes', 'additionalExplicitReclaimableBytes'].every((key) => bytes(row[key]))
+    || !Number.isSafeInteger(row['observedAllocatedBytes']) || Number(row['observedAllocatedBytes']) < 0
+    || !['warnings', 'cleanupWarnings', 'eligibilityWarnings', 'reclaimabilityWarnings'].every((key) => strings(row[key]))
+    || !validCleanup({ policy: row['policy'], generations: row['generations'], quarantine: [], warnings: [] }) || !row['policy']
+    || !groups || typeof groups !== 'object' || Array.isArray(groups)) return false
+  if (!Object.values(groups).every((entry) => {
+    if (!entry || typeof entry !== 'object') return false
+    const group = entry as Record<string, unknown>
+    return bytes(group['exclusiveAllocatedBytes']) && bytes(group['sharedAllocatedBytes'])
+  })) return false
+  const validGroup = (item: Record<string, unknown>): boolean => typeof item['allocationGroup'] === 'string' && Object.hasOwn(groups, item['allocationGroup'])
+  return (row['generations'] as Record<string, unknown>[]).every(validGroup)
+    && Array.isArray(row['stores']) && row['stores'].every((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return false
+      const item = entry as Record<string, unknown>
+      return validGroup(item) && typeof item['label'] === 'string' && item['automaticCleanup'] === false && strings(item['reasons'])
+    })
+}
+
 function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentResult {
   const value: unknown = JSON.parse(text)
   if (!value || typeof value !== 'object') throw new Error('invalid dinkster-env response')
@@ -215,6 +271,8 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
   }
   if ((row['cleanup'] !== undefined && !validCleanup(row['cleanup']))
     || (row['cleanupAttempt'] !== undefined && !validAttempt(row['cleanupAttempt']))) throw new Error('unsupported dinkster-env cleanup response')
+  if ((row['space'] !== undefined && !validSpace(row['space'], String(row['root'])))
+    || (operation === 'space' && row['status'] !== 'error' && (row['status'] !== 'clean' || row['space'] === undefined))) throw new Error('unsupported dinkster-env space response')
   if (row['base'] !== undefined) {
     const base = row['base'] as Record<string, unknown> | null
     if (!base || typeof base !== 'object' || typeof base['variant'] !== 'string'

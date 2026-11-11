@@ -33,7 +33,7 @@ function executable(root: string, name: string): string {
 export function supervisorArguments(source: string, library: string, port: number, instance?: string): readonly string[] {
   return [
     '--host', '127.0.0.1', '--port', String(port), ...(instance ? ['--instance', instance] : []), '--',
-    executable(source, 'dinkster-serve'), '--library-root', library, '--allow-mount-changes',
+    executable(source, 'dinkster-serve'), '--library-root', library, '--allow-mount-changes', '--allow-settings-changes',
   ]
 }
 

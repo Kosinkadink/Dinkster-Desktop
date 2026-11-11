@@ -65,6 +65,11 @@ A remote-only project stores server URLs and no install root. Opening it loads
 the server's frontend in an isolated window without a Desktop preload or Node
 capabilities. It does not invoke environment commands or create a generation.
 
+Desktop starts its provisioned local engine with `--allow-settings-changes`.
+Runtime settings such as max running jobs can be edited in Backends and are
+kept in the engine's library across app restarts. A plain `dinkster-serve`
+without that flag still refuses settings edits.
+
 ## Native asset files
 
 Local engine windows receive only the file-capability, directory-choice,
@@ -162,6 +167,14 @@ identity, when returned by the tools. Missing legacy descriptors and unlabelled
 custom bases remain supported without inventing publication labels.
 Mirror discovery, artifact verification, generation construction, activation,
 recovery, and retention are responsibilities of the environment tools.
+
+Select **Disk space (read-only)** to show the environment tools' managed-software
+report. It shows allocated and shared space, generation retention reasons,
+shared stores, cleanup savings, and the current automatic-cleanup preferences.
+User data is excluded. Unknown sizes stay unavailable, not zero; shared row
+sizes overlap and must not be added. The report has no confirmation action.
+Change automatic cleanup and the previous-generation count using **Generation
+cleanup / retry**, reviewing its plan before confirmation.
 
 For development, `DINKSTER_ENV` selects an installed environment executable.
 Alternatively, `DINKSTER_TOOLS_PYTHON` selects an interpreter containing the

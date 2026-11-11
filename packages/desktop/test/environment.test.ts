@@ -108,6 +108,41 @@ describe('Desktop dinkster-env command client', () => {
     await client.dispose()
   })
 
+  it('reads the space report unchanged without confirmation and refuses invalid allocation data', async () => {
+    const { root, client } = await commandFixture()
+    const space = {
+      format: 'dinkster.space/1', observedAt: 1794351600000000000, project: root, store: null,
+      scope: 'Managed software only; user data excluded.', sharing: 'Shared files counted once.', complete: false,
+      allocatedBytes: null, observedAllocatedBytes: 8192, sharedAllocatedBytes: null,
+      eligibleGenerationReclaimableBytes: null, automaticReclaimableBytes: 0, additionalExplicitReclaimableBytes: null,
+      policy: { automatic: false, previousSuccessfulActivations: 2, minimumAgeSeconds: 86400 },
+      settingsCommand: 'dinkster-env cleanup --automatic on --keep-previous 2', settingsHelp: 'Review before confirming.',
+      generations: [{ generation: 3, status: 'retained', reasons: ['current generation'], allocationGroup: 'generation/3' }],
+      stores: [{ allocationGroup: 'store/wheels', label: 'Wheels', automaticCleanup: false, reasons: ['shared cache'] }],
+      groups: { 'generation/3': { exclusiveAllocatedBytes: 4096, sharedAllocatedBytes: null }, 'store/wheels': { exclusiveAllocatedBytes: 4096, sharedAllocatedBytes: null } },
+      warnings: ['Clone accounting unavailable.'], cleanupWarnings: [], eligibilityWarnings: [], reclaimabilityWarnings: [],
+    }
+    const response = { format: 'dinkster.environment-result/1', operation: 'space', status: 'clean', root, current: 3, plan: [], space }
+    await writeFile(join(root, 'command.cjs'), `const fs=require('node:fs');const path=require('node:path');const args=process.argv.slice(2);const root=args[args.indexOf('--root')+1];fs.writeFileSync(path.join(root,'arguments.json'),JSON.stringify(args));console.log(fs.readFileSync(path.join(root,'response.json'),'utf8'));`)
+    await writeFile(join(root, 'response.json'), JSON.stringify(response))
+    for (const confirmed of [false, true]) {
+      expect((await client.run({ root, operation: 'space' }, confirmed)).space).toEqual(space)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'space', '--json'])
+    }
+    for (const invalid of [
+      { ...space, project: join(root, 'other') }, { ...space, observedAllocatedBytes: -1 },
+      { ...space, allocatedBytes: Number.MAX_SAFE_INTEGER + 1 }, { ...space, allocatedBytes: '8192' },
+      { ...space, groups: {} }, { ...space, stores: [{ ...space.stores[0], automaticCleanup: true }] },
+      { ...space, policy: null },
+    ]) {
+      await writeFile(join(root, 'response.json'), JSON.stringify({ ...response, space: invalid }))
+      await expect(client.run({ root, operation: 'space' })).rejects.toThrow('unsupported dinkster-env space response')
+    }
+    await writeFile(join(root, 'response.json'), JSON.stringify({ ...response, space: undefined }))
+    await expect(client.run({ root, operation: 'space' })).rejects.toThrow('unsupported dinkster-env space response')
+    await client.dispose()
+  })
+
   it('refuses a channel above the running Desktop before invoking any command, without gating offline operations', async () => {
     const { root } = await commandFixture()
     const script = join(root, 'command.cjs')

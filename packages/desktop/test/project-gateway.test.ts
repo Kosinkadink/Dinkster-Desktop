@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createProjectGateway, PROJECT_INSTALL_HEADER, type ProjectGateway } from '../src/project-gateway.js'
@@ -87,7 +87,9 @@ it('rejects opted-out, untrusted origin, absent capability and bearer callers be
   expect(off.calls).toEqual([])
   const f = await fixture()
   for (const headers of [{ origin: 'http://attacker.invalid' }, { [PROJECT_INSTALL_HEADER]: '' }, { authorization: 'Bearer agent' }, { [PROJECT_INSTALL_HEADER]: 'a'.repeat(64) }, { [PROJECT_INSTALL_HEADER]: '\u00e9'.repeat(64) }]) {
-    expect((await f.post('plan', { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] }, headers)).status).toBe(403)
+    for (const action of ['plan', 'prepare', 'preparation/status', 'preparation/cancel']) {
+      expect((await f.post(action, { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] }, headers)).status).toBe(403)
+    }
   }
   expect(f.calls).toEqual([])
 })
@@ -161,4 +163,68 @@ it('closes ahead of a queued request without deadlocking the shared lifecycle qu
   await request
   await f.queue.run(async () => {})
   expect(f.calls).toEqual([])
+})
+
+it.each(['ready', 'cancelled', 'stalled', 'expired', 'failed', 'changed'])('observes slow preparation and suppresses unusable %s results', async (outcome) => {
+  const f = await fixture()
+  let release!: () => void
+  let entered!: () => void
+  const barrier = new Promise<void>((resolve) => { release = resolve })
+  const started = new Promise<void>((resolve) => { entered = resolve })
+  f.hold(async () => { entered(); await barrier })
+  const start = performance.now()
+  let elapsed = 0
+  vi.spyOn(performance, 'now').mockImplementation(() => start + elapsed)
+  const response = await f.post('prepare', { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] })
+  expect(response.status).toBe(202)
+  expect(response.headers.get('cache-control')).toBe('no-store')
+  const identity = { preparation: (await response.json() as { preparation: string }).preparation }
+  try {
+    await started
+    f.setOwner('another-document')
+    expect((await f.post('preparation/status', identity)).status).toBe(404)
+    f.setOwner('document-1')
+    expect((await f.plan()).status).toBe(409)
+    const progress = f.calls[0]!.progress!
+    expect(progress).toBeTruthy()
+    elapsed = 45_000
+    await writeFile(progress, JSON.stringify({ sequence: 3, stage: 'checking-software', completed: 128, total: 256 }))
+    const status = await (await f.post('preparation/status', identity)).json() as Record<string, unknown>
+    expect(status).toEqual({ ...identity, state: 'preparing', progress: { sequence: 3, stage: 'checking-software', completed: 128, total: 256 } })
+    if (outcome === 'ready') {
+      for (const [sequence, time] of [[4, 90_000], [5, 135_000]] as const) {
+        elapsed = time
+        await writeFile(progress, JSON.stringify({ sequence, stage: 'checking-software', completed: 128 * sequence, total: 1024 }))
+        expect((await (await f.post('preparation/status', identity)).json() as { state: string }).state).toBe('preparing')
+      }
+    }
+    if (outcome === 'cancelled') {
+      expect((await (await f.post('preparation/cancel', identity)).json() as { state: string }).state).toBe('cancelled')
+    } else if (outcome === 'stalled' || outcome === 'expired') {
+      elapsed = outcome === 'stalled' ? 165_000 : 1_800_000
+      const failed = await (await f.post('preparation/status', identity)).json() as { error: string }
+      expect(failed.error).toBe(`preparation-${outcome}`)
+    } else if (outcome === 'failed') f.fail('private path must not leak')
+    else if (outcome === 'changed') f.setOwner('another-document')
+    if (['cancelled', 'stalled', 'expired'].includes(outcome)) {
+      expect(await readFile(`${progress}.cancel`, 'utf8')).toBe('')
+      expect((await f.plan()).status).toBe(409)
+      expect((await stat(dirname(progress))).isDirectory()).toBe(true)
+    }
+    release()
+    await f.queue.run(async () => {})
+    f.setOwner('document-1')
+    const final = await (await f.post('preparation/status', identity)).json() as { state: string; result?: { confirmation: string; review: string }; error?: string }
+    expect(final.state).toBe(outcome === 'ready' ? 'ready' : outcome === 'cancelled' ? 'cancelled' : 'failed')
+    if (outcome === 'ready') {
+      expect(final.result?.review).toContain('12345')
+      expect((await f.post('apply', { confirmation: final.result!.confirmation })).status).toBe(200)
+      expect(f.calls.map((call) => call.operation)).toEqual(['packs-plan', 'packs-apply'])
+    } else {
+      expect(final.result).toBeUndefined()
+      expect(JSON.stringify(final)).not.toContain('private path')
+      await expect(stat(dirname(progress))).rejects.toThrow()
+      expect(f.calls.map((call) => call.operation)).toEqual(['packs-plan'])
+    }
+  } finally { release() }
 })

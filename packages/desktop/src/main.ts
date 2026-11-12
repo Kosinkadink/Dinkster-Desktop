@@ -881,7 +881,8 @@ function applyCredentialHeaders(): void {
     if (bound) {
       const [managed, binding] = bound
       if (!quitting && binding.gateway && origin === binding.url && details.method === 'POST'
-        && ['/api/packs/install/plan', '/api/packs/install/apply'].includes(new URL(details.url).pathname)
+        && ['/api/packs/install/plan', '/api/packs/install/apply', '/api/packs/install/prepare',
+          '/api/packs/install/preparation/status', '/api/packs/install/preparation/cancel'].includes(new URL(details.url).pathname)
         && isTrustedDesktopIpc(managed.webContents, managed.webContents.mainFrame, origin, managed.webContents, details.frame ?? null)
         && !hasAuthorizationHeader(details.requestHeaders)) {
         details.requestHeaders[PROJECT_INSTALL_HEADER] = binding.gateway.capability

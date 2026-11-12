@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DINKSTER_FRONTEND_REF: d454b31137ac839462e5a5e04803c75054511f70
+  DINKSTER_FRONTEND_REF: 734c32da1360c6a1496d37fb9373f87209a1a27f
 
 jobs:
   linux:

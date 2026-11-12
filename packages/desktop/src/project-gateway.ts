@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
@@ -9,6 +9,18 @@ import httpProxy from 'http-proxy'
 import type { EnvironmentRequest, EnvironmentResult } from './environment.js'
 
 export const PROJECT_INSTALL_HEADER = 'x-dinkster-desktop-install'
+
+interface Preparation {
+  token: string
+  owner: string
+  state: 'preparing' | 'ready' | 'failed' | 'cancelled'
+  started: number
+  updated: number
+  progress: { sequence: number; stage: string; completed: number; total: number }
+  file?: string
+  result?: unknown
+  error?: string
+}
 
 export interface ProjectGateway {
   readonly url: string
@@ -45,6 +57,7 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
   let executing: Promise<void> | undefined
   let pending: { token: string; owner: string; directory: string; inputs: string; approval: string; expires: number; added: string[] } | undefined
   let expiry: ReturnType<typeof setTimeout> | undefined
+  let preparation: Preparation | undefined
   const capability = randomBytes(32).toString('hex')
   const sockets = new Set<Socket>()
   const upgrades = new Set<Duplex>()
@@ -63,6 +76,38 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
     response.end(JSON.stringify(value))
   }
 
+  async function stopPreparation(value: Preparation, state: 'failed' | 'cancelled', error?: string): Promise<void> {
+    value.state = state
+    delete value.result
+    if (error) value.error = error
+    if (value.file) await writeFile(`${value.file}.cancel`, '')
+    if (!busy) await discard()
+  }
+
+  async function snapshot(value: Preparation): Promise<Record<string, unknown>> {
+    if (value.state === 'preparing') {
+      if (value.file) {
+        try {
+          const progress = JSON.parse(await readFile(value.file, 'utf8')) as Preparation['progress']
+          if (value.state === 'preparing' && Number.isSafeInteger(progress.sequence) && progress.sequence > value.progress.sequence
+            && typeof progress.stage === 'string' && Number.isSafeInteger(progress.completed) && Number.isSafeInteger(progress.total)) {
+            value.progress = { sequence: progress.sequence, stage: progress.stage, completed: progress.completed, total: progress.total }
+            value.updated = performance.now()
+          }
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      }
+      const now = performance.now()
+      if (value.state === 'preparing') {
+        if (now - value.started >= 1_800_000) await stopPreparation(value, 'failed', 'preparation-expired')
+        else if (now - value.updated >= 120_000) await stopPreparation(value, 'failed', 'preparation-stalled')
+      }
+    } else if (value.state === 'ready' && performance.now() - value.updated >= 900_000) {
+      await stopPreparation(value, 'failed', 'plan-stale')
+    }
+    return { preparation: value.token, state: value.state, progress: value.progress,
+      ...(value.result === undefined ? {} : { result: value.result }), ...(value.error ? { error: value.error } : {}) }
+  }
+
   async function install(request: IncomingMessage, response: ServerResponse, action: string): Promise<void> {
     if (!options.allowPackInstall) { reply(response, 404, { error: 'not-found' }); return }
     const provided = request.headers[PROJECT_INSTALL_HEADER]
@@ -72,7 +117,8 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
       || !timingSafeEqual(Buffer.from(provided), Buffer.from(capability))) {
       reply(response, 403, { error: 'local-operator-required' }); return
     }
-    if (closed || busy) { reply(response, 409, { error: 'install-in-progress' }); return }
+    const observing = action === 'status' || action === 'cancel'
+    if (closed || (busy && !observing)) { reply(response, 409, { error: 'install-in-progress' }); return }
     if (request.method !== 'POST') { reply(response, 405, { error: 'method-not-allowed' }); return }
     let raw: Record<string, unknown>
     try {
@@ -88,30 +134,77 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
       raw = value as Record<string, unknown>
     } catch { reply(response, 400, { error: 'bad-request' }); return }
     // Another request can enter while this request is reading its body.
+    if (closed || (busy && !observing)) { reply(response, 409, { error: 'install-in-progress' }); return }
+    const owner = await options.owner()
+    if (observing) {
+      const current = preparation
+      if (Object.keys(raw).length !== 1 || !current || current.owner !== owner || raw['preparation'] !== current.token) {
+        reply(response, 404, { error: 'preparation-not-found' }); return
+      }
+      if (action === 'cancel' && (current.state === 'preparing' || current.state === 'ready')) await stopPreparation(current, 'cancelled')
+      reply(response, 200, await snapshot(current))
+      return
+    }
+    // Resolving the document owner can yield to another install request.
     if (closed || busy) { reply(response, 409, { error: 'install-in-progress' }); return }
+    const packs: { pack: string; version: string }[] = []
+    const names = new Set<string>()
+    if (action === 'plan' || action === 'prepare') {
+      if (Object.keys(raw).length !== 1 || !Array.isArray(raw['packs']) || raw['packs'].length < 1 || raw['packs'].length > 64) {
+        reply(response, 400, { error: 'bad-request' }); return
+      }
+      for (const item of raw['packs'] as unknown[]) {
+        const row = item as Record<string, unknown> | null
+        if (!row || typeof row !== 'object' || Array.isArray(row) || Object.keys(row).length !== 2
+          || typeof row['pack'] !== 'string' || typeof row['version'] !== 'string'
+          || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(row['pack']) || !/^[0-9][a-zA-Z0-9.!]*$/.test(row['version']) || names.has(row['pack'])) {
+          reply(response, 400, { error: 'bad-request' }); return
+        }
+        names.add(row['pack'])
+        packs.push({ pack: row['pack'], version: row['version'] })
+      }
+    }
+    const preparing: Preparation | undefined = action === 'prepare' ? {
+      token: randomBytes(32).toString('hex'), owner, state: 'preparing', started: performance.now(), updated: performance.now(),
+      progress: { sequence: 0, stage: 'queued', completed: 0, total: 0 },
+    } : undefined
+    if (action === 'plan' || action === 'prepare') preparation = preparing
+    const deliver = async (status: number, value: unknown): Promise<void> => {
+      if (!preparing) { reply(response, status, value); return }
+      await snapshot(preparing)
+      if (preparing.state !== 'preparing') return
+      if (status === 200) {
+        preparing.state = 'ready'
+        preparing.result = value
+        preparing.updated = performance.now()
+      } else await stopPreparation(preparing, 'failed', (value as { error: string }).error)
+    }
     const perform = async (): Promise<void> => {
       let directory: string | undefined
       let installedGeneration: number | null | undefined
+      let observer: ReturnType<typeof setInterval> | undefined
+      let observation = Promise.resolve()
       try {
-        const owner = await options.owner()
-        if (action === 'plan') {
+        if (action === 'plan' || action === 'prepare') {
           await discard()
-          if (Object.keys(raw).length !== 1 || !Array.isArray(raw['packs']) || raw['packs'].length < 1 || raw['packs'].length > 64) {
-            reply(response, 400, { error: 'bad-request' }); return
-          }
-          const packs: { pack: string; version: string }[] = []
-          const names = new Set<string>()
-          for (const item of raw['packs'] as unknown[]) {
-            if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('bad-request')
-            const row = item as Record<string, unknown>
-            if (Object.keys(row).length !== 2 || typeof row['pack'] !== 'string' || typeof row['version'] !== 'string'
-              || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(row['pack']) || !/^[0-9][a-zA-Z0-9.!]*$/.test(row['version']) || names.has(row['pack'])) throw new Error('bad-request')
-            names.add(row['pack'])
-            packs.push({ pack: row['pack'], version: row['version'] })
-          }
           directory = await mkdtemp(join(tmpdir(), 'dinkster-desktop-pack-review-'))
           const inputs = join(directory, 'inputs')
-          const result = await options.run({ root: options.root, operation: 'packs-plan', packs, inputs })
+          if (preparing) {
+            preparing.file = join(directory, 'progress.json')
+            await snapshot(preparing)
+            if (preparing.state !== 'preparing') return
+            observer = setInterval(() => {
+              observation = observation.then(async () => { await snapshot(preparing) })
+                .catch(() => stopPreparation(preparing, 'failed', 'plan-failed'))
+            }, 1000)
+            observer.unref()
+          }
+          const result = await options.run({ root: options.root, operation: 'packs-plan', packs, inputs,
+            ...(preparing ? { progress: preparing.file! } : {}) })
+          if (preparing) {
+            await snapshot(preparing)
+            if (preparing.state !== 'preparing') return
+          }
           if (!result.packPlan || !result.approval || result.expiresInSeconds !== 900) throw new Error('invalid pack review')
           if (closed || owner !== await options.owner()) throw new Error('plan-stale')
           const token = randomBytes(32).toString('hex')
@@ -124,14 +217,14 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
             if (typeof path === 'string' && path) publicPlan = publicPlan.split(JSON.stringify(path).slice(1, -1)).join(label)
           }
           const plan: unknown = JSON.parse(publicPlan)
-          reply(response, 200, { confirmation: token, plan,
+          await deliver(200, { confirmation: token, plan,
             review: [...result.plan, JSON.stringify(plan, null, 2)].join('\n'), expiresInSeconds: 900 })
         } else {
-          if (Object.keys(raw).length !== 1 || typeof raw['confirmation'] !== 'string') { reply(response, 400, { error: 'bad-request' }); return }
+          if (Object.keys(raw).length !== 1 || typeof raw['confirmation'] !== 'string') { await deliver(400, { error: 'bad-request' }); return }
           const approved = pending
           if (!approved || approved.owner !== owner || approved.token !== raw['confirmation'] || Date.now() >= approved.expires) {
             await discard()
-            reply(response, 409, { error: 'plan-stale' }); return
+            await deliver(409, { error: 'plan-stale' }); return
           }
           pending = undefined
           clearTimeout(expiry)
@@ -139,7 +232,7 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
           const result = await options.run({ root: options.root, operation: 'packs-apply', inputs: approved.inputs, approval: approved.approval }, true)
           installedGeneration = result.current
           const activation = await options.activate(result, approved.added)
-          reply(response, 200, { generation: result.current, activation })
+          await deliver(200, { generation: result.current, activation })
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : ''
@@ -149,10 +242,14 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
             : message === 'plan-stale' || /changed|expired|already used|approval does not match/.test(message) ? 'plan-stale'
               : action === 'apply' ? 'apply-failed' : 'plan-failed'
         // Environment tools retain detailed diagnostics locally; HTTP must not leak host paths.
-        reply(response, bad ? 400 : ['install-in-progress', 'plan-stale', 'activation-failed'].includes(code) ? 409 : 422,
+        await deliver(bad ? 400 : ['install-in-progress', 'plan-stale', 'activation-failed'].includes(code) ? 409 : 422,
           { error: code, ...(installedGeneration === undefined ? {} : { generation: installedGeneration }) })
       } finally {
+        clearInterval(observer)
+        await observation
+        if (preparing) delete preparing.file
         if (directory) await rm(directory, { recursive: true, force: true })
+        if (preparing && preparing.state !== 'ready') await discard()
       }
     }
     busy = options.serialize(() => {
@@ -160,16 +257,23 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
       executing = perform()
       return executing
     })
-    try { await busy } finally {
+    const completion = busy.finally(async () => {
       busy = undefined
       if (pending && Date.now() >= pending.expires) await discard()
-    }
+    })
+    if (preparing) {
+      reply(response, 202, await snapshot(preparing))
+      void completion.catch(() => stopPreparation(preparing, 'failed', 'plan-failed'))
+    } else await completion
   }
 
   const server = createServer((request, response) => {
     const path = (request.url ?? '/').split('?')[0]
-    if (path === '/api/packs/install/plan' || path === '/api/packs/install/apply') {
-      void install(request, response, path.endsWith('/plan') ? 'plan' : 'apply').catch(() => response.destroy())
+    const routes: Record<string, string> = { '/api/packs/install/plan': 'plan', '/api/packs/install/apply': 'apply',
+      '/api/packs/install/prepare': 'prepare', '/api/packs/install/preparation/status': 'status', '/api/packs/install/preparation/cancel': 'cancel' }
+    const action = path ? routes[path] : undefined
+    if (action) {
+      void install(request, response, action).catch(() => response.destroy())
       return
     }
     if (request.headers.host !== new URL(origin).host || (request.headers.origin !== undefined && request.headers.origin !== origin)) {
@@ -203,6 +307,7 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
     close: () => {
       closing ??= (async () => {
         closed = true
+        if (preparation && preparation.state === 'preparing') await stopPreparation(preparation, 'cancelled')
         await executing
         await discard()
         proxy.close()

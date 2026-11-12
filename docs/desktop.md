@@ -119,6 +119,60 @@ requires stopping it first; the environment tools enforce that rule.
 The client consumes `dinkster.environment-result/1`. An update may start a new
 supervisor on a different port, so open local engine windows follow the ready
 URL returned by the command rather than reconstructing it from saved ports.
+The main-process command client also accepts supervisor `packs-plan` and
+`packs-apply` operations. Pack planning takes exact pack/version selections and
+an absolute host-owned review directory. Apply requires explicit confirmation
+and the supervisor's `sha256:` approval digest, not a renderer-supplied plan.
+These operations retain the current project's software settings and do not
+accept channel, variant, store, engine or device overrides. Successful reviews
+must identify the same project and current generation; successful apply results
+must name the resulting generation and engine states.
+
+Local project windows use a Desktop-owned loopback gateway for HTTP and
+WebSocket connections. Desktop opts that gateway into the shared
+`POST /api/packs/install/plan` and `POST /api/packs/install/apply` routes;
+remote project windows do not receive this capability. The main process adds
+an ephemeral request capability only for the bound top-level local window.
+The gateway checks the actual loopback peer, exact host and origin, rejects
+bearer credentials, and binds each single-use confirmation to its document
+and project. No project root, executable, approval digest or review-directory
+path is accepted from renderer code. Reviews expire after 900 seconds; replaced,
+consumed, expired and closed-window reviews release their temporary inputs.
+
+Both the gateway and managed engine expose `POST /api/packs/install/prepare`,
+`POST /api/packs/install/preparation/status` and
+`POST /api/packs/install/preparation/cancel`. Preparation acknowledges immediately
+with an opaque document-bound identity. Status returns actual stage and batch
+progress; a ready result contains the ordinary single-use confirmation/review.
+The tools write progress atomically to a host-owned `--progress` file. A cancel
+marker requests cooperative stop, while Desktop retains the lifecycle queue and
+scratch files until the command exits. Cancelled, failed and late results cannot
+be confirmed. No progress for 120 seconds fails as `preparation-stalled`; the
+overall 30-minute bound fails as `preparation-expired`. Polling is not progress.
+These routes use the same top-level capability checks as plan/apply and never
+accept paths or executable choices from the renderer.
+
+Successful pack installation switches the gateway to the supervisor's ready
+engine URLs after checking health and pack composition. The window is not
+navigated or re-imported, preserving its unsaved document. WebSockets reconnect
+to the new engine. Whole-project operations retain their existing window reload.
+The gateway port is saved per project/engine in Desktop's data directory so its
+origin survives shell restarts; an occupied saved port fails opening rather than
+silently changing the renderer's storage origin. Generation, history, rollback
+and software integrity remain supervisor responsibilities. An opted-out gateway
+returns 404; missing or untrusted capabilities return 403 before invoking tools.
+
+The Electron client-boundary check is
+`pnpm --filter @dinkster/e2e exec node scripts/verify-environment-client.mjs`.
+It requires a built Desktop and its pinned branding resources plus a display
+(a private Xvfb display is sufficient on Linux). It exercises real Electron
+header injection and gateway routing with supervisor and engine fixtures:
+top-level plan/apply, denied subframe and unrelated-window requests, replay
+refusal, failed-health and failed-composition activation refusal, and backend
+replacement without losing the document or origin. It also checks native file
+permissions and whole-project update/rollback. This
+does not replace real importer, generation assembly or registry acceptance.
+
 Check drift shows the active base's variant, user-defined origin, torch version
 and torch index when the environment tools return base metadata. It also shows
 installed base and engine labels, and the engine version and full release

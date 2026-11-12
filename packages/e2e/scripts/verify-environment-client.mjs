@@ -22,10 +22,37 @@ const artifacts = process.env.DINKSTER_SMOKE_ARTIFACTS
 if (artifacts) await mkdir(artifacts, { recursive: true })
 const servers = []
 const locationRequests = []
+let activationFailure
 let app
 try {
   for (const heading of ['Original supervisor', 'Updated supervisor']) {
     const server = createServer((request, response) => {
+      if (request.url === '/api/health' || request.url === '/api/composition') {
+        response.setHeader('Content-Type', 'application/json')
+        response.end(
+          JSON.stringify(
+            request.url === '/api/health'
+              ? {
+                  ok: true,
+                  compositionState: {
+                    epoch: 2,
+                    failed: activationFailure === 'health' ? 1 : 0,
+                  },
+                }
+              : {
+                  packs: {
+                    'dinkster-text': {
+                      state:
+                        activationFailure === 'composition'
+                          ? 'failed'
+                          : 'announced',
+                    },
+                  },
+                },
+          ),
+        )
+        return
+      }
       if (request.url.startsWith('/api/mounts/locations')) {
         locationRequests.push(new URL(request.url, 'http://localhost'))
         response.setHeader('Content-Type', 'application/json')
@@ -91,12 +118,21 @@ if (operation === 'catalog') {
       platform:{os:'linux',arch:'x86_64'},nvidia:null,parts:[]}}]}));
   process.exit(0);
 }
-const url = ${JSON.stringify(urls)}[operation === 'update' ? 1 : 0];
+if (operation === 'packs-plan') {
+  const output = args[args.indexOf('--output') + 1];
+  fs.mkdirSync(output);
+  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'planned',root,current:1,
+    plan:['Add dinkster-text 1.0.0'],packPlan:{format:'dinkster.project-pack-plan/1',root,current:1},
+    approval:'sha256:'+'c'.repeat(64),expiresInSeconds:900}));
+  process.exit(0);
+}
+const updated = operation === 'update' || operation === 'packs-apply';
+const url = ${JSON.stringify(urls)}[updated ? 1 : 0];
 const row = {format:'dinkster.environment-result/1',operation,
-status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,current:operation === 'update' ? 2 : 1,
+status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,current:updated ? 2 : 1,
 ...(operation === 'doctor' ? JSON.parse(fs.readFileSync(${JSON.stringify(installed)}, 'utf8')) : {}),
 plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current'],url,
-engines:[{name:'main',generation:operation === 'update' ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]};
+engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]};
 if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
 console.log(JSON.stringify(row));
 `,
@@ -218,6 +254,7 @@ console.log(JSON.stringify(row));
   await manager.getByRole('button', { name: 'Open main', exact: true }).click()
   const engine = await opened
   await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
+  const engineOrigin = new URL(engine.url()).origin
   await expect
     .poll(() =>
       engine
@@ -240,7 +277,7 @@ console.log(JSON.stringify(row));
   assert.deepEqual(
     await engine.evaluate(
       (url) => window.dinksterDesktop.fileCapabilities(url),
-      urls[0],
+      engineOrigin,
     ),
     { nativeFolderChoice: true, reveal: true, resolvePath: false },
   )
@@ -286,7 +323,7 @@ console.log(JSON.stringify(row));
         child.destroy()
       }
     },
-    urls[0],
+    engineOrigin,
   )
   assert.deepEqual(untrusted.capabilities, {
     nativeFolderChoice: false,
@@ -309,7 +346,7 @@ console.log(JSON.stringify(row));
   assert.deepEqual(
     await engine.evaluate(
       (url) => window.dinksterDesktop.fileCapabilities(url),
-      urls[0],
+      engineOrigin,
     ),
     { nativeFolderChoice: false, reveal: false, resolvePath: false },
   )
@@ -332,7 +369,7 @@ console.log(JSON.stringify(row));
       } catch (error) {
         return { error: error.message }
       }
-    }, urls[0])
+    }, engineOrigin)
     await expect
       .poll(() => app.evaluate(() => globalThis.folderDialogEntered))
       .toBe(true)
@@ -370,7 +407,7 @@ console.log(JSON.stringify(row));
     await writeFile(observedFile, JSON.stringify(observed))
     await writeFile(projectsFile, savedProjects)
   }
-  await engine.goto(`${urls[0]}/?dinksterProject=p-shared`)
+  await engine.goto(`${engineOrigin}/?dinksterProject=p-shared`)
   const identity = {
     digest: `blake3:${'a1'.repeat(32)}`,
     scope: 'local',
@@ -386,7 +423,7 @@ console.log(JSON.stringify(row));
           return error.message
         }
       },
-      { url: urls[0], asset },
+      { url: engineOrigin, asset },
     )
   assert.match(await deniedReveal(identity), /No verified local copy/)
   assert.equal(locationRequests.at(-1).searchParams.get('project'), 'p-shared')
@@ -405,15 +442,15 @@ console.log(JSON.stringify(row));
     await deniedReveal({ ...identity, project: 'p-other' }),
     /requesting project/,
   )
-  await engine.goto(`${urls[0]}/?dinksterProject=invalid_project`)
+  await engine.goto(`${engineOrigin}/?dinksterProject=invalid_project`)
   assert.deepEqual(
     await engine.evaluate(
       (url) => window.dinksterDesktop.fileCapabilities(url),
-      urls[0],
+      engineOrigin,
     ),
     { nativeFolderChoice: false, reveal: false, resolvePath: false },
   )
-  await engine.goto(urls[0])
+  await engine.goto(engineOrigin)
   await manager
     .getByRole('button', { name: 'Manage main', exact: true })
     .click()
@@ -445,7 +482,7 @@ console.log(JSON.stringify(row));
     await engine.screenshot({
       path: join(artifacts, 'chrome-engine-topbar.png'),
     })
-  assert.equal(new URL(engine.url()).origin, urls[1])
+  assert.equal(new URL(engine.url()).origin, engineOrigin)
   await manager
     .getByText('Environment operation completed.', { exact: false })
     .waitFor()
@@ -453,10 +490,135 @@ console.log(JSON.stringify(row));
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
-  assert.equal(new URL(engine.url()).origin, urls[0])
+  assert.equal(new URL(engine.url()).origin, engineOrigin)
   await manager
     .getByText('Environment operation completed.', { exact: false })
     .waitFor()
+  // Exercise the actual Electron header boundary, not a directly supplied secret.
+  const selection = { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] }
+  const postInstall = (path, body) =>
+    engine.evaluate(
+      async ({ path, body }) => {
+        const response = await fetch(`/api/packs/install/${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        return { status: response.status, body: await response.json() }
+      },
+      { path, body },
+    )
+  const packReview = await postInstall('plan', selection)
+  assert.equal(packReview.status, 200, JSON.stringify(packReview))
+  assert.equal(packReview.body.plan.root, '<project>')
+  await engine.evaluate(() => {
+    const frame = document.createElement('iframe')
+    frame.src = '/untrusted-frame'
+    document.body.append(frame)
+  })
+  const iframe = await engine
+    .frameLocator('iframe')
+    .locator('body')
+    .evaluate(async (_body, body) => {
+      const response = await fetch('/api/packs/install/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      return response.status
+    }, selection)
+  await engine.locator('iframe').evaluate((frame) => frame.remove())
+  assert.equal(iframe, 403)
+  const deniedWindow = await app.evaluate(
+    async ({ BrowserWindow }, { url, body }) => {
+      const child = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      })
+      try {
+        await child.loadURL(url)
+        return await child.webContents
+          .executeJavaScript(`fetch('/api/packs/install/plan', {
+        method:'POST',headers:{'Content-Type':'application/json'},body:${JSON.stringify(JSON.stringify(body))}
+      }).then(response => response.status)`)
+      } finally {
+        child.destroy()
+      }
+    },
+    { url: engineOrigin, body: selection },
+  )
+  assert.equal(deniedWindow, 403)
+  await engine.evaluate(() => {
+    window.retainedPackInstallDocument = 'unchanged'
+  })
+  for (const failure of ['health', 'composition']) {
+    activationFailure = failure
+    const refusedReview = await postInstall('plan', selection)
+    assert.equal(refusedReview.status, 200)
+    const refused = await postInstall('apply', {
+      confirmation: refusedReview.body.confirmation,
+    })
+    assert.equal(refused.status, 409, JSON.stringify(refused))
+    assert.deepEqual(refused.body, {
+      error: 'activation-failed',
+      generation: 2,
+    })
+    assert.equal(new URL(engine.url()).origin, engineOrigin)
+    assert.equal(
+      await engine.evaluate(() => window.retainedPackInstallDocument),
+      'unchanged',
+    )
+    assert.equal(
+      await engine.evaluate(() =>
+        fetch('/')
+          .then((response) => response.text())
+          .then((text) => text.includes('Original supervisor')),
+      ),
+      true,
+    )
+    assert.equal(
+      (
+        await postInstall('apply', {
+          confirmation: refusedReview.body.confirmation,
+        })
+      ).status,
+      409,
+    )
+  }
+  activationFailure = undefined
+  const healthyReview = await postInstall('plan', selection)
+  assert.equal(healthyReview.status, 200)
+  const packApplied = await postInstall('apply', {
+    confirmation: healthyReview.body.confirmation,
+  })
+  assert.equal(packApplied.status, 200, JSON.stringify(packApplied))
+  assert.equal(packApplied.body.generation, 2)
+  assert.deepEqual(packApplied.body.activation.added, ['dinkster-text'])
+  assert.equal(
+    await engine.evaluate(() => window.retainedPackInstallDocument),
+    'unchanged',
+  )
+  assert.equal(new URL(engine.url()).origin, engineOrigin)
+  assert.equal(
+    (
+      await postInstall('apply', {
+        confirmation: healthyReview.body.confirmation,
+      })
+    ).status,
+    409,
+  )
+  assert.equal(
+    await engine.evaluate(() =>
+      fetch('/')
+        .then((response) => response.text())
+        .then((text) => text.includes('Updated supervisor')),
+    ),
+    true,
+  )
   await manager.locator('#local-operation').selectOption('doctor')
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await expect(manager.locator('#plan')).toContainText(
@@ -661,7 +823,7 @@ console.log(JSON.stringify(row));
     ['setup', 'start', 'update', 'rollback', 'stop'],
   )
   console.log(
-    'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, remote-only routing, identity-checked stop delegation.',
+    'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, top-frame-only pack install, retained document, replay refusal, remote-only routing, identity-checked stop delegation.',
   )
 } catch (error) {
   const manager = app?.windows()[0]

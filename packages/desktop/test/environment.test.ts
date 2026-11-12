@@ -57,6 +57,60 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('passes exact host-owned pack reviews and requires explicit apply approval', async () => {
+    const { root, client } = await commandFixture()
+    const inputs = join(root, 'review inputs')
+    const approval = `sha256:${'b'.repeat(64)}`
+    const response = { format: 'dinkster.environment-result/1', operation: 'packs-plan', status: 'planned', root, current: 2,
+      plan: ['add dinkster-text@1.2.3rc1'], packPlan: { format: 'dinkster.project-pack-plan/1', root, current: 2, ownEnvironmentBytes: 12345 }, approval, expiresInSeconds: 900 }
+    const script = join(root, 'command.cjs')
+    await writeFile(script, `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(join(root, 'arguments.json'))}, JSON.stringify(process.argv.slice(2))); console.log(${JSON.stringify(JSON.stringify(response))});`)
+    const progress = join(root, 'progress.json')
+    const request = { root, operation: 'packs-plan' as const, inputs, progress, packs: [{ pack: 'dinkster-text', version: '1.2.3rc1' }, { pack: 'dinkster-image', version: '2.0.4' }] }
+    expect(await client.run(request)).toEqual(response)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+      '--root', root, 'packs-plan', 'dinkster-text@1.2.3rc1', 'dinkster-image@2.0.4', '--output', inputs, '--progress', progress, '--json',
+    ])
+    await expect(client.run(request, true)).rejects.toThrow('unconfirmed')
+    const applied = { ...response, operation: 'packs-apply', status: 'applied', current: 3, plan: [], engines: [{ name: 'main', generation: 3, state: 'ready', url: 'http://127.0.0.1:44003' }] }
+    await writeFile(script, `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(join(root, 'arguments.json'))}, JSON.stringify(process.argv.slice(2))); console.log(${JSON.stringify(JSON.stringify(applied))});`)
+    const apply = { root, operation: 'packs-apply' as const, inputs, approval }
+    await expect(client.run(apply)).rejects.toThrow('confirmed')
+    expect(await client.run(apply, true)).toEqual(applied)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+      '--root', root, 'packs-apply', '--input', inputs, '--approval', approval, '--json',
+    ])
+    await rm(join(root, 'arguments.json'))
+    for (const packs of [[{ pack: '--help', version: '1.0.0' }], [{ pack: 'dinkster-text', version: '1.0.0 --yes' }], [request.packs[0]!, request.packs[0]!]]) {
+      await expect(client.run({ ...request, packs })).rejects.toThrow('invalid or repeated')
+    }
+    await expect(client.run({ ...request, inputs: 'relative' })).rejects.toThrow('absolute host-owned')
+    await expect(client.run({ ...request, progress: 'relative' })).rejects.toThrow('absolute host-owned')
+    await expect(client.run({ ...apply, progress }, true)).rejects.toThrow('approval digest')
+    await expect(client.run({ ...request, channel: 'main' })).rejects.toThrow('retains the current')
+    await expect(client.run({ ...apply, approval: 'b'.repeat(64) }, true)).rejects.toThrow('approval digest')
+    await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
+    await client.dispose()
+  })
+
+  it('refuses mismatched or incomplete supervisor pack review and activation responses', async () => {
+    const { root, client } = await commandFixture()
+    const response = { format: 'dinkster.environment-result/1', operation: 'packs-plan', status: 'planned', root, current: 2, plan: [],
+      packPlan: { format: 'dinkster.project-pack-plan/1', root, current: 2 }, approval: `sha256:${'a'.repeat(64)}`, expiresInSeconds: 900 }
+    const request = { root, operation: 'packs-plan' as const, inputs: join(root, 'inputs'), packs: [{ pack: 'dinkster-text', version: '1.0.0' }] }
+    await mkdir(join(root, 'another'))
+    for (const changes of [{ status: 'applied' }, { approval: 'a'.repeat(64) }, { packPlan: [] }, { expiresInSeconds: 901 }, { packPlan: { ...response.packPlan, current: 1 } }, { root: join(root, 'another'), packPlan: { ...response.packPlan, root: join(root, 'another') } }]) {
+      await writeFile(join(root, 'command.cjs'), `console.log(${JSON.stringify(JSON.stringify({ ...response, ...changes }))});`)
+      await expect(client.run(request)).rejects.toThrow(/pack plan response|different project root/)
+    }
+    for (const changes of [{ status: 'planned', current: 3, engines: [] }, { status: 'applied', current: null, engines: [] }, { status: 'applied', current: 3 }]) {
+      const { packPlan: _plan, approval: _approval, expiresInSeconds: _expires, ...base } = response
+      await writeFile(join(root, 'command.cjs'), `console.log(${JSON.stringify(JSON.stringify({ ...base, operation: 'packs-apply', ...changes }))});`)
+      await expect(client.run({ root, operation: 'packs-apply', inputs: request.inputs, approval: response.approval }, true)).rejects.toThrow('pack activation response')
+    }
+    await client.dispose()
+  })
+
   it('reads the space report unchanged without confirmation and refuses invalid allocation data', async () => {
     const { root, client } = await commandFixture()
     const space = {

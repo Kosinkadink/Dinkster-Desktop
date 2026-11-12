@@ -46,6 +46,7 @@ import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } fr
 import toolsRelease from './environment-tools-release.json' with { type: 'json' }
 import { detectNvidiaGpus, planVariant } from './hardware.js'
 import { createWebHost, type WebHost } from './web-host.js'
+import { createProjectGateway, PROJECT_INSTALL_HEADER, type ProjectGateway } from './project-gateway.js'
 import { writeFileAtomic } from './atomic-file.js'
 import { denyRendererPermissions, secureWebPreferences } from './security.js'
 import { installWindowChrome, windowChromeOptions } from './window-chrome.js'
@@ -77,7 +78,7 @@ import type {
 const { autoUpdater } = updater
 let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
-const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; folderProject: string | undefined; document: number }>()
+const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
 const environmentClient = new EnvironmentClient(undefined, undefined, undefined, app.isPackaged ? {
   manifest: join(process.resourcesPath, 'tools', toolsRelease.manifest.name),
@@ -348,7 +349,7 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
       const status = await environmentClient.run({ root, operation: 'status' })
       const active = status.engines?.find((entry) => entry.name === engineId)
       if (status.status !== 'clean' || status.root !== root || !status.current || active?.state !== 'ready' || active.generation !== status.current
-        || active.url !== url || (generation !== undefined && generation !== active.generation)) {
+        || active.url !== binding.backendUrl || (generation !== undefined && generation !== active.generation)) {
         throw new Error('The local engine is no longer the selected ready generation')
       }
       generation = active.generation
@@ -440,8 +441,10 @@ async function handoffProject(project: DesktopProject, result: EnvironmentResult
     if (binding.projectId !== project.id || managed.isDestroyed()) continue
     if (!project.engines.some((engine) => engine.id === binding.engineId && engine.kind === 'local')) continue
     const url = localEngineUrl(project, binding.engineId, result)
-    binding.url = url
-    await managed.loadURL(url)
+    binding.backendUrl = url
+    if (binding.gateway) binding.gateway.setTarget(url)
+    else binding.url = url
+    await managed.loadURL(binding.url)
   }
 }
 
@@ -511,8 +514,10 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   }
   const existing = [...remoteWindows].find(([managed, binding]) => !managed.isDestroyed() && binding.projectId === projectId && binding.engineId === engineId)
   if (existing) {
-    existing[1].url = url
-    await existing[0].loadURL(url)
+    existing[1].backendUrl = url
+    if (existing[1].gateway) existing[1].gateway.setTarget(url)
+    else existing[1].url = url
+    await existing[0].loadURL(existing[1].url)
     existing[0].show()
     return
   }
@@ -526,8 +531,53 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   })
   installWindowChrome(remote)
   remote.on('page-title-updated', (event) => event.preventDefault())
-  const binding = { projectId, engineId, url, folderProject: undefined as string | undefined, document: 0 }
+  const binding: { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number } = {
+    projectId, engineId, url, backendUrl: url, folderProject: undefined, document: 0,
+  }
   remoteWindows.set(remote, binding)
+  if (engine.kind === 'local') {
+    try {
+      const portFile = join('project-gateways', projectId, `${engineId}.json`)
+      binding.gateway = await createProjectGateway({ get root() { return localEngines.get(`${projectId}/${engineId}`)!.root }, target: url, allowPackInstall: true, preferredPort: await readPersistedPort(portFile),
+        serialize: serializeLifecycle,
+        run: (request, confirmed) => environmentClient.run(request, confirmed),
+        owner: async () => {
+          const document = binding.document
+          const saved = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === projectId)
+          if (quitting || remote.isDestroyed() || remoteWindows.get(remote) !== binding || binding.document !== document
+            || !saved || saved.root !== localEngines.get(`${projectId}/${engineId}`)?.root || saved.engines.find((candidate) => candidate.id === engineId)?.kind !== 'local'
+            || !isTrustedDesktopIpc(remote.webContents, remote.webContents.mainFrame, new URL(binding.url).origin, remote.webContents, remote.webContents.mainFrame)) {
+            throw new Error('plan-stale')
+          }
+          return `${projectId}/${engineId}/${document}/${saved.root}`
+        },
+        activate: async (result, added) => {
+          const next = localEngineUrl(project!, engineId, result)
+          const health = await fetch(`${next}/api/health`, { signal: AbortSignal.timeout(10_000) })
+          const body = await health.json() as { ok?: boolean; compositionState?: { epoch?: number; failed?: number } }
+          const epoch = body.compositionState?.epoch
+          if (!health.ok || body.ok !== true || body.compositionState?.failed !== 0 || !Number.isSafeInteger(epoch) || epoch! < 1) throw new Error('activation-failed')
+          const composition = await fetch(`${next}/api/composition`, { signal: AbortSignal.timeout(10_000) })
+          const catalog = await composition.json() as { packs?: Record<string, { state?: string }> }
+          if (!composition.ok || !catalog.packs || !added.every((pack) => catalog.packs![pack]?.state === 'announced')) throw new Error('activation-failed')
+          for (const [managed, other] of remoteWindows) {
+            if (other.projectId !== projectId || managed.isDestroyed() || !other.gateway) continue
+            const target = localEngineUrl(project!, other.engineId, result)
+            other.backendUrl = target
+            other.gateway.setTarget(target)
+          }
+          return { generation: result.current, epoch, added, removed: [], reloaded: [], unchanged: Object.keys(catalog.packs).filter((pack) => !added.includes(pack)).sort(), failed: {}, diagnostics: [], rolledBack: false }
+        },
+      })
+      binding.url = binding.gateway.url
+      await writeFileAtomic(join(dataDirectory, portFile), `${JSON.stringify({ port: Number(new URL(binding.url).port) })}\n`)
+    } catch (error) {
+      await binding.gateway?.close()
+      remoteWindows.delete(remote)
+      remote.destroy()
+      throw error
+    }
+  }
   remote.webContents.on('did-navigate', (_event, address) => {
     // Match the frontend's immutable document scope, not later history.replaceState edits.
     const project = new URL(address).searchParams.get('dinksterProject') ?? 'default'
@@ -539,8 +589,11 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   remote.webContents.on('will-navigate', (navigation, url) => {
     if (new URL(url).origin !== new URL(binding.url).origin) navigation.preventDefault()
   })
-  remote.on('closed', () => remoteWindows.delete(remote))
-  try { await remote.loadURL(url) }
+  remote.on('closed', () => {
+    remoteWindows.delete(remote)
+    void binding.gateway?.close().catch(() => undefined)
+  })
+  try { await remote.loadURL(binding.url) }
   catch (error) { remote.destroy(); throw error }
 }))
 
@@ -562,6 +615,7 @@ async function shutdown(): Promise<void> {
   if (quitting) return
   quitting = true
   await windowQueue.run(async () => {})
+  await Promise.all([...remoteWindows.values()].map((binding) => binding.gateway?.close()))
   const stopped = await Promise.allSettled([
     runtime.stop(),
     ...[...localEngines.values()].map(({ root, engine }) => environmentClient.run({ root, operation: 'stop', engine }, true)),
@@ -689,9 +743,9 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
  * localStorage; it must survive restarts or every launch would present an
  * empty app. Stored beside the other per-install state in dataDirectory.
  */
-async function readPersistedWebHostPort(): Promise<number | undefined> {
+async function readPersistedPort(filename: string): Promise<number | undefined> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(join(dataDirectory, 'web-host.json'), 'utf8'))
+    const parsed: unknown = JSON.parse(await readFile(join(dataDirectory, filename), 'utf8'))
     const port = (parsed as { port?: unknown } | null)?.port
     return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535 ? port : undefined
   } catch {
@@ -703,7 +757,7 @@ async function createWindow(): Promise<void> {
   const appDirectory = app.isPackaged
     ? join(process.resourcesPath, 'app')
     : join(app.getAppPath(), '..', 'app', 'dist')
-  webHost = await createWebHost(appDirectory, backendPort, await readPersistedWebHostPort())
+  webHost = await createWebHost(appDirectory, backendPort, await readPersistedPort('web-host.json'))
   try {
     await writeFileAtomic(join(dataDirectory, 'web-host.json'), `${JSON.stringify({ port: Number(new URL(webHost.url).port) })}\n`)
   } catch (error) {
@@ -820,18 +874,20 @@ function requestOrigin(url: string): string | undefined {
  * Authorization header the renderer set itself is never overwritten.
  */
 function applyCredentialHeaders(): void {
-  const origins = credentialStore?.origins() ?? []
-  if (origins.length === 0) {
-    session.defaultSession.webRequest.onBeforeSendHeaders(null)
-    return
-  }
-  const patterns = origins.flatMap((origin) => {
-    const url = new URL(origin)
-    const wsScheme = url.protocol === 'https:' ? 'wss' : 'ws'
-    return [`${origin}/*`, `${wsScheme}://${url.host}/*`]
-  })
-  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: patterns }, (details, callback) => {
+  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (details, callback) => {
     const origin = requestOrigin(details.url)
+    for (const key of Object.keys(details.requestHeaders)) if (key.toLowerCase() === PROJECT_INSTALL_HEADER) delete details.requestHeaders[key]
+    const bound = [...remoteWindows].find(([managed]) => managed.webContents.id === details.webContentsId)
+    if (bound) {
+      const [managed, binding] = bound
+      if (!quitting && binding.gateway && origin === binding.url && details.method === 'POST'
+        && ['/api/packs/install/plan', '/api/packs/install/apply', '/api/packs/install/prepare',
+          '/api/packs/install/preparation/status', '/api/packs/install/preparation/cancel'].includes(new URL(details.url).pathname)
+        && isTrustedDesktopIpc(managed.webContents, managed.webContents.mainFrame, origin, managed.webContents, details.frame ?? null)
+        && !hasAuthorizationHeader(details.requestHeaders)) {
+        details.requestHeaders[PROJECT_INSTALL_HEADER] = binding.gateway.capability
+      }
+    }
     const secret = origin !== undefined ? credentialStore?.secretFor(origin) : undefined
     if (secret !== undefined && !hasAuthorizationHeader(details.requestHeaders)) {
       details.requestHeaders['Authorization'] = `Bearer ${secret}`

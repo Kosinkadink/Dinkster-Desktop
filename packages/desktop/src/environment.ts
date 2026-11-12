@@ -26,6 +26,7 @@ export interface EnvironmentRequest {
   readonly packs?: readonly { readonly pack: string; readonly version: string }[]
   readonly inputs?: string
   readonly approval?: string
+  readonly progress?: string
   readonly automaticCleanup?: boolean
   readonly keepPreviousGenerations?: number
 }
@@ -135,13 +136,17 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
         args.push(`${pack}@${version}`)
       }
       args.push('--output', request.inputs)
+      if (request.progress !== undefined) {
+        if (!isAbsolute(request.progress)) throw new Error('pack progress needs an absolute host-owned path')
+        args.push('--progress', request.progress)
+      }
     } else {
-      if (!confirmed || request.packs !== undefined || !request.approval || !/^sha256:[a-f0-9]{64}$/.test(request.approval)) throw new Error('pack apply needs the confirmed supervisor approval digest')
+      if (!confirmed || request.progress !== undefined || request.packs !== undefined || !request.approval || !/^sha256:[a-f0-9]{64}$/.test(request.approval)) throw new Error('pack apply needs the confirmed supervisor approval digest')
       args.push('--input', request.inputs, '--approval', request.approval)
     }
     return [...args, '--json']
   }
-  if (request.packs !== undefined || request.inputs !== undefined || request.approval !== undefined) throw new Error('pack review inputs require a pack operation')
+  if (request.packs !== undefined || request.inputs !== undefined || request.approval !== undefined || request.progress !== undefined) throw new Error('pack review inputs require a pack operation')
   if (request.automaticCleanup !== undefined) {
     if (request.operation !== 'cleanup' || typeof request.automaticCleanup !== 'boolean') throw new Error('automatic cleanup preference requires cleanup and a boolean')
     args.push('--automatic', request.automaticCleanup ? 'on' : 'off')

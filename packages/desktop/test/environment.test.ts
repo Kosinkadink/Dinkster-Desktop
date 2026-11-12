@@ -65,10 +65,11 @@ describe('Desktop dinkster-env command client', () => {
       plan: ['add dinkster-text@1.2.3rc1'], packPlan: { format: 'dinkster.project-pack-plan/1', root, current: 2, ownEnvironmentBytes: 12345 }, approval, expiresInSeconds: 900 }
     const script = join(root, 'command.cjs')
     await writeFile(script, `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(join(root, 'arguments.json'))}, JSON.stringify(process.argv.slice(2))); console.log(${JSON.stringify(JSON.stringify(response))});`)
-    const request = { root, operation: 'packs-plan' as const, inputs, packs: [{ pack: 'dinkster-text', version: '1.2.3rc1' }, { pack: 'dinkster-image', version: '2.0.4' }] }
+    const progress = join(root, 'progress.json')
+    const request = { root, operation: 'packs-plan' as const, inputs, progress, packs: [{ pack: 'dinkster-text', version: '1.2.3rc1' }, { pack: 'dinkster-image', version: '2.0.4' }] }
     expect(await client.run(request)).toEqual(response)
     expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
-      '--root', root, 'packs-plan', 'dinkster-text@1.2.3rc1', 'dinkster-image@2.0.4', '--output', inputs, '--json',
+      '--root', root, 'packs-plan', 'dinkster-text@1.2.3rc1', 'dinkster-image@2.0.4', '--output', inputs, '--progress', progress, '--json',
     ])
     await expect(client.run(request, true)).rejects.toThrow('unconfirmed')
     const applied = { ...response, operation: 'packs-apply', status: 'applied', current: 3, plan: [], engines: [{ name: 'main', generation: 3, state: 'ready', url: 'http://127.0.0.1:44003' }] }
@@ -84,6 +85,8 @@ describe('Desktop dinkster-env command client', () => {
       await expect(client.run({ ...request, packs })).rejects.toThrow('invalid or repeated')
     }
     await expect(client.run({ ...request, inputs: 'relative' })).rejects.toThrow('absolute host-owned')
+    await expect(client.run({ ...request, progress: 'relative' })).rejects.toThrow('absolute host-owned')
+    await expect(client.run({ ...apply, progress }, true)).rejects.toThrow('approval digest')
     await expect(client.run({ ...request, channel: 'main' })).rejects.toThrow('retains the current')
     await expect(client.run({ ...apply, approval: 'b'.repeat(64) }, true)).rejects.toThrow('approval digest')
     await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()

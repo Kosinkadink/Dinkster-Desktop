@@ -139,6 +139,19 @@ and project. No project root, executable, approval digest or review-directory
 path is accepted from renderer code. Reviews expire after 900 seconds; replaced,
 consumed, expired and closed-window reviews release their temporary inputs.
 
+Both the gateway and managed engine expose `POST /api/packs/install/prepare`,
+`POST /api/packs/install/preparation/status` and
+`POST /api/packs/install/preparation/cancel`. Preparation acknowledges immediately
+with an opaque document-bound identity. Status returns actual stage and batch
+progress; a ready result contains the ordinary single-use confirmation/review.
+The tools write progress atomically to a host-owned `--progress` file. A cancel
+marker requests cooperative stop, while Desktop retains the lifecycle queue and
+scratch files until the command exits. Cancelled, failed and late results cannot
+be confirmed. No progress for 120 seconds fails as `preparation-stalled`; the
+overall 30-minute bound fails as `preparation-expired`. Polling is not progress.
+These routes use the same top-level capability checks as plan/apply and never
+accept paths or executable choices from the renderer.
+
 Successful pack installation switches the gateway to the supervisor's ready
 engine URLs after checking health and pack composition. The window is not
 navigated or re-imported, preserving its unsaved document. WebSockets reconnect

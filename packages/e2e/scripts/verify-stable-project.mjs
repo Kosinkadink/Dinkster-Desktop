@@ -18,7 +18,7 @@ await mkdir(join(root, 'temporary'))
 const publicRoot = 'https://releases.dinkster.org'
 const channel = await fetch(`${publicRoot}/channels/stable.json`).then(
   (response) => {
-    assert(response.ok())
+    assert(response.ok)
     return response.json()
   },
 )
@@ -28,7 +28,7 @@ const location = channel.engine.locations.find(
 ).path
 const bytes = Buffer.from(
   await fetch(`${publicRoot}/${location}`).then((response) => {
-    assert(response.ok())
+    assert(response.ok)
     return response.arrayBuffer()
   }),
 )
@@ -39,7 +39,7 @@ assert.equal(
 const manifest = JSON.parse(bytes)
 const toolsBytes = Buffer.from(
   await fetch(channel.tools.manifest).then((response) => {
-    assert(response.ok())
+    assert(response.ok)
     return response.arrayBuffer()
   }),
 )

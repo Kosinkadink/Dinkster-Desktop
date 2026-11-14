@@ -17,11 +17,11 @@ jobs:
   windows:
     name: Published Windows - ${{ matrix.scenario }}
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.scenario == 'stable-project' && 45 || 15 }}
     strategy:
       fail-fast: false
       matrix:
-        scenario: [current, update, corruption, downgrade]
+        scenario: ${{ fromJSON(contains(inputs.release_tag, '-rc.') && '["current", "update", "corruption", "downgrade"]' || '["current", "update", "corruption", "downgrade", "stable-project"]') }}
     defaults:
       run:
         shell: pwsh
@@ -66,7 +66,7 @@ jobs:
             $signatures[$release.version] = Read-SignedFile (Join-Path $release.directory $release.archive)
           }
           $signatures | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $env:DINKSTER_VERIFY_WORK installer-signatures.json)
-          if ($env:SCENARIO -ne 'current' -and -not $releases.previous) {
+          if ($env:SCENARIO -notin @('current', 'stable-project') -and -not $releases.previous) {
             'Bootstrap only: no older updater-capable release; signed cross-version acceptance remains OPEN.' >> $env:GITHUB_STEP_SUMMARY
             @{ bootstrap = $true; crossVersionProven = $false; scenario = $env:SCENARIO } | ConvertTo-Json | Set-Content (Join-Path $env:DINKSTER_VERIFY_WORK bootstrap.json)
             exit 0
@@ -78,7 +78,10 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
           $env:DINKSTER_DESKTOP_EXECUTABLE = Join-Path $destination 'Dinkster Desktop.exe'
           $before = Read-SignedFile $env:DINKSTER_DESKTOP_EXECUTABLE
-          if ($env:SCENARIO -eq 'current') {
+          if ($env:SCENARIO -eq 'stable-project') {
+            $env:DINKSTER_DESKTOP_VERIFY_ROOT = Join-Path $env:DINKSTER_VERIFY_WORK 'stable-project'
+            node packages/e2e/scripts/verify-stable-project.mjs
+          } elseif ($env:SCENARIO -eq 'current') {
             $env:DINKSTER_DESKTOP_VERIFY_ROOT = Join-Path $env:DINKSTER_VERIFY_WORK 'default-feed'
             $env:DINKSTER_VERIFY_PUBLIC_UPDATE = '1'
             node packages/e2e/scripts/verify-desktop-install.mjs
@@ -104,6 +107,8 @@ jobs:
             ${{ env.DINKSTER_VERIFY_WORK }}/*.json
             ${{ env.DINKSTER_VERIFY_WORK }}/default-feed/*.json
             ${{ env.DINKSTER_VERIFY_WORK }}/default-feed/*.png
+            ${{ env.DINKSTER_VERIFY_WORK }}/stable-project/*.json
+            ${{ env.DINKSTER_VERIFY_WORK }}/stable-project/*.png
             ${{ env.DINKSTER_VERIFY_WORK }}/update-proof/*.json
             ${{ env.DINKSTER_VERIFY_WORK }}/update-proof/*.png
             ${{ env.DINKSTER_VERIFY_WORK }}/update-proof/*.txt
@@ -113,11 +118,11 @@ jobs:
   linux:
     name: Published Linux - ${{ matrix.scenario }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.scenario == 'stable-project' && 45 || 15 }}
     strategy:
       fail-fast: false
       matrix:
-        scenario: [current, update, corruption, downgrade]
+        scenario: ${{ fromJSON(contains(inputs.release_tag, '-rc.') && '["current", "update", "corruption", "downgrade"]' || '["current", "update", "corruption", "downgrade", "stable-project"]') }}
     env:
       DINKSTER_ACCELERATOR: cpu
       CUDA_VISIBLE_DEVICES: ''
@@ -155,7 +160,7 @@ jobs:
           const root = process.env.DINKSTER_VERIFY_WORK
           const releases = JSON.parse(await readFile(join(root, 'releases.json'), 'utf8'))
           const scenario = process.env.SCENARIO
-          if (scenario !== 'current' && !releases.previous) {
+          if (!['current', 'stable-project'].includes(scenario) && !releases.previous) {
             console.log('Bootstrap only: no older updater-capable release; cross-version acceptance remains OPEN.')
             process.exit(0)
           }
@@ -165,7 +170,11 @@ jobs:
           const executable = join(directory, installed.archive)
           await cp(join(installed.directory, installed.archive), executable)
           await chmod(executable, 0o755)
-          if (scenario === 'current') {
+          if (scenario === 'stable-project') {
+            process.env.DINKSTER_DESKTOP_EXECUTABLE = executable
+            process.env.DINKSTER_DESKTOP_VERIFY_ROOT = join(root, 'stable-project')
+            execFileSync('xvfb-run', ['-a', 'node', 'packages/e2e/scripts/verify-stable-project.mjs'], { stdio: 'inherit' })
+          } else if (scenario === 'current') {
             process.env.DINKSTER_DESKTOP_EXECUTABLE = executable
             process.env.DINKSTER_DESKTOP_VERIFY_ROOT = join(root, 'default-feed')
             process.env.DINKSTER_VERIFY_PUBLIC_UPDATE = '1'
@@ -190,6 +199,8 @@ jobs:
             ${{ runner.temp }}/published-update/*.json
             ${{ runner.temp }}/published-update/default-feed/*.json
             ${{ runner.temp }}/published-update/default-feed/*.png
+            ${{ runner.temp }}/published-update/stable-project/*.json
+            ${{ runner.temp }}/published-update/stable-project/*.png
             ${{ runner.temp }}/published-update/update-proof/*.json
             ${{ runner.temp }}/published-update/update-proof/*.png
           retention-days: 7

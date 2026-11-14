@@ -172,7 +172,7 @@ it.each(['ready', 'cancelled', 'stalled', 'expired', 'failed', 'changed'])('obse
   const barrier = new Promise<void>((resolve) => { release = resolve })
   const started = new Promise<void>((resolve) => { entered = resolve })
   f.hold(async () => { entered(); await barrier })
-  const start = performance.now()
+  const start = Math.trunc(performance.now())
   let elapsed = 0
   vi.spyOn(performance, 'now').mockImplementation(() => start + elapsed)
   const response = await f.post('prepare', { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] })

@@ -16,7 +16,9 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]
 ))
 env.DINKSTER_DESKTOP_DATA = join(root, 'data')
 env.DINKSTER_ENV = join(root, 'environment-tools-must-not-run')
-env.PATH = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32') : '/nonexistent'
+// AppImage's launcher needs the system shell utilities; Windows still proves
+// startup with only System32 available and no Git on PATH.
+env.PATH = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32') : '/usr/bin:/bin'
 
 let requests = 0
 const server = createServer((_request, response) => {
@@ -37,6 +39,19 @@ try {
       assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
       page = await app.firstWindow({ timeout: 60_000 })
       await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
+      if (process.env.DINKSTER_VERIFY_PUBLIC_UPDATE === '1') {
+        // Projects cannot invoke desktop capabilities. Check the installed
+        // updater in the main process without overriding its public feed.
+        const update = await app.evaluate(async ({ app }) => {
+          const require = process.getBuiltinModule('node:module').createRequire(`${app.getAppPath()}/package.json`)
+          const { autoUpdater } = require('electron-updater')
+          const result = await autoUpdater.checkForUpdates()
+          return { version: result?.updateInfo.version, available: result?.isUpdateAvailable, runningVersion: app.getVersion() }
+        })
+        assert.equal(update.version, update.runningVersion, 'The installed build must resolve its published version from the default feed')
+        assert.equal(update.available, false, 'The current published installation must be up to date')
+        await writeFile(join(root, `${launch}-update.json`), JSON.stringify(update, null, 2))
+      }
       if (launch === 'first-run') {
         await page.getByText('No projects yet.', { exact: false }).waitFor()
         await page.locator('#name').fill('Installed remote project')

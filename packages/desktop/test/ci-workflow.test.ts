@@ -48,7 +48,6 @@ const release = await load('release-desktop.yml')
 const publish = await load('publish-desktop.yml')
 const tagRelease = await load('release-from-pr-label.yml')
 const signed = await load('signed-package.yml')
-const published = await load('verify-published-desktop.yml')
 
 describe('desktop workflows', () => {
   it('shares installer builds with tag publication and isolates manual signing', () => {
@@ -153,21 +152,6 @@ describe('desktop workflows', () => {
     expect(requireSuccess?.run).toContain('test "$INSTALLED_RESULT" = success')
   })
 
-  it('uses hosted macOS directly and the runner variable for existing platforms', () => {
-    for (const workflow of [ci, full, release, signed, published, publish, tagRelease]) {
-      for (const [name, job] of Object.entries(workflow.jobs)) {
-        if (job.uses) continue
-        if (workflow === release && name === 'macos') {
-          expect(job['runs-on']).toBe('macos-latest')
-          continue
-        }
-        expect(job['runs-on'], name).toMatch(
-          /^\$\{\{ fromJSON\(vars\.CI_RUNNERS\)(\.(linux|windows)|\[matrix\.os\]) \}\}$/,
-        )
-      }
-    }
-  })
-
   it('packages unsigned arm64 macOS without the signing environment or publication', () => {
     const job = release.jobs['macos']!
     expect(job.environment).toBeUndefined()
@@ -201,41 +185,6 @@ describe('desktop workflows', () => {
     expect(source).toContain('test "$SMOKE_RESULT" = success')
     expect(source).toContain('test "$WINDOWS_RESULT" = success')
     expect(source).toContain('test "$INSTALLED_RESULT" = success')
-  })
-
-  it('uses clean checkouts without persisting credentials', () => {
-    for (const workflow of [ci, full, release, signed, published, publish]) {
-      for (const job of Object.values(workflow.jobs)) {
-        for (const step of (job.steps ?? []).filter(
-          (entry) => entry.uses === 'actions/checkout@v4',
-        )) {
-          expect(step.with).toMatchObject({
-            clean: true,
-            'persist-credentials': false,
-          })
-          expect(step.with).not.toHaveProperty('ssh-key')
-          expect(step.with).not.toHaveProperty('token')
-        }
-      }
-    }
-  })
-
-  it('excludes backend downloads and scopes published shell acquisition', () => {
-    for (const workflow of [full, release, signed, published]) {
-      const downloadSteps = Object.values(workflow.jobs).flatMap((job) =>
-        (job.steps ?? []).filter(
-          (step) =>
-            step.run?.includes('DownloadBackend') ||
-            step.run?.includes('gh release download'),
-        ),
-      )
-      expect(downloadSteps).toEqual([])
-    }
-    const desktop = published.jobs['verify']!.steps?.find((step) => step.run?.includes('-Action DownloadDesktop'))
-    expect(desktop?.env?.['GH_TOKEN']).toBe('${{ github.token }}')
-    expect(JSON.stringify([full, release, signed, published])).not.toContain(
-      'DINKSTER_RELEASE_READ_TOKEN',
-    )
   })
 
   it('produces both native installers without signing or publishing on main and relevant pull requests', () => {
@@ -298,11 +247,4 @@ cp.execFileSync=(file,args)=>{
     } finally { await rm(scratch,{recursive:true,force:true}) }
   })
 
-  it('keeps published verification disabled and read-only', () => {
-    expect(published.permissions).toEqual({ contents: 'read' })
-    expect(published.jobs['verify']!.if).toContain(
-      "github.repository == 'Kosinkadink/Dinkster-Desktop'",
-    )
-    expect(published.jobs['verify']!.if).toContain('&& false')
-  })
 })

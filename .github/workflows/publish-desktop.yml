@@ -71,3 +71,10 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           DESKTOP_SOURCE_COMMIT: ${{ needs.validate.outputs.source }}
         run: node scripts/publish-desktop.mjs publish
+
+  verify-published:
+    needs: [validate, publish]
+    uses: ./.github/workflows/verify-published-desktop.yml
+    with:
+      source: ${{ needs.validate.outputs.source }}
+      release_tag: ${{ github.ref_name }}

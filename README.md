@@ -8,13 +8,12 @@ project install-root bindings, and supervisor-per-generation swap contract.
 
 The desktop shell and its external inputs are pinned independently:
 
-- Dinkster-Frontend is checked out at the 40-character `DINKSTER_FRONTEND_REF` in `.github/workflows/ci.yml`. The frontend checkout builds `@dinkster/app`; Desktop copies only the resulting `packages/app/dist` bundle into its package input. Desktop does not compile against frontend workspace source.
+- `scripts/frontend-release.json` pins the permanent `dinkster-frontend` PyPI wheel by version, URL, size and SHA256. `pnpm prepare:frontend` verifies that wheel and copies its application and native branding into the package inputs. The engine selects the same published frontend release; Desktop does not build frontend source.
 - The checkout-development backend selection is pinned in `packages/desktop/src/backend-release.json`. Shell packaging does not download or embed that source archive or native wheels. Project generations are acquired by the environment tools, not by the shell's package builder.
 
-For a local build, build the pinned Dinkster-Frontend checkout first and point `DINKSTER_FRONTEND_DIST` at its `packages/app/dist` directory:
+A local build uses the same verified release as CI, without a frontend checkout:
 
 ```powershell
-$env:DINKSTER_FRONTEND_DIST = '..\Dinkster-Frontend\packages\app\dist'
 pnpm install --frozen-lockfile
 pnpm build
 pnpm typecheck

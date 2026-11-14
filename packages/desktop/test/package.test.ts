@@ -9,30 +9,6 @@ const root = resolve(import.meta.dirname, '../../..')
 const execute = promisify(execFile)
 
 describe('desktop package inputs', () => {
-  it('prepares native branding byte-for-byte from the pinned frontend without stale assets', async () => {
-    const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-native-brand-'))
-    try {
-      await mkdir(resolve(scratch, '.frontend/packages/app/dist'), { recursive: true })
-      await writeFile(resolve(scratch, '.frontend/packages/app/dist/index.html'), '<html>bundle</html>')
-      const fixtures = ['platform/dinkster.ico', 'platform/dinkster.icns', 'raster/color/16.png', 'raster/color/24.png', 'raster/color/512.png', 'raster/mono/16.png', 'raster/mono/32.png', 'svg/dinkster-wordmark-color-dark.svg', 'svg/dinkster-wordmark-color-light.svg', 'tokens/dinkster-colors.json']
-      for (const path of fixtures) {
-        const target = resolve(scratch, '.frontend/branding', path)
-        await mkdir(resolve(target, '..'), { recursive: true })
-        await writeFile(target, Buffer.from(`source bytes: ${path}`))
-      }
-      const output = resolve(scratch, 'packages/desktop/resources/branding')
-      await mkdir(output, { recursive: true })
-      await writeFile(resolve(output, 'stale.ico'), 'obsolete')
-      await execute(process.execPath, [resolve(root, 'scripts/prepare-frontend.mjs')], { cwd: scratch })
-      for (const path of fixtures) {
-        expect(await readFile(resolve(output, path))).toEqual(Buffer.from(`source bytes: ${path}`))
-      }
-      await expect(access(resolve(output, 'stale.ico'))).rejects.toThrow()
-    } finally {
-      await rm(scratch, { recursive: true, force: true })
-    }
-  })
-
   it('signs releases through the Artifact Signing profile and accepts both publishers on update', async () => {
     const signed = await import('../electron-builder.signed.mjs') as {
       currentPublisher: string

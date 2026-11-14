@@ -24,7 +24,6 @@ permissions:
   contents: read
 
 env:
-  DINKSTER_FRONTEND_REF: 734c32da1360c6a1496d37fb9373f87209a1a27f
   DESKTOP_SOURCE_COMMIT: ${{ inputs.source || github.sha }}
 
 concurrency:
@@ -44,13 +43,6 @@ jobs:
           clean: true
           persist-credentials: false
           ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
-      - uses: actions/checkout@v4
-        with:
-          clean: true
-          persist-credentials: false
-          repository: Kosinkadink/Dinkster-Frontend
-          ref: ${{ env.DINKSTER_FRONTEND_REF }}
-          path: .frontend
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -59,11 +51,7 @@ jobs:
         with:
           node-version: 26.12.0
           cache: pnpm
-          cache-dependency-path: |
-            pnpm-lock.yaml
-            .frontend/pnpm-lock.yaml
-      - run: pnpm --dir .frontend install --frozen-lockfile
-      - run: pnpm --dir .frontend --filter @dinkster/app build
+          cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @dinkster/desktop package:mac
       - name: Verify the extracted Apple Silicon app
@@ -88,7 +76,7 @@ jobs:
           const sha256 = readFileSync('release/installer-SHA256SUMS', 'utf8').split(/\s+/)[0];
           writeFileSync('release/desktop-macos-release.json', JSON.stringify({
             repository: 'Kosinkadink/Dinkster-Desktop', commit: process.env.DESKTOP_SOURCE_COMMIT,
-            frontend: process.env.DINKSTER_FRONTEND_REF, version: pkg.version,
+            frontend: JSON.parse(readFileSync('../../scripts/frontend-release.json', 'utf8')), version: pkg.version,
             platform: { os: 'macos', arch: 'arm64' }, signed: false, notarized: false,
             archive, sha256, size: statSync(`release/${archive}`).size,
           }, null, 2) + '\n');
@@ -118,13 +106,6 @@ jobs:
           clean: true
           persist-credentials: false
           ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
-      - uses: actions/checkout@v4
-        with:
-          clean: true
-          persist-credentials: false
-          repository: Kosinkadink/Dinkster-Frontend
-          ref: ${{ env.DINKSTER_FRONTEND_REF }}
-          path: .frontend
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -133,11 +114,7 @@ jobs:
         with:
           node-version: 26.12.0
           cache: pnpm
-          cache-dependency-path: |
-            pnpm-lock.yaml
-            .frontend/pnpm-lock.yaml
-      - run: pnpm --dir .frontend install --frozen-lockfile
-      - run: pnpm --dir .frontend --filter @dinkster/app build
+          cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - if: matrix.os == 'linux'
         run: pnpm --filter @dinkster/desktop package:linux
@@ -163,7 +140,7 @@ jobs:
           const sha256 = readFileSync('release/installer-SHA256SUMS', 'utf8').split(/\s+/)[0];
           writeFileSync('release/desktop-linux-release.json', JSON.stringify({
             repository: 'Kosinkadink/Dinkster-Desktop', commit: process.env.DESKTOP_SOURCE_COMMIT,
-            frontend: process.env.DINKSTER_FRONTEND_REF, version: pkg.version,
+            frontend: JSON.parse(readFileSync('../../scripts/frontend-release.json', 'utf8')), version: pkg.version,
             platform: { os: 'linux', arch: 'x64' }, archive, sha256, size: statSync(`release/${archive}`).size,
           }, null, 2) + '\n');
           JS
@@ -205,13 +182,6 @@ jobs:
           clean: true
           persist-credentials: false
           ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
-      - uses: actions/checkout@v4
-        with:
-          clean: true
-          persist-credentials: false
-          repository: Kosinkadink/Dinkster-Frontend
-          ref: ${{ env.DINKSTER_FRONTEND_REF }}
-          path: .frontend
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -220,8 +190,6 @@ jobs:
         with:
           node-version: 26.12.0
           cache: pnpm
-      - run: pnpm --dir .frontend install --frozen-lockfile
-      - run: pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
@@ -314,7 +282,7 @@ jobs:
           assert.equal(metadata.repository, 'Kosinkadink/Dinkster-Desktop');
           assert.equal(metadata.commit, process.env.DESKTOP_SOURCE_COMMIT);
           assert.equal(metadata.version, pkg.version);
-          assert.equal(metadata.frontend, process.env.DINKSTER_FRONTEND_REF);
+          assert.deepEqual(metadata.frontend, JSON.parse(readFileSync('scripts/frontend-release.json', 'utf8')));
           const name = `Dinkster-Desktop-${pkg.version}-macos-arm64.zip`;
           assert.equal(metadata.archive, name);
           assert.deepEqual(metadata.platform, { os: 'macos', arch: 'arm64' });

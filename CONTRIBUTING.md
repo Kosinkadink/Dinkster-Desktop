@@ -12,15 +12,17 @@ pnpm typecheck
 pnpm test
 ```
 
-To verify the production build, build the pinned Dinkster-Frontend revision
-from `.github/workflows/ci.yml`, point `DINKSTER_FRONTEND_DIST` at its
-`packages/app/dist` directory, and run `pnpm build`.
+Run `pnpm build` to verify the production build. It downloads the permanent
+frontend wheel selected by `scripts/frontend-release.json`, verifies its size
+and SHA256, and prepares application assets and native branding. A frontend
+source checkout is not required.
 
 ## Pull requests
 
 - Keep each pull request focused and include tests for behavior changes.
-- Keep Dinkster-Frontend and backend inputs pinned to immutable 40-character
-  commits.
+- Pin frontend inputs to permanent release wheels by version, URL, size and
+  SHA256. Keep checkout-development backend inputs pinned to immutable
+  40-character commits.
 - Do not put repository credentials, release tokens, or backend credentials in
   source, build artifacts, fixtures, or installed applications.
 - Update current documentation when behavior or supported platforms change.

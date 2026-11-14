@@ -36,8 +36,8 @@ manual asset or release step.
 
 ## Native identity
 
-`pnpm prepare:frontend` copies native branding from the workflow-pinned
-`.frontend/branding` source into generated Desktop resources. Windows and NSIS
+`pnpm prepare:frontend` copies native branding from the hash-verified
+frontend release wheel into generated Desktop resources. Windows and NSIS
 use its ICO, macOS uses its ICNS, and Linux uses its color PNG. Do not maintain
 or edit a second set of icons in Desktop. The accepted 16 and 24 px frames are
 the exact-source renders without hand edits.

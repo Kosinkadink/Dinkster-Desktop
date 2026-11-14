@@ -140,7 +140,7 @@ jobs:
           const sha256 = readFileSync('release/installer-SHA256SUMS', 'utf8').split(/\s+/)[0];
           writeFileSync('release/desktop-linux-release.json', JSON.stringify({
             repository: 'Kosinkadink/Dinkster-Desktop', commit: process.env.DESKTOP_SOURCE_COMMIT,
-            frontend: process.env.DINKSTER_FRONTEND_REF, version: pkg.version,
+            frontend: JSON.parse(readFileSync('../../scripts/frontend-release.json', 'utf8')), version: pkg.version,
             platform: { os: 'linux', arch: 'x64' }, archive, sha256, size: statSync(`release/${archive}`).size,
           }, null, 2) + '\n');
           JS

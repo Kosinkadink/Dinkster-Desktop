@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { spawn } from 'node:child_process'
-import { createReadStream } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { closeSync, createReadStream, openSync } from 'node:fs'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { basename, join, resolve } from 'node:path'
@@ -292,10 +292,12 @@ try {
         { env, stdio: 'ignore' },
       )
     }
+    const output = openSync(join(root, 'installing-output.txt'), 'w')
     const installing = spawn(executable, ['--no-sandbox'], {
       env,
-      stdio: 'ignore',
+      stdio: ['ignore', output, output],
     })
+    closeSync(output)
     installing.on('error', (error) => {
       console.error(error)
       process.exitCode = 1
@@ -386,6 +388,55 @@ try {
       `Installed update ${before.version} -> ${expected}; successor ${owner.pid}; user data retained`,
     )
   }
+} catch (error) {
+  const diagnostics = { error: String(error), requests }
+  for (const [name, path] of Object.entries({
+    marker: join(env.DINKSTER_DESKTOP_DATA, 'updates', 'shell-attempts.json'),
+    lifecycle: join(env.DINKSTER_DESKTOP_DATA, 'engine', 'lifecycle.lock'),
+    desktopLog: join(env.DINKSTER_DESKTOP_DATA, 'logs', 'desktop.log'),
+  })) {
+    diagnostics[name] = await readFile(path, 'utf8').catch(String)
+  }
+  if (process.platform === 'win32') {
+    try {
+      diagnostics.processes = execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-Command',
+          `
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing,UIAutomationClient
+$bounds = [Windows.Forms.SystemInformation]::VirtualScreen
+$image = New-Object Drawing.Bitmap $bounds.Width,$bounds.Height
+$graphics = [Drawing.Graphics]::FromImage($image)
+$graphics.CopyFromScreen($bounds.Location,[Drawing.Point]::Empty,$bounds.Size)
+$image.Save((Join-Path $env:DINKSTER_DIAGNOSTIC_ROOT 'installer-failed.png'))
+$graphics.Dispose()
+$image.Dispose()
+$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*dinkster*' -or $_.MainWindowTitle -like 'Dinkster*' })
+foreach ($process in $processes) {
+  if ($process.MainWindowHandle -eq 0) { continue }
+  $window = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+  $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name } | Add-Content (Join-Path $env:DINKSTER_DIAGNOSTIC_ROOT 'installer-controls.txt')
+}
+$processes | Select-Object Id,ProcessName,Path,MainWindowTitle | ConvertTo-Json
+`,
+        ],
+        {
+          env: { ...env, DINKSTER_DIAGNOSTIC_ROOT: root },
+          encoding: 'utf8',
+          timeout: 10_000,
+        },
+      )
+    } catch (diagnosticError) {
+      diagnostics.processes = String(diagnosticError)
+    }
+  }
+  await writeFile(
+    join(root, 'failure.json'),
+    JSON.stringify(diagnostics, null, 2),
+  )
+  throw error
 } finally {
   installerDriver?.kill()
   await app?.close().catch(() => undefined)

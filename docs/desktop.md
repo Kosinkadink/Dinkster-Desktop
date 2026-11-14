@@ -34,6 +34,15 @@ prereleases and their tags. Failed runs are recorded on the issue, never rerun
 by the owner; existing releases and assets are not overwritten. There is no
 manual asset or release step.
 
+After every regular publication, disposable GitHub-hosted Windows and Linux
+jobs install the published NSIS installer or AppImage and create a fresh
+project on the default Stable channel. They read back engine, inference,
+frontend and default pack versions from the installed generation, verify the
+matching tools and public git source acquisition, and open the local frontend.
+The retained receipts and screenshot distinguish project setup from the
+separate shell self-update checks. RC publications keep their update checks
+without claiming fresh Stable acceptance.
+
 ## Native identity
 
 `pnpm prepare:frontend` copies native branding from the hash-verified

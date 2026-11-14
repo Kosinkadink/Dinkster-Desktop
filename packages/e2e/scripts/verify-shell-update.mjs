@@ -137,6 +137,14 @@ try {
     'shell-attempts.json',
   )
   if (corrupt || unavailable) {
+    const update = await page
+      .evaluate(() => window.dinksterDesktop.info())
+      .then((info) => info.update)
+    assert.equal(
+      update.state,
+      corrupt ? 'failed' : 'current',
+      'The feed must be valid and the startup check must finish',
+    )
     const pending = await readFile(marker, 'utf8')
       .then(JSON.parse)
       .catch((error) => {

@@ -144,15 +144,14 @@ The complete procedure is in [Publishing installers](desktop.md#publishing-insta
 
 ### Sign locally
 
-In PowerShell at the repository root, with the pinned frontend built as
-described in [README](../README.md). The shell package does not embed backend
+In PowerShell at the repository root. Packaging downloads and verifies the
+pinned frontend release as described in [README](../README.md). The shell package does not embed backend
 source or native wheels. Local-project bootstrap still needs the standalone
 environment tools payload; signing a shell package does not supply it. The
 secret is read interactively so it never appears in a command line or shell
 history:
 
 ```powershell
-$env:DINKSTER_FRONTEND_DIST = 'C:\PATH\TO\Dinkster-Frontend\packages\app\dist'
 $env:AZURE_TENANT_ID = 'DIRECTORY-TENANT-ID'
 $env:AZURE_CLIENT_ID = 'APPLICATION-CLIENT-ID'
 $secret = Read-Host 'Signing client secret VALUE' -AsSecureString

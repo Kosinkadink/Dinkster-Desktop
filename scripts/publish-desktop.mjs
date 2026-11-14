@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, readFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs'
 import { basename, join } from 'node:path'
 
 const repository = 'Kosinkadink/Dinkster-Desktop'
@@ -83,16 +88,28 @@ if (mode === 'validate') {
       'utf8',
     ),
   )
+  const linux = JSON.parse(
+    readFileSync(
+      join(root, 'linux-release/desktop-linux-release.json'),
+      'utf8',
+    ),
+  )
+  assert.equal(
+    linux.archive,
+    `Dinkster-Desktop-${pkg.version}-linux-x64.AppImage`,
+  )
+  assert.deepEqual(linux.platform, { os: 'linux', arch: 'x64' })
   assert.equal(windows.archive, `Dinkster-Desktop-${pkg.version}-Setup.exe`)
   assert.equal(mac.archive, `Dinkster-Desktop-${pkg.version}-macos-arm64.zip`)
   assert.deepEqual(mac.platform, { os: 'macos', arch: 'arm64' })
-  assert.equal(mac.signed, false)
-  assert.equal(mac.notarized, false)
+  assert.equal(mac.signed, true)
+  assert.equal(mac.notarized, true)
   const checksum = (path) =>
     createHash('sha256').update(readFileSync(path)).digest('hex')
   for (const [folder, metadata] of [
     ['release', windows],
     ['macos-release', mac],
+    ['linux-release', linux],
   ]) {
     assert.equal(metadata.repository, repository)
     assert.equal(metadata.commit, source)
@@ -101,16 +118,17 @@ if (mode === 'validate') {
     assert.equal(readFileSync(path).length, metadata.size)
     assert.equal(checksum(path), metadata.sha256)
   }
-  const sums = readFileSync(join(root, 'release/SHA256SUMS'), 'utf8')
-    .trim()
-    .split(/\r?\n/)
-    .sort()
-  assert.deepEqual(
-    sums,
-    [
-      `${windows.sha256}  ${windows.archive}`,
-      `${mac.sha256}  ${mac.archive}`,
-    ].sort(),
+  const { verifyUpdateFeed } = await import(
+    '../packages/desktop/scripts/verify-update-feed.mjs'
+  )
+  await verifyUpdateFeed(join(root, 'release'), pkg.version, 'win32')
+  await verifyUpdateFeed(join(root, 'macos-release'), pkg.version, 'darwin')
+  await verifyUpdateFeed(join(root, 'linux-release'), pkg.version, 'linux')
+  writeFileSync(
+    join(root, 'release/SHA256SUMS'),
+    [windows, mac, linux]
+      .map((metadata) => `${metadata.sha256}  ${metadata.archive}\n`)
+      .join(''),
   )
   const files = [
     join(root, 'release', windows.archive),
@@ -118,6 +136,13 @@ if (mode === 'validate') {
     join(root, 'release/SHA256SUMS'),
     join(root, 'macos-release', mac.archive),
     join(root, 'macos-release/desktop-macos-release.json'),
+    join(root, 'linux-release', linux.archive),
+    join(root, 'linux-release/desktop-linux-release.json'),
+    ...['release', 'macos-release', 'linux-release'].flatMap((folder) =>
+      readdirSync(join(root, folder))
+        .filter((name) => name.endsWith('.yml') || name.endsWith('.blockmap'))
+        .map((name) => join(root, folder, name)),
+    ),
   ]
   const summary = (message) => {
     console.log(message)
@@ -149,6 +174,6 @@ if (mode === 'validate') {
       'Test release must be a prerelease',
     )
   summary(
-    `Publication permitted for ${tag}; all five verified assets published using GITHUB_TOKEN.${test ? ' Prerelease does not move latest; desk deletes the test release and its tag after recording evidence.' : ''}`,
+    `Publication permitted for ${tag}; all ${files.length} verified assets published using GITHUB_TOKEN.${test ? ' Prerelease does not move latest; desk deletes the test release and its tag after recording evidence.' : ''}`,
   )
 }

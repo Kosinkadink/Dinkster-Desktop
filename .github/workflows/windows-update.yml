@@ -1,0 +1,124 @@
+name: Windows installed updates
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-update.yml'
+      - 'packages/desktop/**'
+      - 'packages/e2e/scripts/verify-shell-update.mjs'
+      - 'packages/e2e/scripts/advance-update-installer.ps1'
+      - 'pnpm-lock.yaml'
+
+permissions:
+  contents: read
+
+env:
+  DINKSTER_FRONTEND_REF: 734c32da1360c6a1496d37fb9373f87209a1a27f
+  DINKSTER_ACCELERATOR: cpu
+  CUDA_VISIBLE_DEVICES: ''
+
+jobs:
+  fixtures:
+    name: Build unsigned Windows update fixtures
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: ${{ env.DINKSTER_FRONTEND_REF }}
+          path: .frontend
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - run: pnpm --dir .frontend install --frozen-lockfile
+      - run: pnpm --dir .frontend --filter @dinkster/app build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm --filter @dinkster/desktop prepare:tools
+      - name: Package different installed and available versions
+        run: |
+          $old = '0.2.4'
+          $new = '0.2.5'
+          foreach ($version in @($old, $new)) {
+            $output = Join-Path $env:RUNNER_TEMP "fixtures/$version"
+            pnpm --filter @dinkster/desktop exec electron-builder --win nsis "--config.extraMetadata.version=$version" "--config.directories.output=$output" --publish never
+            if ($LASTEXITCODE -ne 0) { throw "Packaging $version failed" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-update-fixtures
+          path: |
+            ${{ runner.temp }}/fixtures/*/*-Setup.exe
+            ${{ runner.temp }}/fixtures/*/*.yml
+            ${{ runner.temp }}/fixtures/*/*.blockmap
+          if-no-files-found: error
+          retention-days: 1
+
+  installed:
+    name: Windows installed update - ${{ matrix.scenario }}
+    needs: fixtures
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [update, corruption, downgrade]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-update-fixtures
+          path: fixtures
+      - name: Install and exercise the real updater
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
+          Get-ChildItem Env: | Where-Object { $_.Name -match 'TOKEN|SECRET|PASSWORD|CREDENTIAL|^GIT_' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
+          $installed = if ($env:SCENARIO -eq 'downgrade') { '0.2.5' } else { '0.2.4' }
+          $available = if ($env:SCENARIO -eq 'downgrade') { '0.2.4' } else { '0.2.5' }
+          $destination = Join-Path $env:RUNNER_TEMP 'installed/Dinkster Desktop'
+          if (Test-Path $destination) { throw 'Installation must be fresh' }
+          $installer = Get-Item "fixtures/$installed/*-Setup.exe"
+          $process = Start-Process $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          $env:DINKSTER_UPDATE_OLD_EXECUTABLE = Join-Path $destination 'Dinkster Desktop.exe'
+          $env:DINKSTER_UPDATE_RELEASE = (Resolve-Path "fixtures/$available").Path
+          $env:DINKSTER_UPDATE_EXPECTED_VERSION = $available
+          $env:DINKSTER_UPDATE_PROOF_ROOT = Join-Path $env:RUNNER_TEMP 'update-proof'
+          $env:DINKSTER_UPDATE_CORRUPT = if ($env:SCENARIO -eq 'corruption') { '1' } else { '0' }
+          $env:DINKSTER_UPDATE_EXPECT_UNAVAILABLE = if ($env:SCENARIO -eq 'downgrade') { '1' } else { '0' }
+          node packages/e2e/scripts/verify-shell-update.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed update verification failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-update-${{ matrix.scenario }}
+          path: ${{ runner.temp }}/update-proof/*
+          retention-days: 7
+          if-no-files-found: ignore

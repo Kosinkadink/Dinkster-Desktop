@@ -14,6 +14,14 @@ const feed = resolve(process.env.DINKSTER_UPDATE_RELEASE ?? '')
 const root = resolve(process.env.DINKSTER_UPDATE_PROOF_ROOT ?? '')
 const expected = process.env.DINKSTER_UPDATE_EXPECTED_VERSION
 const corrupt = process.env.DINKSTER_UPDATE_CORRUPT === '1'
+const unavailable = process.env.DINKSTER_UPDATE_EXPECT_UNAVAILABLE === '1'
+if (process.platform === 'win32') {
+  assert(
+    process.env.GITHUB_ACTIONS === 'true' &&
+      process.env.RUNNER_ENVIRONMENT === 'github-hosted',
+    'Windows installed-update verification requires a disposable GitHub-hosted runner',
+  )
+}
 assert(
   expected &&
     process.env.DINKSTER_UPDATE_OLD_EXECUTABLE &&
@@ -82,15 +90,36 @@ env.XDG_CONFIG_HOME = join(root, 'config')
 env.XDG_CACHE_HOME = join(root, 'cache')
 env.APPDATA = join(root, 'roaming')
 env.LOCALAPPDATA = join(root, 'local')
+if (process.platform === 'win32') {
+  // NSIS relaunches through the Windows shell, which does not inherit overrides.
+  // Use only the disposable hosted user's normal paths for the entire update.
+  env.APPDATA = process.env.APPDATA
+  env.LOCALAPPDATA = process.env.LOCALAPPDATA
+  env.DINKSTER_DESKTOP_DATA = join(env.LOCALAPPDATA, 'Dinkster Desktop')
+  assert.equal(
+    await stat(env.DINKSTER_DESKTOP_DATA).then(
+      () => true,
+      (error) => {
+        if (error.code === 'ENOENT') return false
+        throw error
+      },
+    ),
+    false,
+    'The hosted user must not have existing Desktop data',
+  )
+}
 env.APPIMAGE_EXTRACT_AND_RUN = '1'
-const launch = () =>
+env.TEMP = env.TMP = join(root, 'temp')
+await mkdir(env.TEMP)
+const launch = (path = executable) =>
   electron.launch({
-    executablePath: executable,
+    executablePath: path,
     args: ['--no-sandbox'],
     env,
     timeout: 120_000,
   })
 let app
+let installerDriver
 try {
   app = await launch()
   const before = await app.evaluate(({ app }) => ({
@@ -107,7 +136,7 @@ try {
     'updates',
     'shell-attempts.json',
   )
-  if (corrupt) {
+  if (corrupt || unavailable) {
     const pending = await readFile(marker, 'utf8')
       .then(JSON.parse)
       .catch((error) => {
@@ -116,10 +145,18 @@ try {
       })
     assert.equal(pending?.pending, undefined)
     assert(
-      requests.some(
-        (request) => /\.(AppImage|exe)$/.test(request.name) && !request.range,
-      ),
-      'The corrupt installer must have been downloaded',
+      requests.some((request) => request.name.endsWith('.yml')),
+      'The feed must have been checked',
+    )
+    const downloaded = requests.some((request) =>
+      /\.(AppImage|exe)$/.test(request.name),
+    )
+    assert.equal(
+      downloaded,
+      corrupt,
+      corrupt
+        ? 'The corrupt installer must have been downloaded'
+        : 'A downgrade must not download an installer',
     )
     assert.equal(
       await app.evaluate(({ app }) => app.getVersion()),
@@ -128,13 +165,18 @@ try {
     await writeFile(
       join(root, 'result.json'),
       JSON.stringify(
-        { before, corruptDownloadRejected: true, requests },
+        {
+          before,
+          corruptDownloadRejected: corrupt,
+          downgradeRejected: unavailable,
+          requests,
+        },
         null,
         2,
       ),
     )
     console.log(
-      `Rejected corrupt update; installed version remains ${before.version}`,
+      `Rejected ${corrupt ? 'corrupt update' : 'downgrade'}; installed version remains ${before.version}`,
     )
   } else {
     assert.deepEqual(JSON.parse(await readFile(marker, 'utf8')).pending, {
@@ -151,6 +193,19 @@ try {
     app = undefined
     // Do not attach Playwright to the installing process: its replacement does
     // not carry the inspector endpoint and can start before attachment finishes.
+    if (process.platform === 'win32') {
+      installerDriver = spawn(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-File',
+          join(import.meta.dirname, 'advance-update-installer.ps1'),
+          '-Root',
+          root,
+        ],
+        { env, stdio: 'ignore' },
+      )
+    }
     const installing = spawn(executable, ['--no-sandbox'], {
       env,
       stdio: 'ignore',
@@ -202,12 +257,34 @@ try {
           .digest('hex'),
       )
     }
+    // The successor cleared its own pending version. Reopen the replacement
+    // executable under Playwright as an independent runtime-version check.
+    process.kill(owner.pid, 'SIGTERM')
+    const stopped = Date.now() + 30_000
+    for (;;) {
+      try {
+        process.kill(owner.pid, 0)
+      } catch {
+        break
+      }
+      assert(Date.now() < stopped, 'Successor did not stop')
+      await new Promise((done) => setTimeout(done, 100))
+    }
+    app = await launch(artifact)
+    assert.equal(await app.evaluate(({ app }) => app.getVersion()), expected)
+    await (await app.firstWindow())
+      .getByRole('heading', { name: 'Projects', exact: true })
+      .waitFor()
+    await (
+      await app.firstWindow()
+    ).screenshot({ path: join(root, 'updated.png') })
     await writeFile(
       join(root, 'result.json'),
       JSON.stringify(
         {
           before,
           expectedVersion: expected,
+          runtimeVersionVerified: true,
           successorPid: owner.pid,
           userDataRetained: true,
           pendingClearedBySuccessor: true,
@@ -219,13 +296,12 @@ try {
         2,
       ),
     )
-    // Only terminate the successor that holds this proof directory's own lease.
-    process.kill(owner.pid, 'SIGTERM')
     console.log(
       `Installed update ${before.version} -> ${expected}; successor ${owner.pid}; user data retained`,
     )
   }
 } finally {
+  installerDriver?.kill()
   await app?.close().catch(() => undefined)
   server.closeAllConnections()
   await new Promise((done) => server.close(done))

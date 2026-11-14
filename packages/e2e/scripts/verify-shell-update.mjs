@@ -137,13 +137,29 @@ try {
     'shell-attempts.json',
   )
   if (corrupt || unavailable) {
-    const update = await page
-      .evaluate(() => window.dinksterDesktop.info())
-      .then((info) => info.update)
+    const startupRequests = requests.slice()
+    // Projects is deliberately not a trusted desktop renderer. Startup finishes
+    // before it opens; confirm the same real feed via the main-process updater.
+    const update = await app.evaluate(async ({ app }) => {
+      const require = process
+        .getBuiltinModule('node:module')
+        .createRequire(`${app.getAppPath()}/package.json`)
+      const { autoUpdater } = require('electron-updater')
+      const result = await autoUpdater.checkForUpdates()
+      return {
+        version: result?.updateInfo.version,
+        available: result?.isUpdateAvailable,
+      }
+    })
     assert.equal(
-      update.state,
-      corrupt ? 'failed' : 'current',
-      'The feed must be valid and the startup check must finish',
+      update.version,
+      expected,
+      'The real feed must parse successfully',
+    )
+    assert.equal(
+      update.available,
+      corrupt,
+      'Only the newer version may be offered',
     )
     const pending = await readFile(marker, 'utf8')
       .then(JSON.parse)
@@ -153,10 +169,10 @@ try {
       })
     assert.equal(pending?.pending, undefined)
     assert(
-      requests.some((request) => request.name.endsWith('.yml')),
-      'The feed must have been checked',
+      startupRequests.some((request) => request.name.endsWith('.yml')),
+      'The feed must have been checked during startup',
     )
-    const downloaded = requests.some((request) =>
+    const downloaded = startupRequests.some((request) =>
       /\.(AppImage|exe)$/.test(request.name),
     )
     assert.equal(

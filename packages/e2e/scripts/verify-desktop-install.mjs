@@ -38,9 +38,17 @@ try {
       page = await app.firstWindow({ timeout: 60_000 })
       await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
       if (process.env.DINKSTER_VERIFY_PUBLIC_UPDATE === '1') {
-        const info = await page.evaluate(() => window.dinksterDesktop.info())
-        assert.equal(info.update.state, 'current', 'The installed build must successfully consume its default published update feed')
-        await writeFile(join(root, `${launch}-update.json`), JSON.stringify(info.update, null, 2))
+        // Projects cannot invoke desktop capabilities. Check the installed
+        // updater in the main process without overriding its public feed.
+        const update = await app.evaluate(async ({ app }) => {
+          const require = process.getBuiltinModule('node:module').createRequire(`${app.getAppPath()}/package.json`)
+          const { autoUpdater } = require('electron-updater')
+          const result = await autoUpdater.checkForUpdates()
+          return { version: result?.updateInfo.version, available: result?.isUpdateAvailable, runningVersion: app.getVersion() }
+        })
+        assert.equal(update.version, update.runningVersion, 'The installed build must resolve its published version from the default feed')
+        assert.equal(update.available, false, 'The current published installation must be up to date')
+        await writeFile(join(root, `${launch}-update.json`), JSON.stringify(update, null, 2))
       }
       if (launch === 'first-run') {
         await page.getByText('No projects yet.', { exact: false }).waitFor()

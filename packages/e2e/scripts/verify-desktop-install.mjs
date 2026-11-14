@@ -37,6 +37,11 @@ try {
       assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
       page = await app.firstWindow({ timeout: 60_000 })
       await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
+      if (process.env.DINKSTER_VERIFY_PUBLIC_UPDATE === '1') {
+        const info = await page.evaluate(() => window.dinksterDesktop.info())
+        assert.equal(info.update.state, 'current', 'The installed build must successfully consume its default published update feed')
+        await writeFile(join(root, `${launch}-update.json`), JSON.stringify(info.update, null, 2))
+      }
       if (launch === 'first-run') {
         await page.getByText('No projects yet.', { exact: false }).waitFor()
         await page.locator('#name').fill('Installed remote project')

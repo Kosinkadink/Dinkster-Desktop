@@ -1,38 +1,39 @@
 name: Verify published Desktop
 
 on:
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source:
+        type: string
+        required: true
+      release_tag:
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 jobs:
-  verify:
-    if: github.repository == 'Kosinkadink/Dinkster-Desktop' && github.ref == 'refs/heads/main' && false
-    runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
-    timeout-minutes: 60
+  windows:
+    name: Published Windows - ${{ matrix.scenario }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [current, update, corruption, downgrade]
     defaults:
       run:
         shell: pwsh
+    env:
+      DINKSTER_VERIFY_WORK: ${{ runner.temp }}/published-update
+      DINKSTER_ACCELERATOR: cpu
+      CUDA_VISIBLE_DEVICES: ''
     steps:
-      - name: Prepare isolated verification directory
-        run: |
-          "DINKSTER_VERIFY_WORK=$(Join-Path $env:RUNNER_TEMP "dv-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT")" >> $env:GITHUB_ENV
       - uses: actions/checkout@v4
         with:
-          clean: true
+          ref: ${{ inputs.source }}
           persist-credentials: false
-      - name: Check out the published Desktop proof harness
-        uses: actions/checkout@v4
-        with:
-          clean: true
-          ref: main
-          path: published-source
-          persist-credentials: false
-      - name: Download published Desktop with repository token
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./packages/desktop/scripts/verify-published-desktop.ps1 -Action DownloadDesktop
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -41,26 +42,59 @@ jobs:
         with:
           node-version: 26.12.0
       - run: pnpm install --frozen-lockfile
-        working-directory: published-source
-      - name: Install verified published executable without credentials
-        id: install
-        run: ./packages/desktop/scripts/verify-published-desktop.ps1 -Action Install
-      - name: Verify remote first start restart and credential refusal
-        run: pnpm --filter @dinkster/desktop verify:installed
-        working-directory: published-source
-      - name: Clean up only the owned installation
-        if: always() && steps.install.outcome != 'skipped'
-        run: ./packages/desktop/scripts/verify-published-desktop.ps1 -Action Cleanup
-      - name: Preserve bounded proof
-        if: always() && steps.install.outcome != 'skipped'
-        uses: actions/upload-artifact@v4
+      - name: Acquire and verify immutable published bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DESKTOP_SOURCE_COMMIT: ${{ inputs.source }}
+        run: node packages/desktop/scripts/download-update-releases.mjs
+      - name: Verify signatures and install without acquisition credentials
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
+          Get-ChildItem Env: | Where-Object { $_.Name -match 'TOKEN|SECRET|PASSWORD|CREDENTIAL|^GIT_' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
+          $releases = Get-Content (Join-Path $env:DINKSTER_VERIFY_WORK releases.json) -Raw | ConvertFrom-Json
+          foreach ($release in @($releases.current, $releases.previous) | Where-Object { $_ }) {
+            $signature = Get-AuthenticodeSignature (Join-Path $release.directory $release.archive)
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=(Jedrzej Kosinski|Dinkster Inc)(,|$)') { throw 'Published installer signature/publisher invalid' }
+          }
+          if ($env:SCENARIO -ne 'current' -and -not $releases.previous) {
+            'Bootstrap only: no older updater-capable release; signed cross-version acceptance remains OPEN.' >> $env:GITHUB_STEP_SUMMARY
+            @{ bootstrap = $true; crossVersionProven = $false; scenario = $env:SCENARIO } | ConvertTo-Json | Set-Content (Join-Path $env:DINKSTER_VERIFY_WORK bootstrap.json)
+            exit 0
+          }
+          $installed = if ($env:SCENARIO -in @('update', 'corruption')) { $releases.previous } else { $releases.current }
+          $destination = Join-Path $env:RUNNER_TEMP 'installed/Dinkster Desktop'
+          if (Test-Path $destination) { throw 'Installation must be fresh' }
+          $process = Start-Process (Join-Path $installed.directory $installed.archive) -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          $env:DINKSTER_DESKTOP_EXECUTABLE = Join-Path $destination 'Dinkster Desktop.exe'
+          if ($env:SCENARIO -eq 'current') {
+            $env:DINKSTER_DESKTOP_VERIFY_ROOT = Join-Path $env:DINKSTER_VERIFY_WORK 'default-feed'
+            $env:DINKSTER_VERIFY_PUBLIC_UPDATE = '1'
+            node packages/e2e/scripts/verify-desktop-install.mjs
+          } else {
+            $available = if ($env:SCENARIO -eq 'downgrade') { $releases.previous } else { $releases.current }
+            $env:DINKSTER_UPDATE_OLD_EXECUTABLE = $env:DINKSTER_DESKTOP_EXECUTABLE
+            $env:DINKSTER_UPDATE_RELEASE = $available.directory
+            $env:DINKSTER_UPDATE_EXPECTED_VERSION = $available.version
+            $env:DINKSTER_UPDATE_PROOF_ROOT = Join-Path $env:DINKSTER_VERIFY_WORK 'update-proof'
+            $env:DINKSTER_UPDATE_CORRUPT = if ($env:SCENARIO -eq 'corruption') { '1' } else { '0' }
+            $env:DINKSTER_UPDATE_EXPECT_UNAVAILABLE = if ($env:SCENARIO -eq 'downgrade') { '1' } else { '0' }
+            node packages/e2e/scripts/verify-shell-update.mjs
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Published installed verification failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: published-desktop-shell-proof
+          name: published-windows-${{ matrix.scenario }}
+          path: |
+            ${{ env.DINKSTER_VERIFY_WORK }}/*.json
+            ${{ env.DINKSTER_VERIFY_WORK }}/default-feed/*.json
+            ${{ env.DINKSTER_VERIFY_WORK }}/default-feed/*.png
+            ${{ env.DINKSTER_VERIFY_WORK }}/update-proof/*.json
+            ${{ env.DINKSTER_VERIFY_WORK }}/update-proof/*.png
+            ${{ env.DINKSTER_VERIFY_WORK }}/update-proof/*.txt
           retention-days: 7
           if-no-files-found: ignore
-          path: |
-            ${{ env.DINKSTER_VERIFY_WORK }}/proof/*.json
-            ${{ env.DINKSTER_VERIFY_WORK }}/run/first-run.json
-            ${{ env.DINKSTER_VERIFY_WORK }}/run/restart.json
-            ${{ env.DINKSTER_VERIFY_WORK }}/run/first-run.png
-            ${{ env.DINKSTER_VERIFY_WORK }}/run/restart.png

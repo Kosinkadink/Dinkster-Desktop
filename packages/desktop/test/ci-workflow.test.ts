@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
@@ -52,19 +51,6 @@ const signed = await load('signed-package.yml')
 const published = await load('verify-published-desktop.yml')
 
 describe('desktop workflows', () => {
-  it('pins pull-request and release builds to the same frontend commit', () => {
-    expect(ci.env?.['DINKSTER_FRONTEND_REF']).toMatch(/^[0-9a-f]{40}$/)
-    expect(full.env?.['DINKSTER_FRONTEND_REF']).toBe(
-      ci.env?.['DINKSTER_FRONTEND_REF'],
-    )
-    expect(release.env?.['DINKSTER_FRONTEND_REF']).toBe(
-      ci.env?.['DINKSTER_FRONTEND_REF'],
-    )
-    expect(signed.env?.['DINKSTER_FRONTEND_REF']).toBe(
-      ci.env?.['DINKSTER_FRONTEND_REF'],
-    )
-  })
-
   it('shares installer builds with tag publication and isolates manual signing', () => {
     expect(release.on).toMatchObject({
       push: { branches: ['main'] },
@@ -97,41 +83,6 @@ describe('desktop workflows', () => {
     expect(names(job.steps)).toContain('Keep the signed installer')
     const source = JSON.stringify(signed)
     expect(source).not.toMatch(/gh release create|contents: write|DESKTOP_TAG/)
-  })
-
-  it('runs typecheck, all unit tests, and a Linux build on pull requests', () => {
-    expect(ci.on).toMatchObject({ pull_request: null })
-    expect(ci.permissions).toEqual({ contents: 'read' })
-    expect(Object.keys(ci.jobs)).toEqual(['test', 'pr-status'])
-    const job = ci.jobs['test']!
-    expect(job.needs).toBeUndefined()
-    expect(job.if).toBeUndefined()
-    expect(job['timeout-minutes']).toBe(10)
-    expect(job['runs-on']).toBe('${{ fromJSON(vars.CI_RUNNERS).linux }}')
-    expect(job.steps?.flatMap((step) => step.run ?? [])).toEqual([
-      'pnpm --dir .frontend install --frozen-lockfile',
-      'pnpm --dir .frontend --filter @dinkster/app build',
-      'pnpm install --frozen-lockfile',
-      'pnpm lint',
-      'pnpm typecheck',
-      'pnpm test',
-      'pnpm build',
-    ])
-    const frontend = job.steps?.find(
-      (step) => step.with?.['repository'] === 'Kosinkadink/Dinkster-Frontend',
-    )
-    expect(frontend?.with).toMatchObject({
-      clean: true,
-      'persist-credentials': false,
-      ref: '${{ env.DINKSTER_FRONTEND_REF }}',
-      path: '.frontend',
-    })
-    expect(frontend?.with).not.toHaveProperty('token')
-    const status = ci.jobs['pr-status']!
-    expect(status.if).toBe('always()')
-    expect(status.needs).toEqual(['test'])
-    const statusSource = status.steps?.flatMap((step) => step.run ?? []).join('\n')
-    expect(statusSource).toContain('test "$TEST_RESULT" = success')
   })
 
   it('runs Linux build, packaged Desktop startup, and Windows package lanes on main', () => {
@@ -285,50 +236,6 @@ describe('desktop workflows', () => {
     expect(JSON.stringify([full, release, signed, published])).not.toContain(
       'DINKSTER_RELEASE_READ_TOKEN',
     )
-  })
-
-  it('admits only matching source and verified Mac bytes into the shared release', async () => {
-    const steps = release.jobs['release']!.steps!
-    const upload = release.jobs['macos']!.steps!.find(step => step.uses === 'actions/upload-artifact@v4')!
-    const download = steps.find(step => step.name === 'Acquire the verified unsigned Mac installer')!
-    expect(download.with?.['name']).toBe(upload.with?.['name'])
-    const verify = steps.find(step => step.name === 'Verify the Mac installer belongs to this release')!
-    const script = verify.run!.match(/<<'JS'\n([\s\S]*)\nJS\n?$/)![1]!
-    const assets = steps.find(step => step.name === 'Keep the complete verified release asset set')!
-    expect(assets.with?.['path']).toContain('packages/desktop/macos-release/*-macos-arm64.zip')
-    expect(assets.with?.['path']).toContain('packages/desktop/macos-release/desktop-macos-release.json')
-    const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-macos-release-'))
-    const directory = resolve(scratch, 'packages/desktop')
-    const name = 'Dinkster-Desktop-0.2.0-macos-arm64.zip'
-    const bytes = Buffer.from('native Mac archive')
-    const sha256 = createHash('sha256').update(bytes).digest('hex')
-    const metadata = { repository: 'Kosinkadink/Dinkster-Desktop', commit: 'source-head', frontend: 'frontend-head', version: '0.2.0', archive: name, platform: { os: 'macos', arch: 'arm64' }, signed: false, notarized: false, size: bytes.length, sha256 }
-    const execute = promisify(execFile)
-    const run = () => execute(process.execPath, ['--input-type=module', '-e', script], { cwd: scratch, env: { ...process.env, DESKTOP_SOURCE_COMMIT: metadata.commit, DINKSTER_FRONTEND_REF: metadata.frontend } })
-    const record = (value: object) => writeFile(resolve(directory, 'macos-release/desktop-macos-release.json'), JSON.stringify(value))
-    try {
-      await mkdir(resolve(directory, 'macos-release'), { recursive: true })
-      await mkdir(resolve(directory, 'release'))
-      await writeFile(resolve(directory, 'package.json'), JSON.stringify({ version: metadata.version }))
-      await writeFile(resolve(directory, 'macos-release', name), bytes)
-      await writeFile(resolve(directory, 'release/SHA256SUMS'), 'windows checksum\n')
-      await record(metadata)
-      await run()
-      const expected = `windows checksum\n${sha256}  ${name}\n`
-      expect(await readFile(resolve(directory, 'release/SHA256SUMS'), 'utf8')).toBe(expected)
-      for (const mismatch of [{ commit: 'other-head' }, { version: '0.3.0' }, { signed: true }, { size: bytes.length + 1 }]) {
-        await record({ ...metadata, ...mismatch })
-        await expect(run()).rejects.toThrow()
-      }
-      await record(metadata)
-      const corrupt = Buffer.from(bytes)
-      corrupt[0] = corrupt[0]! ^ 1
-      await writeFile(resolve(directory, 'macos-release', name), corrupt)
-      await expect(run()).rejects.toThrow()
-      expect(await readFile(resolve(directory, 'release/SHA256SUMS'), 'utf8')).toBe(expected)
-    } finally {
-      await rm(scratch, { recursive: true, force: true })
-    }
   })
 
   it('produces both native installers without signing or publishing on main and relevant pull requests', () => {

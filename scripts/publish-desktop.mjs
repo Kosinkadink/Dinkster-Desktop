@@ -99,6 +99,11 @@ if (mode === 'validate') {
   assert.deepEqual(mac.platform, { os: 'macos', arch: 'arm64' })
   assert.equal(mac.signed, false)
   assert.equal(mac.notarized, false)
+  const frontend = JSON.parse(
+    readFileSync('scripts/frontend-release.json', 'utf8'),
+  )
+  assert.deepEqual(mac.frontend, frontend)
+  assert.deepEqual(linux.frontend, frontend)
   const checksum = (path) =>
     createHash('sha256').update(readFileSync(path)).digest('hex')
   for (const [folder, metadata] of [

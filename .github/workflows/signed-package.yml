@@ -10,9 +10,6 @@ on:
 permissions:
   contents: read
 
-env:
-  DINKSTER_FRONTEND_REF: 734c32da1360c6a1496d37fb9373f87209a1a27f
-
 jobs:
   package:
     if: github.repository == 'Kosinkadink/Dinkster-Desktop'
@@ -27,13 +24,6 @@ jobs:
         with:
           clean: true
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          clean: true
-          persist-credentials: false
-          repository: Kosinkadink/Dinkster-Frontend
-          ref: ${{ env.DINKSTER_FRONTEND_REF }}
-          path: .frontend
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -42,11 +32,7 @@ jobs:
         with:
           node-version: 26.12.0
           cache: pnpm
-          cache-dependency-path: |
-            pnpm-lock.yaml
-            .frontend/pnpm-lock.yaml
-      - run: pnpm --dir .frontend install --frozen-lockfile
-      - run: pnpm --dir .frontend --filter @dinkster/app build
+          cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Package and sign with Artifact Signing
         env:

@@ -33,10 +33,11 @@ concurrency:
 
 jobs:
   macos:
-    name: Apple Silicon installer
+    name: Unsigned Apple Silicon installer
     runs-on: macos-latest
-    environment: ${{ inputs.signed && 'desktop-signing' || '' }}
-    timeout-minutes: 45
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,18 +65,7 @@ jobs:
       - run: pnpm --dir .frontend install --frozen-lockfile
       - run: pnpm --dir .frontend --filter @dinkster/app build
       - run: pnpm install --frozen-lockfile
-      - if: ${{ !inputs.signed }}
-        run: pnpm --filter @dinkster/desktop package:mac
-      - name: Sign and notarize the release app
-        if: inputs.signed
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm --filter @dinkster/desktop package:mac:signed
-      - run: pnpm --filter @dinkster/desktop verify:update-feed
+      - run: pnpm --filter @dinkster/desktop package:mac
       - name: Verify the extracted Apple Silicon app
         working-directory: packages/desktop/release
         run: |
@@ -88,18 +78,8 @@ jobs:
           test "$(lipo -archs "$executable")" = arm64
           node ../scripts/verify-installed-tools.mjs "$RUNNER_TEMP/dinkster-macos-installed/Dinkster Desktop.app/Contents/Resources" > installed-tools.json
           shasum -a 256 "${archives[0]}" > installer-SHA256SUMS
-      - name: Verify Developer ID and notarization on the release app
-        if: inputs.signed
-        run: |
-          app="$RUNNER_TEMP/dinkster-macos-installed/Dinkster Desktop.app"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          codesign --display --verbose=4 "$app" 2>&1 | grep -F 'Authority=Developer ID Application:'
-          xcrun stapler validate "$app"
-          spctl --assess --type execute --verbose=2 "$app"
       - name: Record source and artifact identity
         working-directory: packages/desktop
-        env:
-          SIGNED_RELEASE: ${{ inputs.signed || false }}
         run: |
           node --input-type=module <<'JS'
           import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -109,18 +89,15 @@ jobs:
           writeFileSync('release/desktop-macos-release.json', JSON.stringify({
             repository: 'Kosinkadink/Dinkster-Desktop', commit: process.env.DESKTOP_SOURCE_COMMIT,
             frontend: process.env.DINKSTER_FRONTEND_REF, version: pkg.version,
-            platform: { os: 'macos', arch: 'arm64' },
-            signed: process.env.SIGNED_RELEASE === 'true', notarized: process.env.SIGNED_RELEASE === 'true',
+            platform: { os: 'macos', arch: 'arm64' }, signed: false, notarized: false,
             archive, sha256, size: statSync(`release/${archive}`).size,
           }, null, 2) + '\n');
           JS
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-macos-arm64
+          name: desktop-unsigned-macos-arm64
           path: |
             packages/desktop/release/*-macos-arm64.zip
-            packages/desktop/release/*.blockmap
-            packages/desktop/release/*-mac.yml
             packages/desktop/release/desktop-macos-release.json
             packages/desktop/release/installer-SHA256SUMS
             packages/desktop/release/installed-tools.json
@@ -315,10 +292,10 @@ jobs:
             packages/desktop/release/SHA256SUMS
           retention-days: 14
           if-no-files-found: error
-      - name: Acquire the verified signed Mac installer
+      - name: Acquire the verified unsigned Mac installer
         uses: actions/download-artifact@v4
         with:
-          name: desktop-macos-arm64
+          name: desktop-unsigned-macos-arm64
           path: packages/desktop/macos-release
       - name: Acquire the verified Linux AppImage
         uses: actions/download-artifact@v4
@@ -341,8 +318,8 @@ jobs:
           const name = `Dinkster-Desktop-${pkg.version}-macos-arm64.zip`;
           assert.equal(metadata.archive, name);
           assert.deepEqual(metadata.platform, { os: 'macos', arch: 'arm64' });
-          assert.equal(metadata.signed, true);
-          assert.equal(metadata.notarized, true);
+          assert.equal(metadata.signed, false);
+          assert.equal(metadata.notarized, false);
           const bytes = readFileSync(`packages/desktop/macos-release/${name}`);
           const sha256 = createHash('sha256').update(bytes).digest('hex');
           assert.equal(metadata.size, bytes.length);
@@ -357,11 +334,10 @@ jobs:
             packages/desktop/release/*-Setup.exe
             packages/desktop/release/desktop-release.json
             packages/desktop/release/SHA256SUMS
-            packages/desktop/release/*.yml
-            packages/desktop/release/*.blockmap
+            packages/desktop/release/latest.yml
+            packages/desktop/release/rc.yml
+            packages/desktop/release/*-Setup.exe.blockmap
             packages/desktop/macos-release/*-macos-arm64.zip
-            packages/desktop/macos-release/*-mac.yml
-            packages/desktop/macos-release/*.blockmap
             packages/desktop/macos-release/desktop-macos-release.json
             packages/desktop/linux-release/*.AppImage
             packages/desktop/linux-release/*-linux.yml

@@ -1300,8 +1300,9 @@ app.on('open-url', (event, url) => {
 
 if (primaryInstance) app.whenReady().then(async () => {
   lifecycleLease = await acquireLifecycleLease(dataDirectory)
-  const shellUpdate = await shellUpdater.start()
-  if (shellUpdate.state === 'installing') return
+  // Unsigned macOS releases cannot replace an installed app.
+  const shellUpdate = process.platform === 'darwin' ? undefined : await shellUpdater.start()
+  if (shellUpdate?.state === 'installing') return
   nativeTheme.on('updated', () => {
     for (const managed of windows.values()) managed.setBackgroundColor(windowBackground())
     if (projectWindow && !projectWindow.isDestroyed()) projectWindow.setBackgroundColor(windowBackground())

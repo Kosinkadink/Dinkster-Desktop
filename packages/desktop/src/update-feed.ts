@@ -25,6 +25,7 @@ async function releaseCandidateFeed(): Promise<string> {
   const signal = AbortSignal.timeout(15_000)
   // The built-in GitHub provider cannot select RCs with desktop-v tags.
   // Resolve the published tag, then let the generic provider verify its bytes.
+  const candidates: { tag_name: string }[] = []
   for (let page = 1; ; page += 1) {
     const response = await fetch(`https://api.github.com/repos/Kosinkadink/Dinkster-Desktop/releases?per_page=100&page=${page}`, {
       signal,
@@ -33,17 +34,19 @@ async function releaseCandidateFeed(): Promise<string> {
     if (!response.ok) throw new Error('Unable to resolve the Desktop RC feed')
     const entries: unknown = await response.json()
     if (!Array.isArray(entries)) throw new Error('Invalid Desktop release listing')
-    const candidates = entries.filter((entry): entry is { tag_name: string } => {
+    candidates.push(...entries.filter((entry): entry is { tag_name: string } => {
       if (!entry || typeof entry !== 'object') return false
       const release = entry as Record<string, unknown>
       return release['draft'] === false && release['prerelease'] === true
         && typeof release['tag_name'] === 'string'
         && /^desktop-v\d+\.\d+\.\d+-rc\.\d+$/.test(release['tag_name'])
-    }).sort((left, right) => rcompare(left.tag_name.slice('desktop-v'.length), right.tag_name.slice('desktop-v'.length)))
-    const latest = candidates[0]
-    if (latest) return `${releases}/download/${latest.tag_name}`
-    if (!response.headers.get('link')?.includes('rel="next"')) throw new Error('No Desktop RC release is published')
+    }))
+    if (!response.headers.get('link')?.includes('rel="next"')) break
   }
+  candidates.sort((left, right) => rcompare(left.tag_name.slice('desktop-v'.length), right.tag_name.slice('desktop-v'.length)))
+  const latest = candidates[0]
+  if (!latest) throw new Error('No Desktop RC release is published')
+  return `${releases}/download/${latest.tag_name}`
 }
 
 export async function configureUpdateFeed(target: UpdateFeedTarget, raw: string | undefined, version: string): Promise<string> {

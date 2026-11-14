@@ -1,12 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import {
-  appendFileSync,
-  readFileSync,
-  readdirSync,
-  writeFileSync,
-} from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 const repository = 'Kosinkadink/Dinkster-Desktop'
@@ -96,14 +91,14 @@ if (mode === 'validate') {
   )
   assert.equal(
     linux.archive,
-    `Dinkster-Desktop-${pkg.version}-linux-x64.AppImage`,
+    `Dinkster-Desktop-${pkg.version}-linux-x86_64.AppImage`,
   )
   assert.deepEqual(linux.platform, { os: 'linux', arch: 'x64' })
   assert.equal(windows.archive, `Dinkster-Desktop-${pkg.version}-Setup.exe`)
   assert.equal(mac.archive, `Dinkster-Desktop-${pkg.version}-macos-arm64.zip`)
   assert.deepEqual(mac.platform, { os: 'macos', arch: 'arm64' })
-  assert.equal(mac.signed, true)
-  assert.equal(mac.notarized, true)
+  assert.equal(mac.signed, false)
+  assert.equal(mac.notarized, false)
   const checksum = (path) =>
     createHash('sha256').update(readFileSync(path)).digest('hex')
   for (const [folder, metadata] of [
@@ -122,7 +117,6 @@ if (mode === 'validate') {
     '../packages/desktop/scripts/verify-update-feed.mjs'
   )
   await verifyUpdateFeed(join(root, 'release'), pkg.version, 'win32')
-  await verifyUpdateFeed(join(root, 'macos-release'), pkg.version, 'darwin')
   await verifyUpdateFeed(join(root, 'linux-release'), pkg.version, 'linux')
   writeFileSync(
     join(root, 'release/SHA256SUMS'),
@@ -130,6 +124,8 @@ if (mode === 'validate') {
       .map((metadata) => `${metadata.sha256}  ${metadata.archive}\n`)
       .join(''),
   )
+  const test = /-rc\.\d+$/.test(pkg.version)
+  const channel = test ? 'rc' : 'latest'
   const files = [
     join(root, 'release', windows.archive),
     join(root, 'release/desktop-release.json'),
@@ -138,18 +134,15 @@ if (mode === 'validate') {
     join(root, 'macos-release/desktop-macos-release.json'),
     join(root, 'linux-release', linux.archive),
     join(root, 'linux-release/desktop-linux-release.json'),
-    ...['release', 'macos-release', 'linux-release'].flatMap((folder) =>
-      readdirSync(join(root, folder))
-        .filter((name) => name.endsWith('.yml') || name.endsWith('.blockmap'))
-        .map((name) => join(root, folder, name)),
-    ),
+    join(root, 'release', `${channel}.yml`),
+    join(root, 'release', `${windows.archive}.blockmap`),
+    join(root, 'linux-release', `${channel}-linux.yml`),
   ]
   const summary = (message) => {
     console.log(message)
     if (process.env.GITHUB_STEP_SUMMARY)
       appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n`)
   }
-  const test = /-rc\.\d+$/.test(pkg.version)
   gh(
     'release',
     'create',

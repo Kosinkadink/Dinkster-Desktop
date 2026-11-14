@@ -16,7 +16,9 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]
 ))
 env.DINKSTER_DESKTOP_DATA = join(root, 'data')
 env.DINKSTER_ENV = join(root, 'environment-tools-must-not-run')
-env.PATH = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32') : '/nonexistent'
+// AppImage's launcher needs the system shell utilities; Windows still proves
+// startup with only System32 available and no Git on PATH.
+env.PATH = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32') : '/usr/bin:/bin'
 
 let requests = 0
 const server = createServer((_request, response) => {

@@ -6,14 +6,17 @@ import { basename, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { load } from 'js-yaml'
 
-export async function verifyUpdateFeed(releaseDirectory, version) {
+export async function verifyUpdateFeed(releaseDirectory, version, platform = process.platform) {
   const channel = version.split('-')[1]?.split('.')[0] ?? 'latest'
-  const manifestName = `${channel}.yml`
+  const suffix = { win32: '', darwin: '-mac', linux: '-linux' }[platform]
+  if (suffix === undefined) throw new Error(`Unsupported update platform: ${platform}`)
+  const manifestName = `${channel}${suffix}.yml`
   const manifestPath = resolve(releaseDirectory, manifestName)
   const manifest = await readFile(manifestPath, 'utf8')
   const document = load(manifest)
   if (!document || typeof document !== 'object' || Array.isArray(document)) throw new Error(`${manifestName} must be an object`)
   const release = document
+  if (release.version !== version) throw new Error(`${manifestName} version does not match the package`)
   if (!Array.isArray(release.files) || release.files.length !== 1 ||
     !release.files[0] || typeof release.files[0] !== 'object' || Array.isArray(release.files[0])) {
     throw new Error(`${manifestName} must contain exactly one files entry`)

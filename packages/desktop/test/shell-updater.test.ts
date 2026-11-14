@@ -18,11 +18,15 @@ function target(version?: string, installers: readonly string[] = []): ShellUpda
   let checked = false
   let downloaded = false
   return {
+    channel: null,
+    allowPrerelease: false,
+    allowDowngrade: false,
+    setFeedURL: vi.fn(),
     autoDownload: true,
     autoInstallOnAppQuit: true,
     checkForUpdates: vi.fn().mockImplementation(async () => {
       checked = true
-      return version ? { updateInfo: { version } } : null
+      return version ? { isUpdateAvailable: true, updateInfo: { version } } : null
     }),
     downloadUpdate: vi.fn().mockImplementation(async () => {
       if (!checked) throw new Error('download requires checkForUpdates')

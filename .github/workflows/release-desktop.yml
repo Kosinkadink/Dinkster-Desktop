@@ -151,6 +151,22 @@ jobs:
           ./*.AppImage --appimage-extract > /dev/null
           node ../scripts/verify-installed-tools.mjs squashfs-root/resources > installed-tools.json
           sha256sum ./*.AppImage > installer-SHA256SUMS
+      - name: Verify Linux update metadata and record artifact identity
+        if: matrix.os == 'linux'
+        working-directory: packages/desktop
+        run: |
+          node scripts/verify-update-feed.mjs
+          node --input-type=module <<'JS'
+          import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const archive = readdirSync('release').find(name => name.endsWith('.AppImage'));
+          const sha256 = readFileSync('release/installer-SHA256SUMS', 'utf8').split(/\s+/)[0];
+          writeFileSync('release/desktop-linux-release.json', JSON.stringify({
+            repository: 'Kosinkadink/Dinkster-Desktop', commit: process.env.DESKTOP_SOURCE_COMMIT,
+            frontend: process.env.DINKSTER_FRONTEND_REF, version: pkg.version,
+            platform: { os: 'linux', arch: 'x64' }, archive, sha256, size: statSync(`release/${archive}`).size,
+          }, null, 2) + '\n');
+          JS
       - name: Install Windows package and verify resources
         if: matrix.os == 'windows'
         shell: pwsh
@@ -169,6 +185,8 @@ jobs:
           name: desktop-${{ matrix.os }}-installer
           path: |
             packages/desktop/release/*.AppImage
+            packages/desktop/release/*-linux.yml
+            packages/desktop/release/desktop-linux-release.json
             packages/desktop/release/*-Setup.exe
             packages/desktop/release/installed-tools.json
             packages/desktop/release/installer-SHA256SUMS
@@ -176,7 +194,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [macos]
+    needs: [macos, installers]
     if: github.repository == 'Kosinkadink/Dinkster-Desktop' && inputs.signed
     environment: desktop-signing
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
@@ -279,6 +297,11 @@ jobs:
         with:
           name: desktop-unsigned-macos-arm64
           path: packages/desktop/macos-release
+      - name: Acquire the verified Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux-installer
+          path: packages/desktop/linux-release
       - name: Verify the Mac installer belongs to this release
         shell: bash
         run: |
@@ -311,7 +334,13 @@ jobs:
             packages/desktop/release/*-Setup.exe
             packages/desktop/release/desktop-release.json
             packages/desktop/release/SHA256SUMS
+            packages/desktop/release/latest.yml
+            packages/desktop/release/rc.yml
+            packages/desktop/release/*-Setup.exe.blockmap
             packages/desktop/macos-release/*-macos-arm64.zip
             packages/desktop/macos-release/desktop-macos-release.json
+            packages/desktop/linux-release/*.AppImage
+            packages/desktop/linux-release/*-linux.yml
+            packages/desktop/linux-release/desktop-linux-release.json
           retention-days: 14
           if-no-files-found: error

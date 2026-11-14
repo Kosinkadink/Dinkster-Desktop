@@ -28,11 +28,13 @@
     "@decimalturn/toml-patch": "3.0.4",
     "electron-updater": "^6.6.2",
     "extract-zip": "2.0.1",
-    "http-proxy": "^1.18.1"
+    "http-proxy": "^1.18.1",
+    "semver": "^7.8.5"
   },
   "devDependencies": {
     "@types/http-proxy": "^1.17.16",
     "@types/node": "^22.10.0",
+    "@types/semver": "^7.8.0",
     "electron": "^37.2.6",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.25.12",
@@ -52,6 +54,7 @@
       }
     ],
     "asar": true,
+    "generateUpdatesFilesForAllChannels": false,
     "files": [
       "dist/**/*",
       "resources/projects.html",
@@ -77,7 +80,7 @@
     "publish": [
       {
         "provider": "generic",
-        "url": "https://updates.dinkster.invalid/desktop"
+        "url": "https://github.com/Kosinkadink/Dinkster-Desktop/releases/latest/download"
       }
     ],
     "win": {
@@ -105,7 +108,14 @@
     "mac": {
       "icon": "resources/branding/platform/dinkster.icns",
       "category": "public.app-category.graphics-design",
-      "target": [{ "target": "zip", "arch": ["arm64"] }],
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
       "artifactName": "Dinkster-Desktop-${version}-macos-${arch}.${ext}",
       "minimumSystemVersion": "14.0.0",
       "forceCodeSigning": false,
@@ -113,11 +123,15 @@
       "notarize": false
     },
     "linux": {
+      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "artifactName": "Dinkster-Desktop-${version}-linux-${arch}.${ext}",
       "icon": "resources/branding/raster/color/512.png",
       "executableName": "dinkster-desktop",
       "category": "Graphics",
       "desktop": {
-        "entry": { "StartupWMClass": "Dinkster Desktop" }
+        "entry": {
+          "StartupWMClass": "Dinkster Desktop"
+        }
       }
     }
   }

@@ -172,9 +172,8 @@ it.each(['ready', 'cancelled', 'stalled', 'expired', 'failed', 'changed'])('obse
   const barrier = new Promise<void>((resolve) => { release = resolve })
   const started = new Promise<void>((resolve) => { entered = resolve })
   f.hold(async () => { entered(); await barrier })
-  const start = performance.now()
   let elapsed = 0
-  vi.spyOn(performance, 'now').mockImplementation(() => start + elapsed)
+  vi.spyOn(performance, 'now').mockImplementation(() => elapsed)
   const response = await f.post('prepare', { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] })
   expect(response.status).toBe(202)
   expect(response.headers.get('cache-control')).toBe('no-store')

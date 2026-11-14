@@ -18,10 +18,13 @@ dispatch or rerun release workflows.
 The reusable **Desktop installer builds** definition is shared with main
 validation. It retains Windows Artifact Signing, signature, isolated install
 and installed-app checks, plus the unsigned Mac archive's source/byte binding.
-Only final publication has `contents: write`. The release carries exactly five
-assets: signed Windows installer, `desktop-release.json`, `SHA256SUMS` with both
-installer hashes, unsigned Apple Silicon ZIP and `desktop-macos-release.json`.
-The CLI uploads those files before making the release public.
+Only final publication has `contents: write`. The release carries the signed
+Windows NSIS installer, Linux x64 AppImage and unsigned Apple Silicon ZIP,
+source metadata for each, and `SHA256SUMS` with all three installer hashes.
+Windows and Linux also publish their channel-specific updater manifests;
+Windows publishes its installer blockmap for differential downloads. The Linux
+AppImage embeds its blockmap. The CLI verifies artifact and feed hashes and
+uploads these files before making the release public.
 
 An `X.Y.Z-rc.N` version PR follows the same chain but publishes a prerelease
 with `--latest=false`; stable versions become latest. The desk retains RC
@@ -211,8 +214,24 @@ must not fall back to an unchecked archive or runtime package resolution.
 
 ## Shell updates
 
-Shell updates are separate from engine environment updates. The shell updater
-checks only during startup, downloads without installing on quit, and records
+Shell updates are separate from engine environment updates. Installed Windows
+and Linux builds use the public GitHub Releases feed without user configuration:
+`https://github.com/Kosinkadink/Dinkster-Desktop/releases/latest/download`.
+Stable builds request `latest.yml` (Windows) or `latest-linux.yml` (Linux).
+RC builds resolve the highest published `desktop-vX.Y.Z-rc.N` prerelease through
+the public GitHub API, then request `rc.yml` or `rc-linux.yml` from that tag.
+They never use stable's latest redirect and neither channel allows downgrades.
+A missing feed or network error leaves the installed application usable.
+Downloads are verified by electron-updater's SHA512 check; Windows also checks
+the existing installer publisher signature. macOS self-update is disabled until
+signed and notarized releases are available; unsigned ZIP publication remains.
+
+`DINKSTER_UPDATE_FEED_URL` overrides the feed for validation. It accepts
+credential-free HTTPS or loopback HTTP only; it does not change the channel.
+On Linux, keep the AppImage executable in a user-writable directory and run it
+directly. Package-manager installations are not this update target.
+
+The shell updater checks only during startup, downloads without installing on quit, and records
 the downloaded version for installation on the next startup. It records each
 installation attempt before handing control to the installer and stops after
 three unsuccessful launches for the same version. A successful launch at that

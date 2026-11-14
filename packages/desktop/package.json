@@ -2,7 +2,7 @@
   "name": "@dinkster/desktop",
   "productName": "Dinkster Desktop",
   "desktopName": "dinkster-desktop.desktop",
-  "version": "0.2.5-rc.1",
+  "version": "0.2.5-rc.2",
   "private": true,
   "type": "module",
   "description": "Dinkster Desktop Electron shell and local engine lifecycle",

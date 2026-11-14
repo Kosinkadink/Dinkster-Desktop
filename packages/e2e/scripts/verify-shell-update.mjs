@@ -15,6 +15,8 @@ const root = resolve(process.env.DINKSTER_UPDATE_PROOF_ROOT ?? '')
 const expected = process.env.DINKSTER_UPDATE_EXPECTED_VERSION
 const corrupt = process.env.DINKSTER_UPDATE_CORRUPT === '1'
 const unavailable = process.env.DINKSTER_UPDATE_EXPECT_UNAVAILABLE === '1'
+const signatureRefusal =
+  process.env.DINKSTER_UPDATE_EXPECT_SIGNATURE_REFUSAL === '1'
 if (process.platform === 'win32') {
   assert(
     process.env.GITHUB_ACTIONS === 'true' &&
@@ -118,6 +120,9 @@ const launch = (path = executable) =>
     env,
     timeout: 120_000,
   })
+const sentinel = join(env.DINKSTER_DESKTOP_DATA, 'update-retains-user-data.txt')
+await mkdir(env.DINKSTER_DESKTOP_DATA, { recursive: true })
+await writeFile(sentinel, 'retained user data\n')
 let app
 let installerDriver
 try {
@@ -131,26 +136,47 @@ try {
   assert.notEqual(before.version, expected)
   const page = await app.firstWindow({ timeout: 120_000 })
   await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
+  const channel = before.version.includes('-rc.') ? 'rc' : 'latest'
+  const manifest = `${channel}${process.platform === 'linux' ? '-linux' : ''}.yml`
+  assert(
+    requests.some((request) => request.name === manifest),
+    'Startup must request its own channel manifest',
+  )
+  assert(
+    requests
+      .filter((request) => request.name.endsWith('.yml'))
+      .every((request) => request.name === manifest),
+    'Startup must not consult the other channel',
+  )
   const marker = join(
     env.DINKSTER_DESKTOP_DATA,
     'updates',
     'shell-attempts.json',
   )
-  if (corrupt || unavailable) {
+  if (corrupt || unavailable || signatureRefusal) {
     const startupRequests = requests.slice()
     // Projects is deliberately not a trusted desktop renderer. Startup finishes
     // before it opens; confirm the same real feed via the main-process updater.
-    const update = await app.evaluate(async ({ app }) => {
+    const update = await app.evaluate(async ({ app }, download) => {
       const require = process
         .getBuiltinModule('node:module')
         .createRequire(`${app.getAppPath()}/package.json`)
       const { autoUpdater } = require('electron-updater')
       const result = await autoUpdater.checkForUpdates()
+      let refusalCode
+      if (download) {
+        try {
+          await autoUpdater.downloadUpdate()
+        } catch (error) {
+          refusalCode = error.code
+        }
+      }
       return {
         version: result?.updateInfo.version,
         available: result?.isUpdateAvailable,
+        refusalCode,
       }
-    })
+    }, !unavailable)
     assert.equal(
       update.version,
       expected,
@@ -158,9 +184,18 @@ try {
     )
     assert.equal(
       update.available,
-      corrupt,
+      !unavailable,
       'Only the newer version may be offered',
     )
+    if (!unavailable)
+      assert.equal(
+        update.refusalCode,
+        signatureRefusal
+          ? 'ERR_UPDATER_INVALID_SIGNATURE'
+          : 'ERR_CHECKSUM_MISMATCH',
+        'The installed updater must refuse the actual integrity or publisher violation',
+      )
+    assert.equal(await readFile(sentinel, 'utf8'), 'retained user data\n')
     const pending = await readFile(marker, 'utf8')
       .then(JSON.parse)
       .catch((error) => {
@@ -177,10 +212,10 @@ try {
     )
     assert.equal(
       downloaded,
-      corrupt,
-      corrupt
-        ? 'The corrupt installer must have been downloaded'
-        : 'A downgrade must not download an installer',
+      !unavailable,
+      unavailable
+        ? 'A downgrade must not download an installer'
+        : 'The refused installer must have been downloaded during startup',
     )
     assert.equal(
       await app.evaluate(({ app }) => app.getVersion()),
@@ -193,6 +228,10 @@ try {
           before,
           corruptDownloadRejected: corrupt,
           downgradeRejected: unavailable,
+          signatureRejected: signatureRefusal,
+          userDataRetained: true,
+          update,
+          startupRequests,
           requests,
         },
         null,
@@ -200,18 +239,13 @@ try {
       ),
     )
     console.log(
-      `Rejected ${corrupt ? 'corrupt update' : 'downgrade'}; installed version remains ${before.version}`,
+      `Rejected ${corrupt ? 'corrupt update' : signatureRefusal ? 'unsigned update' : 'downgrade'}; installed version remains ${before.version}`,
     )
   } else {
     assert.deepEqual(JSON.parse(await readFile(marker, 'utf8')).pending, {
       version: expected,
       attempts: 0,
     })
-    const sentinel = join(
-      env.DINKSTER_DESKTOP_DATA,
-      'update-retains-user-data.txt',
-    )
-    await writeFile(sentinel, 'retained user data\n')
     await page.screenshot({ path: join(root, 'download-ready.png') })
     await app.close()
     app = undefined

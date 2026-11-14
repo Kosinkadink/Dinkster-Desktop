@@ -42,7 +42,7 @@ jobs:
         run: |
           $old = '0.2.4'
           $new = '0.2.5'
-          foreach ($version in @($old, $new)) {
+          foreach ($version in @($old, $new, '0.2.4-rc.1', '0.2.6-rc.10')) {
             $output = Join-Path $env:RUNNER_TEMP "fixtures/$version"
             pnpm --filter @dinkster/desktop exec electron-builder --win nsis "--config.extraMetadata.version=$version" "--config.directories.output=$output" --publish never
             if ($LASTEXITCODE -ne 0) { throw "Packaging $version failed" }
@@ -65,7 +65,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [update, corruption, downgrade]
+        scenario:
+          [update, corruption, downgrade, rc-update, rc-downgrade, signature]
     defaults:
       run:
         shell: pwsh
@@ -85,25 +86,61 @@ jobs:
         with:
           name: windows-update-fixtures
           path: fixtures
+      - name: Acquire the signed release for publisher refusal
+        if: matrix.scenario == 'signature'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: desktop-v0.2.5-rc.1
+          DESKTOP_SOURCE_COMMIT: 75655bc8130e71c7ee622e916dc4b482afd85b6e
+          DINKSTER_VERIFY_WORK: ${{ runner.temp }}/published-update
+        run: node packages/desktop/scripts/download-update-releases.mjs
       - name: Install and exercise the real updater
         env:
           SCENARIO: ${{ matrix.scenario }}
         run: |
           if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
           Get-ChildItem Env: | Where-Object { $_.Name -match 'TOKEN|SECRET|PASSWORD|CREDENTIAL|^GIT_' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
-          $installed = if ($env:SCENARIO -eq 'downgrade') { '0.2.5' } else { '0.2.4' }
-          $available = if ($env:SCENARIO -eq 'downgrade') { '0.2.4' } else { '0.2.5' }
+          $installed = switch ($env:SCENARIO) {
+            'downgrade' { '0.2.5' }
+            'rc-update' { '0.2.4-rc.1' }
+            'rc-downgrade' { '0.2.6-rc.10' }
+            default { '0.2.4' }
+          }
+          $available = switch ($env:SCENARIO) {
+            'downgrade' { '0.2.4' }
+            'rc-downgrade' { '0.2.4-rc.1' }
+            { $_ -in @('rc-update', 'signature') } { '0.2.6-rc.10' }
+            default { '0.2.5' }
+          }
+          $feed = Join-Path $env:RUNNER_TEMP feed
+          New-Item -ItemType Directory $feed | Out-Null
+          Copy-Item "fixtures/$available/*" $feed
+          if ($env:SCENARIO -eq 'update') { Copy-Item 'fixtures/0.2.6-rc.10/*' $feed }
+          if ($env:SCENARIO -eq 'rc-update') { Copy-Item 'fixtures/0.2.5/*' $feed }
           $destination = Join-Path $env:RUNNER_TEMP 'installed/Dinkster Desktop'
           if (Test-Path $destination) { throw 'Installation must be fresh' }
           $installer = Get-Item "fixtures/$installed/*-Setup.exe"
+          if ($env:SCENARIO -eq 'signature') {
+            $signed = Get-Content (Join-Path $env:RUNNER_TEMP published-update/releases.json) -Raw | ConvertFrom-Json
+            $installer = Get-Item (Join-Path $signed.current.directory $signed.current.archive)
+            $signature = Get-AuthenticodeSignature $installer.FullName
+            if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate -or $signature.SignerCertificate.Subject -notmatch 'CN=Jedrzej Kosinski(,|$)') { throw 'Signed refusal control requires the valid timestamped published installer' }
+          }
           $process = Start-Process $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
           $env:DINKSTER_UPDATE_OLD_EXECUTABLE = Join-Path $destination 'Dinkster Desktop.exe'
-          $env:DINKSTER_UPDATE_RELEASE = (Resolve-Path "fixtures/$available").Path
+          if ($env:SCENARIO -eq 'signature') {
+            $signature = Get-AuthenticodeSignature $env:DINKSTER_UPDATE_OLD_EXECUTABLE
+            if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate -or $signature.SignerCertificate.Subject -notmatch 'CN=Jedrzej Kosinski(,|$)') { throw 'Installed executable signature invalid' }
+            $unsigned = Get-Item (Join-Path $feed '*-Setup.exe')
+            if ((Get-AuthenticodeSignature $unsigned.FullName).Status -ne 'NotSigned') { throw 'Refusal candidate must be unsigned' }
+          }
+          $env:DINKSTER_UPDATE_RELEASE = $feed
           $env:DINKSTER_UPDATE_EXPECTED_VERSION = $available
           $env:DINKSTER_UPDATE_PROOF_ROOT = Join-Path $env:RUNNER_TEMP 'update-proof'
           $env:DINKSTER_UPDATE_CORRUPT = if ($env:SCENARIO -eq 'corruption') { '1' } else { '0' }
-          $env:DINKSTER_UPDATE_EXPECT_UNAVAILABLE = if ($env:SCENARIO -eq 'downgrade') { '1' } else { '0' }
+          $env:DINKSTER_UPDATE_EXPECT_SIGNATURE_REFUSAL = if ($env:SCENARIO -eq 'signature') { '1' } else { '0' }
+          $env:DINKSTER_UPDATE_EXPECT_UNAVAILABLE = if ($env:SCENARIO -in @('downgrade', 'rc-downgrade')) { '1' } else { '0' }
           node packages/e2e/scripts/verify-shell-update.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Installed update verification failed' }
       - uses: actions/upload-artifact@v4

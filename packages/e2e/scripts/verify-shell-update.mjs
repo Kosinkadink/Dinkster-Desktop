@@ -17,6 +17,11 @@ const corrupt = process.env.DINKSTER_UPDATE_CORRUPT === '1'
 const unavailable = process.env.DINKSTER_UPDATE_EXPECT_UNAVAILABLE === '1'
 const signatureRefusal =
   process.env.DINKSTER_UPDATE_EXPECT_SIGNATURE_REFUSAL === '1'
+const publicFeed = process.env.DINKSTER_UPDATE_PUBLIC_FEED === '1'
+assert(
+  !publicFeed || !(corrupt || unavailable || signatureRefusal),
+  'Negative controls require the isolated feed',
+)
 if (process.platform === 'win32') {
   assert(
     process.env.GITHUB_ACTIONS === 'true' &&
@@ -87,7 +92,8 @@ const env = Object.fromEntries(
   ),
 )
 env.DINKSTER_DESKTOP_DATA = join(root, 'data')
-env.DINKSTER_UPDATE_FEED_URL = `http://127.0.0.1:${server.address().port}`
+if (!publicFeed)
+  env.DINKSTER_UPDATE_FEED_URL = `http://127.0.0.1:${server.address().port}`
 env.XDG_CONFIG_HOME = join(root, 'config')
 env.XDG_CACHE_HOME = join(root, 'cache')
 env.APPDATA = join(root, 'roaming')
@@ -113,10 +119,13 @@ if (process.platform === 'win32') {
 env.APPIMAGE_EXTRACT_AND_RUN = '1'
 env.TEMP = env.TMP = join(root, 'temp')
 await mkdir(env.TEMP)
-const launch = (path = executable) =>
+const launch = (path = executable, recordNetwork = false) =>
   electron.launch({
     executablePath: path,
-    args: ['--no-sandbox'],
+    args: [
+      '--no-sandbox',
+      ...(recordNetwork ? [`--log-net-log=${join(root, 'network.json')}`] : []),
+    ],
     env,
     timeout: 120_000,
   })
@@ -126,7 +135,7 @@ await writeFile(sentinel, 'retained user data\n')
 let app
 let installerDriver
 try {
-  app = await launch()
+  app = await launch(executable, publicFeed)
   const before = await app.evaluate(({ app }) => ({
     packaged: app.isPackaged,
     version: app.getVersion(),
@@ -138,10 +147,11 @@ try {
   await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
   const channel = before.version.includes('-rc.') ? 'rc' : 'latest'
   const manifest = `${channel}${process.platform === 'linux' ? '-linux' : ''}.yml`
-  assert(
-    requests.some((request) => request.name === manifest),
-    'Startup must request its own channel manifest',
-  )
+  if (!publicFeed)
+    assert(
+      requests.some((request) => request.name === manifest),
+      'Startup must request its own channel manifest',
+    )
   assert(
     requests
       .filter((request) => request.name.endsWith('.yml'))
@@ -249,6 +259,24 @@ try {
     await page.screenshot({ path: join(root, 'download-ready.png') })
     await app.close()
     app = undefined
+    if (publicFeed) {
+      const network = await readFile(join(root, 'network.json'), 'utf8')
+      assert(
+        network.includes(
+          'https://github.com/Kosinkadink/Dinkster-Desktop/releases/',
+        ),
+        'The default public release feed must be requested',
+      )
+      assert(
+        network.includes(manifest),
+        'The public feed must request its own channel manifest',
+      )
+      assert.equal(
+        requests.length,
+        0,
+        'A public-feed update must not use the loopback feed',
+      )
+    }
     // Do not attach Playwright to the installing process: its replacement does
     // not carry the inspector endpoint and can start before attachment finishes.
     if (process.platform === 'win32') {

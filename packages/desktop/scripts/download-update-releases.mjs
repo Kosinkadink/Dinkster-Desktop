@@ -14,6 +14,9 @@ assert(process.env.DINKSTER_VERIFY_WORK && /^desktop-v/.test(tag ?? ''))
 const version = tag.slice('desktop-v'.length)
 assert(valid(version) && /^[a-f0-9]{40}$/.test(source ?? ''))
 const channel = version.includes('-rc.') ? 'rc' : 'latest'
+const linux = process.platform === 'linux'
+const metadataName = linux ? 'desktop-linux-release.json' : 'desktop-release.json'
+const manifestName = `${channel}${linux ? '-linux' : ''}.yml`
 const gh = (...args) => execFileSync('gh', args, { encoding: 'utf8' })
 const releases = []
 for (let page = 1; ; page += 1) {
@@ -25,10 +28,10 @@ function eligible(release) {
   const candidate = release.tag_name?.slice('desktop-v'.length)
   return !release.draft && release.tag_name?.startsWith('desktop-v') && valid(candidate)
     && (candidate.includes('-rc.') ? 'rc' : 'latest') === channel
-    && ['desktop-release.json', `${channel}.yml`].every((name) => release.assets.some((asset) => asset.name === name))
+    && [metadataName, manifestName].every((name) => release.assets.some((asset) => asset.name === name))
 }
 const current = releases.find((release) => release.tag_name === tag)
-assert(current && eligible(current), 'The newly published Windows update feed must exist')
+assert(current && eligible(current), 'The newly published platform update feed must exist')
 assert.equal(current.prerelease, channel === 'rc')
 const previous = releases.filter((release) => eligible(release) && lt(release.tag_name.slice('desktop-v'.length), version))
   .sort((a, b) => rcompare(a.tag_name.slice('desktop-v'.length), b.tag_name.slice('desktop-v'.length)))[0]
@@ -37,8 +40,8 @@ async function download(release, folder) {
   const directory = join(root, folder)
   await mkdir(directory)
   const releaseVersion = release.tag_name.slice('desktop-v'.length)
-  const archive = `Dinkster-Desktop-${releaseVersion}-Setup.exe`
-  for (const name of ['desktop-release.json', archive, `${archive}.blockmap`, `${channel}.yml`]) {
+  const archive = linux ? `Dinkster-Desktop-${releaseVersion}-linux-x86_64.AppImage` : `Dinkster-Desktop-${releaseVersion}-Setup.exe`
+  for (const name of [metadataName, archive, ...(!linux ? [`${archive}.blockmap`] : []), manifestName]) {
     assert.equal(basename(name), name)
     const asset = release.assets.find((item) => item.name === name)
     assert(asset, `Missing published asset ${name}`)
@@ -47,7 +50,7 @@ async function download(release, folder) {
     assert.equal(bytes.length, asset.size)
     if (asset.digest) assert.equal(`sha256:${createHash('sha256').update(bytes).digest('hex')}`, asset.digest)
   }
-  const metadata = JSON.parse(await readFile(join(directory, 'desktop-release.json'), 'utf8'))
+  const metadata = JSON.parse(await readFile(join(directory, metadataName), 'utf8'))
   assert.equal(metadata.repository, repository)
   assert.equal(metadata.version, releaseVersion)
   assert.equal(metadata.archive, archive)
@@ -57,7 +60,7 @@ async function download(release, folder) {
   const bytes = await readFile(join(directory, archive))
   assert.equal(metadata.size, bytes.length)
   assert.equal(metadata.sha256, createHash('sha256').update(bytes).digest('hex'))
-  await verifyUpdateFeed(directory, releaseVersion, 'win32')
+  await verifyUpdateFeed(directory, releaseVersion, linux ? 'linux' : 'win32')
   return { directory, archive, version: releaseVersion, commit, tag: release.tag_name }
 }
 const receipt = { current: await download(current, 'current'), previous: previous ? await download(previous, 'previous') : null }

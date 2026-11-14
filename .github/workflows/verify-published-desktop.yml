@@ -83,6 +83,7 @@ jobs:
             $env:DINKSTER_UPDATE_PROOF_ROOT = Join-Path $env:DINKSTER_VERIFY_WORK 'update-proof'
             $env:DINKSTER_UPDATE_CORRUPT = if ($env:SCENARIO -eq 'corruption') { '1' } else { '0' }
             $env:DINKSTER_UPDATE_EXPECT_UNAVAILABLE = if ($env:SCENARIO -eq 'downgrade') { '1' } else { '0' }
+            $env:DINKSTER_UPDATE_PUBLIC_FEED = if ($env:SCENARIO -eq 'update') { '1' } else { '0' }
             node packages/e2e/scripts/verify-shell-update.mjs
           }
           if ($LASTEXITCODE -ne 0) { throw 'Published installed verification failed' }
@@ -97,5 +98,90 @@ jobs:
             ${{ env.DINKSTER_VERIFY_WORK }}/update-proof/*.json
             ${{ env.DINKSTER_VERIFY_WORK }}/update-proof/*.png
             ${{ env.DINKSTER_VERIFY_WORK }}/update-proof/*.txt
+          retention-days: 7
+          if-no-files-found: ignore
+
+  linux:
+    name: Published Linux - ${{ matrix.scenario }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [current, update, corruption, downgrade]
+    env:
+      DINKSTER_ACCELERATOR: cpu
+      CUDA_VISIBLE_DEVICES: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - run: pnpm install --frozen-lockfile
+      - run: sudo apt-get update && sudo apt-get install -y xvfb libasound2t64 libatk-bridge2.0-0 libgbm1
+      - run: echo "DINKSTER_VERIFY_WORK=$RUNNER_TEMP/published-update" >> "$GITHUB_ENV"
+      - name: Acquire and verify immutable published bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DESKTOP_SOURCE_COMMIT: ${{ inputs.source }}
+        run: node packages/desktop/scripts/download-update-releases.mjs
+      - name: Execute the published AppImage without acquisition credentials
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          while IFS= read -r name; do unset "$name"; done < <(compgen -e | grep -Ei 'TOKEN|SECRET|PASSWORD|CREDENTIAL|^GIT_')
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          node --input-type=module <<'JS'
+          import { chmod, cp, mkdir, readFile } from 'node:fs/promises'
+          import { join } from 'node:path'
+          import { execFileSync } from 'node:child_process'
+          const root = process.env.DINKSTER_VERIFY_WORK
+          const releases = JSON.parse(await readFile(join(root, 'releases.json'), 'utf8'))
+          const scenario = process.env.SCENARIO
+          if (scenario !== 'current' && !releases.previous) {
+            console.log('Bootstrap only: no older updater-capable release; cross-version acceptance remains OPEN.')
+            process.exit(0)
+          }
+          const installed = ['update', 'corruption'].includes(scenario) ? releases.previous : releases.current
+          const directory = join(root, 'installed')
+          await mkdir(directory)
+          const executable = join(directory, installed.archive)
+          await cp(join(installed.directory, installed.archive), executable)
+          await chmod(executable, 0o755)
+          if (scenario === 'current') {
+            process.env.DINKSTER_DESKTOP_EXECUTABLE = executable
+            process.env.DINKSTER_DESKTOP_VERIFY_ROOT = join(root, 'default-feed')
+            process.env.DINKSTER_VERIFY_PUBLIC_UPDATE = '1'
+            execFileSync('xvfb-run', ['-a', 'node', 'packages/e2e/scripts/verify-desktop-install.mjs'], { stdio: 'inherit' })
+          } else {
+            const available = scenario === 'downgrade' ? releases.previous : releases.current
+            process.env.DINKSTER_UPDATE_OLD_EXECUTABLE = executable
+            process.env.DINKSTER_UPDATE_RELEASE = available.directory
+            process.env.DINKSTER_UPDATE_EXPECTED_VERSION = available.version
+            process.env.DINKSTER_UPDATE_PROOF_ROOT = join(root, 'update-proof')
+            process.env.DINKSTER_UPDATE_CORRUPT = scenario === 'corruption' ? '1' : '0'
+            process.env.DINKSTER_UPDATE_EXPECT_UNAVAILABLE = scenario === 'downgrade' ? '1' : '0'
+            process.env.DINKSTER_UPDATE_PUBLIC_FEED = scenario === 'update' ? '1' : '0'
+            execFileSync('xvfb-run', ['-a', 'node', 'packages/e2e/scripts/verify-shell-update.mjs'], { stdio: 'inherit' })
+          }
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: published-linux-${{ matrix.scenario }}
+          path: |
+            ${{ runner.temp }}/published-update/*.json
+            ${{ runner.temp }}/published-update/default-feed/*.json
+            ${{ runner.temp }}/published-update/default-feed/*.png
+            ${{ runner.temp }}/published-update/update-proof/*.json
+            ${{ runner.temp }}/published-update/update-proof/*.png
           retention-days: 7
           if-no-files-found: ignore

@@ -1,15 +1,15 @@
 import { copyFile, mkdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { writeFileAtomic } from './atomic-file.js'
-import { configuredUpdateFeed } from './update-feed.js'
+import { configureUpdateFeed, type UpdateFeedTarget } from './update-feed.js'
 
 const MARKER_VERSION = 1
 const MAX_INSTALL_ATTEMPTS = 3
 
-export interface ShellUpdaterTarget {
+export interface ShellUpdaterTarget extends UpdateFeedTarget {
   autoDownload: boolean
   autoInstallOnAppQuit: boolean
-  checkForUpdates(): Promise<{ readonly updateInfo?: { readonly version: string } } | null>
+  checkForUpdates(): Promise<{ readonly isUpdateAvailable: boolean; readonly updateInfo?: { readonly version: string } } | null>
   downloadUpdate(): Promise<readonly string[]>
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void
 }
@@ -91,9 +91,12 @@ export class ShellUpdater {
   }
 
   private async startOnce(): Promise<ShellUpdateStatus> {
-    const feed = configuredUpdateFeed(this.options.updateFeed)
-    if (!feed) return this.setStatus('idle', 'The production update feed will be enabled with public releases')
     if (!this.options.packaged) return this.setStatus('current', 'Update checks are available in installed builds')
+    try {
+      await configureUpdateFeed(this.options.target, this.options.updateFeed, this.options.currentVersion)
+    } catch {
+      return this.setStatus('failed', 'Unable to configure the Dinkster Desktop update feed')
+    }
 
     const marker = await readMarker(this.marker)
     if (marker === 'corrupt') return this.setStatus('failed', 'Update retry state is invalid; installation is blocked')
@@ -108,14 +111,14 @@ export class ShellUpdater {
 
   private async downloadStartupUpdate(previous: AttemptMarker['pending']): Promise<ShellUpdateStatus> {
     this.setStatus('checking', 'Checking for a Dinkster Desktop update')
-    let result: { readonly updateInfo?: { readonly version: string } } | null
+    let result: { readonly isUpdateAvailable: boolean; readonly updateInfo?: { readonly version: string } } | null
     try {
       result = await this.options.target.checkForUpdates()
     } catch {
       return this.setStatus('failed', 'Unable to check for a Dinkster Desktop update')
     }
     const version = result?.updateInfo?.version
-    if (!version || version === this.options.currentVersion) return this.setStatus('current', 'Dinkster Desktop is up to date')
+    if (!result?.isUpdateAvailable || !version || version === this.options.currentVersion) return this.setStatus('current', 'Dinkster Desktop is up to date')
     if (previous?.version === version && previous.attempts >= MAX_INSTALL_ATTEMPTS) {
       return this.setStatus('failed', `Dinkster Desktop ${version} failed to install three times`)
     }

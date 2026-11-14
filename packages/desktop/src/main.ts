@@ -39,7 +39,6 @@ import {
   RemoteWorkerLifecycle,
 } from './remote-workers.js'
 import { ENGINE_RELEASE } from './release.js'
-import { configureUpdateFeed } from './update-feed.js'
 import { ShellUpdater } from './shell-updater.js'
 import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
 import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } from './environment.js'
@@ -101,7 +100,7 @@ let quitting = false
 const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirectory()
 let backendPort = 3639
 let selection: EngineSelection | undefined
-const updateFeed = configureUpdateFeed(autoUpdater, process.env['DINKSTER_UPDATE_FEED_URL'])
+const updateFeed = process.env['DINKSTER_UPDATE_FEED_URL']
 const shellUpdater = new ShellUpdater({ target: autoUpdater, dataDirectory, currentVersion: app.getVersion(), updateFeed, packaged: app.isPackaged })
 const lifecycleQueue = new LifecycleQueue()
 const windowQueue = new LifecycleQueue()

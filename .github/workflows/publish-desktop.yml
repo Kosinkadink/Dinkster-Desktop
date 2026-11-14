@@ -60,6 +60,11 @@ jobs:
         with:
           name: desktop-release-assets
           path: release-assets
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Publish verified assets on the existing tag
         env:
           GH_TOKEN: ${{ github.token }}

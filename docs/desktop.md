@@ -111,6 +111,14 @@ those files or defines substitute formats for them.
 
 ## Environment commands
 
+Before setup, update or catalog inspection uses a release channel, Desktop
+verifies its Ed25519 envelope with independently embedded public keys and
+checks that its signed channel name matches the request. This applies to
+local copies and every mirror, including Dinkster-operated hosts. Mirrors may
+use credential-free HTTPS without a hostname allowlist; HTTP is restricted
+to numeric loopback addresses. Referenced tools still require their pinned
+hashes and sizes. Installed-engine operations do not consult moving channels.
+
 The project manager delegates setup, update, rollback, move, doctor, garbage
 collection, and named engine start/stop to `dinkster-env`. Mutations show the
 command's read-only plan first and require confirmation. The confirmation

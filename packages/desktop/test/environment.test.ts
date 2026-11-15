@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -10,8 +10,29 @@ import { EnvironmentClient, type EnvironmentOperation, type EnvironmentRequest }
 import { channelTools } from '../src/environment-channel.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
+const trustedChannelKeys = vi.hoisted(() => ({} as Record<string, string>))
+vi.mock('../src/channel-signatures.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/channel-signatures.js')>()
+  return { ...actual, verifyChannel: (text: string, channel: string) => actual.verifyChannel(text, channel, trustedChannelKeys) }
+})
+const signingKey = generateKeyPairSync('ed25519')
+const publicBytes = signingKey.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32)
+const keyId = `sha256:${createHash('sha256').update(publicBytes).digest('hex')}`
+trustedChannelKeys[keyId] = publicBytes.toString('base64')
+
+function channelFixture(document: Record<string, unknown>, channel = 'nightly', privateKey = signingKey.privateKey): string {
+  // Fixtures use ASCII fields; the cross-language fixture covers Unicode ordering.
+  function canonical(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+    if (value !== null && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`
+    return JSON.stringify(value)
+  }
+  const signed = { ...document, channel }
+  return canonical({ signed, signatures: [{ keyId, signature: sign(null, Buffer.from(canonical(signed)), privateKey).toString('base64') }] })
+}
+
 const roots: string[] = []
-afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
+afterEach(async () => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
 
 function nativeToolsName(): string {
   const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
@@ -153,7 +174,7 @@ describe('Desktop dinkster-env command client', () => {
     await mkdir(join(root, 'channels'))
     const channel = join(root, 'channels', 'nightly.json')
     await writeFile(join(root, 'project.json'), JSON.stringify({ channel: 'nightly', mirrors: [root] }))
-    await writeFile(channel, JSON.stringify({ format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.1', signature: null }))
+    await writeFile(channel, channelFixture({ format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.1' }))
     for (const operation of ['setup', 'update', 'catalog'] as const) {
       await expect(client.run({ root, operation })).rejects.toThrow('DesktopVersionTooOld: channel requires Desktop 0.2.1')
       await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
@@ -163,7 +184,7 @@ describe('Desktop dinkster-env command client', () => {
       expect((await client.run({ root, operation }, true)).operation).toBe(operation)
     }
     for (const minimumDesktopVersion of ['0.2.0', '0.1.99']) {
-      await writeFile(channel, JSON.stringify({ format: 'dinkster.channel/1', minimumDesktopVersion }))
+      await writeFile(channel, channelFixture({ format: 'dinkster.channel/1', minimumDesktopVersion }))
       expect((await client.run({ root, operation: 'update' })).status).toBe('planned')
     }
     await client.dispose()
@@ -186,13 +207,37 @@ describe('Desktop dinkster-env command client', () => {
     await command.dispose()
   })
 
+  it('authenticates third-party mirror channels before selecting tools, without hostname bypasses', async () => {
+    const { root } = await commandFixture()
+    const tools = { manifest: 'https://mirror.example/tools-manifest.json', sha256: 'a'.repeat(64), release: 'https://mirror.example/tools' }
+    const document = { format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0', tools }
+    const signed = channelFixture(document)
+    let response = signed
+    vi.stubGlobal('fetch', async () => new Response(response))
+    const request = { root, operation: 'setup' as const, channel: 'nightly' as const, mirrors: ['https://mirror.example'] }
+    expect(await channelTools(request, '0.2.0')).toEqual(tools)
+    for (const refused of [
+      JSON.stringify({ ...document, signature: null }),
+      signed.replace('a'.repeat(64), 'b'.repeat(64)),
+      channelFixture(document, 'stable'),
+      channelFixture(document, 'nightly', generateKeyPairSync('ed25519').privateKey),
+    ]) {
+      response = refused
+      await expect(channelTools(request, '0.2.0')).rejects.toThrow('no mirror supplied a valid trusted channel')
+      await expect(channelTools({ ...request, mirrors: ['https://releases.dinkster.org'] }, '0.2.0')).rejects.toThrow('no mirror supplied a valid trusted channel')
+    }
+    response = signed
+    expect(await channelTools(request, '0.2.0')).toEqual(tools)
+    await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
+  })
+
   it('selects a channel tools pin before the packaged payload for a supported channel', async () => {
     const { root } = await commandFixture()
     await mkdir(join(root, 'channels'))
     const manifest = join(root, 'newer-tools.json')
     await writeFile(manifest, '{}')
-    await writeFile(join(root, 'channels', 'nightly.json'), JSON.stringify({
-      format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0', signature: null,
+    await writeFile(join(root, 'channels', 'nightly.json'), channelFixture({
+      format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0',
       tools: { manifest, sha256: 'a'.repeat(64), release: root },
     }))
     const client = new EnvironmentClient(undefined, undefined, undefined,
@@ -332,8 +377,8 @@ describe('Desktop dinkster-env command client', () => {
     await mkdir(release, { recursive: true })
     await writeFile(join(release, 'tools-manifest.json'), manifest)
     await writeFile(join(release, row.name), archive)
-    await writeFile(join(root, 'channels', 'nightly.json'), JSON.stringify({
-      format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0', signature: null,
+    await writeFile(join(root, 'channels', 'nightly.json'), channelFixture({
+      format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0',
       tools: { label, manifest: join(release, 'tools-manifest.json'), sha256, release },
     }))
 

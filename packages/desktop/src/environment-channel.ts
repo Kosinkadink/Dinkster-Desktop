@@ -2,6 +2,7 @@ import { isAbsolute, join, normalize } from 'node:path'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { download } from './io.js'
+import { verifyChannel } from './channel-signatures.js'
 import type { EnvironmentRequest } from './environment.js'
 import type { EnvironmentToolsInput } from './environment-tools.js'
 
@@ -51,14 +52,15 @@ export async function channelTools(request: EnvironmentRequest, desktopVersion: 
       if (isAbsolute(mirror)) text = await readFile(join(mirror, 'channels', `${channel}.json`), 'utf8')
       else {
         const url = new URL(mirror)
-        if (!['releases.dinkster.org', 'localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash) throw new Error('untrusted channel mirror')
+        const loopback = url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname)
+        if ((!loopback && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash) throw new Error('channel mirrors require credential-free HTTPS or loopback HTTP')
         const path = join(directory, 'channel.json')
         await download(new URL(`channels/${channel}.json`, `${url.href.replace(/\/$/, '')}/`).href, path, undefined, 8 * 1024 * 1024)
         text = await readFile(path, 'utf8')
       }
       if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw new Error('channel metadata exceeds size limit')
-      const value = JSON.parse(text) as Record<string, unknown>
-      if (value['format'] !== 'dinkster.channel/1' || typeof value['minimumDesktopVersion'] !== 'string' || !/^\d+\.\d+\.\d+$/.test(value['minimumDesktopVersion']) || (value['signature'] !== null && value['signature'] !== undefined)) throw new Error('unsupported channel metadata')
+      const value = verifyChannel(text, channel)
+      if (typeof value['minimumDesktopVersion'] !== 'string' || !/^\d+\.\d+\.\d+$/.test(value['minimumDesktopVersion'])) throw new Error('unsupported channel metadata')
       document = value
       break
     } catch {

@@ -148,9 +148,10 @@ try {
         '-I',
         '-c',
         `
-import importlib.metadata as metadata, json, sys
+import importlib.metadata as metadata, json, subprocess, sys
 from pathlib import Path
 from packaging.version import Version
+from packaging.specifiers import SpecifierSet
 from dinkster_workers import load_manifest
 from dinkster_workers.pack_wheel import pack_manifest_path
 root = Path(sys.argv[1])
@@ -159,13 +160,26 @@ assert Version(packages['dinkster']) >= Version('0.0.4')
 assert Version(packages['dinkster-inference']) >= Version('0.1.2')
 assert Version(packages['dinkster-frontend']) >= Version('0.1.0')
 lock = json.loads((root / 'dinkster.lock').read_text())
+minimums = json.loads(sys.argv[2])
 packs = {entry['pack']: entry['version'] for entry in lock['packs']}
+assert len(packs) == len(lock['packs'])
+assert packs.keys() == minimums.keys(), (packs, minimums)
 for name, version in packs.items():
+    assert Version(version) >= Version(minimums[name]), (name, version, minimums[name])
     manifest = load_manifest(pack_manifest_path(root / 'pack-sources' / name))
     assert manifest.compatibility.version == version, name
-print(json.dumps({'python': sys.executable, 'packages': packages, 'packs': packs}))
+    assert SpecifierSet(manifest.compatibility.engine).contains(packages['dinkster-engine'], prereleases=True), name
+    dependency_lock = json.loads((root / 'packs' / name / 'pack-lock.json').read_text())
+    assert dependency_lock['pack'] == name
+    selected = [package['version'] for package in dependency_lock['packages'] if package['name'] == name]
+    assert selected == [version], (name, selected, version)
+    pack_python = root / 'packs' / name / ('Scripts/python.exe' if sys.platform == 'win32' else 'bin/python')
+    actual = subprocess.check_output([str(pack_python), '-I', '-c', 'import importlib.metadata as m, sys; print(m.version(sys.argv[1]))', name], text=True).strip()
+    assert actual == version, (name, actual, version)
+print(json.dumps({'python': sys.executable, 'packages': packages, 'packs': packs, 'sourceLock': lock}))
 `,
         generation,
+        JSON.stringify(manifest.defaultPacks),
       ],
       { encoding: 'utf8', env },
     ),
@@ -176,7 +190,6 @@ print(json.dumps({'python': sys.executable, 'packages': packages, 'packs': packs
     installed.packages['dinkster-frontend'],
     (channel.frontend ?? manifest.frontend).version,
   )
-  assert.deepEqual(installed.packs, manifest.defaultPacks)
   const toolsTrees = []
   for (const name of await readdir(env.TEMP)) {
     if (!name.startsWith('dinkster-tools-')) continue

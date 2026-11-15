@@ -188,7 +188,7 @@ print(json.dumps(build(Path(sys.argv[1]),'fixture-cpu',port)))
   const project = {
     id: 'studio',
     name: 'Running space integration',
-    channel: 'main',
+    channel: 'nightly',
     root: fixture.root,
     engines: [
       { id: 'main', name: 'main', kind: 'local', gpus: [], port: fixture.port },

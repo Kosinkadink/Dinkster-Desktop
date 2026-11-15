@@ -33,7 +33,7 @@ export function parseProject(value: unknown): DesktopProject {
   if (!value || typeof value !== 'object') throw new Error('invalid Desktop project')
   const row = value as Record<string, unknown>
   if (!validProjectId(row['id']) || typeof row['name'] !== 'string' || !row['name'].trim()
-    || row['name'].length > 128 || (row['channel'] !== 'stable' && row['channel'] !== 'main')
+    || row['name'].length > 128 || (row['channel'] !== 'stable' && row['channel'] !== 'nightly')
     || !Array.isArray(row['engines']) || row['engines'].length === 0) throw new Error('invalid Desktop project')
   const engines: ProjectEngine[] = row['engines'].map((entry: unknown) => {
     if (!entry || typeof entry !== 'object') throw new Error('invalid engine binding')

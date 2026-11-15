@@ -595,9 +595,11 @@ export class EnvironmentClient {
         throw error
       }
       const result = resultFrom(stdout, request.operation, this.wsl.distribution)
-      if (result.root !== request.root) throw new Error('dinkster-env returned a different project root')
+      if (wslLinuxPath(this.wsl.distribution, result.root) !== location.path) throw new Error('dinkster-env returned a different project root')
       if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))
-      return result
+      return { ...result, root: request.root,
+        ...(result.packPlan ? { packPlan: { ...result.packPlan, root: request.root } } : {}),
+        ...(result.space ? { space: { ...result.space, project: request.root } } : {}) }
     }
     if (toolsInput) {
       const key = JSON.stringify(toolsInput)

@@ -1,7 +1,89 @@
-import { describe, expect, it } from 'vitest'
-import { wslLinuxPath, wslLocation, wslWindowsPath } from '../src/wsl.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { WslHost, wslLinuxPath, wslLocation, wslWindowsPath } from '../src/wsl.js'
+import { EnvironmentClient } from '../src/environment.js'
+
+vi.mock('node:path', async (original) => {
+  const module = await original<typeof import('node:path')>()
+  return { ...module, isAbsolute: module.win32.isAbsolute }
+})
+
+const execute = vi.hoisted(() => vi.fn())
+vi.mock('node:child_process', async (original) => {
+  const module = await original<typeof import('node:child_process')>()
+  const { promisify } = await import('node:util')
+  return { ...module, execFile: Object.assign(vi.fn(), { [promisify.custom]: execute }) }
+})
+
+const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+const architecture = Object.getOwnPropertyDescriptor(process, 'arch')!
+afterEach(() => {
+  Object.defineProperty(process, 'platform', platform)
+  Object.defineProperty(process, 'arch', architecture)
+  execute.mockReset()
+})
 
 const distribution = 'Dinkster-Desktop-012345abcdef'
+
+describe('private WSL readiness', () => {
+  const tools = { manifest: 'https://example.invalid/tools.json', sha256: 'a'.repeat(64), release: 'https://example.invalid/release' }
+
+  function host(): WslHost {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    Object.defineProperty(process, 'arch', { value: 'x64' })
+    return new WslHost('C:\\Desktop data', tools)
+  }
+
+  it('reports missing WSL without installing it or selecting a user distribution', async () => {
+    const service = host()
+    execute.mockRejectedValue(new Error('not installed'))
+    expect(await service.status()).toMatchObject({ available: false, ready: false, detail: expect.stringContaining('wsl --install --no-distribution') })
+    await expect(service.prepare()).rejects.toThrow('wsl --install --no-distribution')
+    execute.mockResolvedValue({ stdout: Buffer.from('Ubuntu-24.04\r\n', 'utf16le') })
+    expect(await service.status()).toMatchObject({ available: false, ready: false, detail: expect.stringContaining('wsl --update') })
+  })
+
+  it('accepts Windows WSL aliases but refuses a response for another Linux project', async () => {
+    const service = host()
+    let responseRoot = '/home/dinkster/projects/studio'
+    const run = vi.spyOn(service, 'run').mockImplementation(async () => JSON.stringify({
+      format: 'dinkster.environment-result/1', operation: 'status', status: 'clean',
+      root: responseRoot, current: null, plan: [],
+    }))
+    const client = new EnvironmentClient('dinkster-env', [], undefined, undefined, undefined, service)
+    try {
+      const canonical = service.projectRoot('studio')
+      const alias = canonical.replace('wsl.localhost', 'wsl$').replace(service.distribution, service.distribution.toUpperCase())
+      expect((await client.run({ root: canonical, operation: 'status' })).root).toBe(canonical)
+      expect((await client.run({ root: alias, operation: 'status' })).root).toBe(alias)
+      responseRoot = '/home/dinkster/projects/Studio'
+      await expect(client.run({ root: alias, operation: 'status' })).rejects.toThrow('different project root')
+    } finally {
+      run.mockRestore()
+      await client.dispose()
+    }
+  })
+
+  it('decodes UTF-16LE distro lists and refuses to adopt an unowned private name', async () => {
+    const service = host()
+    let owned = false
+    execute.mockImplementation(async (file: string, args: string[]) => {
+      if (file !== 'wsl.exe') throw new Error('not a WSL command')
+      const output = (text: string) => ({ stdout: Buffer.from(text, 'utf16le') })
+      if (args[0] === '--version') return output('WSL version: 2.6.3.0')
+      if (args[0] === '--help') return output('--name --location --no-launch --version')
+      if (args[0] === '--list') return output(`Ubuntu-24.04\r\n${service.distribution}\r\n`)
+      if (args.includes('/etc/dinkster-desktop-owner')) return output(owned ? service.distribution : 'another-owner')
+      if (args.includes('/etc/wsl.conf')) return output('[automount]\nenabled=false\n[interop]\nenabled=false\nappendWindowsPath=false\n[user]\ndefault=dinkster')
+      if (args.includes('uname')) return output('6.6.87.2-microsoft-standard-WSL2')
+      if (args.includes('/usr/bin/bwrap') || args.includes('! mountpoint -q /mnt/c')) return output('')
+      throw new Error('attempted an unexpected mutation')
+    })
+    expect(await service.status()).toMatchObject({ available: true, ready: false, detail: expect.stringContaining('not owned') })
+    await expect(service.prepare()).rejects.toThrow('not owned')
+    owned = true
+    expect(await service.status()).toMatchObject({ available: true, ready: true })
+  })
+})
 
 describe('private WSL disk paths', () => {
   it('round trips Linux-disk project paths without treating a Windows drive as Linux storage', () => {

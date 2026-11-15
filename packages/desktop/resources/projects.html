@@ -67,6 +67,13 @@
             <label>Project name<input id="local-name" required maxlength="128" placeholder="Local studio"></label>
             <label>Install root<input id="local-root" required placeholder="Absolute project directory"></label>
             <label>Channel<select id="local-channel"><option value="stable">Stable</option><option value="nightly">Nightly</option></select></label>
+            <fieldset style="grid-column:1 / -1">
+              <legend>Pack sandboxing</legend>
+              <label><input id="local-sandbox" type="checkbox" disabled aria-describedby="sandbox-detail"> Sandbox local pack workers</label>
+              <p id="sandbox-detail" role="status">Install or select an engine, then check sandbox availability.</p>
+              <p>Off by default. Save the binding to keep this choice. Stop the engine before changing it; a requested sandbox never falls back to an unsandboxed run. In-process packs and remote workers are not sandboxed by this setting.</p>
+              <button id="check-sandbox" type="button">Check sandbox availability</button>
+            </fieldset>
             <label>Project kind<select id="local-kind"><option value="release">Published release</option><option value="development">Development - unpublished sources</option></select></label>
             <fieldset id="development-sources" hidden>
               <legend>Explicit development sources</legend>

@@ -34,6 +34,8 @@ export interface EnvironmentRequest {
   readonly port?: number
   readonly destination?: string
   readonly repair?: boolean
+  readonly sandbox?: boolean
+  readonly sandboxPacks?: boolean
   readonly engine?: string
   readonly gpus?: readonly string[]
   readonly packs?: readonly { readonly pack: string; readonly version: string }[]
@@ -102,7 +104,14 @@ export interface EnvironmentSpace {
 }
 
 /** The command owner's dinkster.environment-result/1 response, unchanged. */
+export interface SandboxReadiness {
+  readonly format: 'dinkster.sandbox-readiness/1'
+  readonly available: boolean
+  readonly detail: string
+}
+
 export interface EnvironmentResult {
+  readonly sandbox?: SandboxReadiness
   readonly format: 'dinkster.environment-result/1'
   readonly operation: EnvironmentOperation
   readonly sourceDescription?: string
@@ -336,6 +345,14 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     if (!Number.isInteger(request.port) || request.port < 1 || request.port > 65535) throw new Error('invalid supervisor port')
     args.push('--port', String(request.port))
   }
+  if (request.sandbox !== undefined) {
+    if (request.operation !== 'doctor' || typeof request.sandbox !== 'boolean' || request.repair) throw new Error('sandbox readiness requires a read-only doctor query')
+    if (request.sandbox) args.push('--sandbox')
+  }
+  if (request.sandboxPacks !== undefined) {
+    if (request.operation !== 'start' || typeof request.sandboxPacks !== 'boolean') throw new Error('pack sandbox selection requires start and a boolean')
+    if (request.sandboxPacks) args.push('--sandbox-packs')
+  }
   if (request.repair) args.push('--repair')
   if (request.engine !== undefined) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(request.engine)) throw new Error('invalid engine name')
@@ -514,6 +531,11 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
   if (operation === 'packs-apply' && row['status'] !== 'error'
     && (row['status'] !== 'applied' || row['current'] === null || !Array.isArray(row['engines']))) {
     throw new Error('unsupported dinkster-env pack activation response')
+  }
+  if (row['sandbox'] !== undefined) {
+    const sandbox = row['sandbox'] as Record<string, unknown> | null
+    if (!sandbox || sandbox['format'] !== 'dinkster.sandbox-readiness/1'
+      || typeof sandbox['available'] !== 'boolean' || typeof sandbox['detail'] !== 'string' || !sandbox['detail'].trim()) throw new Error('invalid pack sandbox readiness response')
   }
   return value as EnvironmentResult
 }

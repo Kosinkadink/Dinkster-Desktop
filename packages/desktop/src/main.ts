@@ -413,9 +413,21 @@ ipcMain.handle('desktop:projects-list', async (event) => {
     }
   })) }
 })
+async function requirePackSandbox(project: DesktopProject): Promise<void> {
+  if (!project.sandboxPacks) return
+  const result = await environmentClient.run({ root: project.root!, operation: 'doctor', sandbox: true })
+  if (!result.sandbox?.available) throw new Error(result.sandbox?.detail ?? 'The selected engine does not report pack sandbox readiness. Update the engine and environment tools first.')
+}
+
+ipcMain.handle('desktop:projects-sandbox', async (event, root: string) => {
+  trustedProjectIpc(event)
+  return (await environmentClient.run({ root, operation: 'doctor', sandbox: true })).sandbox
+})
 ipcMain.handle('desktop:projects-save', (event, value: unknown) => serializeLifecycle(async () => {
   trustedProjectIpc(event)
-  await writeProjects(dataDirectory, saveProject(await readProjects(dataDirectory), value))
+  const project = parseProject(value)
+  await requirePackSandbox(project)
+  await writeProjects(dataDirectory, saveProject(await readProjects(dataDirectory), project))
 }))
 ipcMain.handle('desktop:projects-remove', (event, projectId: unknown) => serializeLifecycle(async () => {
   trustedProjectIpc(event)
@@ -462,6 +474,7 @@ ipcMain.handle('desktop:projects-plan', (event, value: unknown, input: Environme
   trustedProjectIpc(event)
   pendingProjectPlan = undefined
   const project = parseProject(value)
+  await requirePackSandbox(project)
   if (!project.root || input.root !== project.root
     || !['develop', 'setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'status', 'space', 'source'].includes(input.operation)
     || input.sourceApproval !== undefined || input.frontendApproval !== undefined || input.historyEntry !== undefined) throw new Error('invalid local project operation')
@@ -530,8 +543,10 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   if (engine.kind === 'remote') url = engine.url
   else {
     const root = project!.root!
+    await requirePackSandbox(project!)
     const result = await environmentClient.run({
       root, operation: 'start', engine: engine.id, gpus: engine.gpus,
+      sandboxPacks: project!.sandboxPacks === true,
       ...(engine.port === undefined ? {} : { port: engine.port }),
     }, true)
     if (result.status !== 'applied') throw new Error('dinkster-env did not start the selected engine')

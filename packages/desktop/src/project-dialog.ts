@@ -1,10 +1,11 @@
 import type { DesktopProject, DesktopProjects } from './projects.js'
-import type { EnvironmentRequest, EnvironmentResult } from './environment.js'
+import type { EnvironmentRequest, EnvironmentResult, SandboxReadiness } from './environment.js'
 import type { HardwareDetection, VariantPlan } from './hardware.js'
 
 export interface ProjectDialogBridge {
   list(): Promise<DesktopProjects>
   save(project: DesktopProject): Promise<void>
+  sandbox(root: string): Promise<SandboxReadiness | undefined>
   remove(projectId: string): Promise<void>
   open(projectId: string, engineId: string): Promise<void>
   inspect(request: EnvironmentRequest): Promise<{ result: EnvironmentResult; hardware: HardwareDetection; plan: VariantPlan }>
@@ -38,6 +39,7 @@ function localProject(): DesktopProject {
   return {
     id: existing?.id ?? newProjectId, name: field('local-name'), channel, root: field('local-root'),
     engines: [...(existing?.engines.filter((entry) => entry.id !== engineId) ?? []), engine],
+    sandboxPacks: document.querySelector<HTMLInputElement>('#local-sandbox')!.checked,
     ...(field('local-kind') === 'development' ? { development: {
       engine: field('development-engine'),
       packs: field('development-packs').split('\n').map((path) => path.trim()).filter(Boolean),
@@ -195,6 +197,47 @@ document.querySelector<HTMLFormElement>('#create')!.addEventListener('submit', (
   })
 })
 
+let sandboxCheck = 0
+let sandboxAvailable = false
+
+function resetSandbox(): void {
+  sandboxCheck++
+  sandboxAvailable = false
+  const toggle = document.querySelector<HTMLInputElement>('#local-sandbox')!
+  toggle.disabled = !toggle.checked
+  document.querySelector<HTMLElement>('#sandbox-detail')!.textContent = 'Install or select an engine, then check sandbox availability.'
+}
+
+async function checkSandbox(): Promise<void> {
+  const check = ++sandboxCheck
+  sandboxAvailable = false
+  const root = field('local-root')
+  const toggle = document.querySelector<HTMLInputElement>('#local-sandbox')!
+  const detail = document.querySelector<HTMLElement>('#sandbox-detail')!
+  // Keep a saved request checked when unavailable; only the user may turn it off.
+  toggle.disabled = !toggle.checked
+  detail.textContent = 'Checking the selected engine sandbox prerequisites...'
+  try {
+    const readiness = await bridge.sandbox(root)
+    if (check !== sandboxCheck || root !== field('local-root')) return
+    sandboxAvailable = readiness?.available === true
+    toggle.disabled = !sandboxAvailable && !toggle.checked
+    detail.textContent = readiness?.detail ?? 'The selected engine does not report pack sandbox readiness. Update the engine and environment tools first.'
+  } catch (error) {
+    if (check !== sandboxCheck || root !== field('local-root')) return
+    toggle.disabled = !toggle.checked
+    detail.textContent = `Pack sandboxing is not available: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+document.querySelector<HTMLInputElement>('#local-sandbox')!.addEventListener('change', (event) => {
+  const toggle = event.currentTarget as HTMLInputElement
+  if (!sandboxAvailable) { toggle.checked = false; toggle.disabled = true }
+})
+
+document.querySelector<HTMLButtonElement>('#check-sandbox')!.addEventListener('click', () => { void checkSandbox() })
+document.querySelector<HTMLInputElement>('#local-root')!.addEventListener('input', resetSandbox)
+
 function populateLocal(project: DesktopProject | undefined, engineId?: string): void {
   planToken = undefined
   document.querySelector<HTMLElement>('#plan-panel')!.hidden = true
@@ -214,6 +257,9 @@ function populateLocal(project: DesktopProject | undefined, engineId?: string): 
     'development-frontend-dev': project?.development?.frontendDev ?? '',
   })) document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`)!.value = value
   document.querySelector<HTMLInputElement>('#development-frontend-remote')!.checked = project?.development?.allowFrontendDevRemote === true
+  document.querySelector<HTMLInputElement>('#local-sandbox')!.checked = project?.sandboxPacks === true
+  resetSandbox()
+  if (project?.root) void checkSandbox()
   showDevelopment()
   document.querySelector<HTMLElement>('#source-settings')!.hidden = field('local-operation') !== 'source'
   clearHardware()

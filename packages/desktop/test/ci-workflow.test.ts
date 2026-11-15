@@ -48,6 +48,7 @@ const release = await load('release-desktop.yml')
 const publish = await load('publish-desktop.yml')
 const tagRelease = await load('release-from-pr-label.yml')
 const signed = await load('signed-package.yml')
+const development = await load('development-project.yml')
 
 describe('desktop workflows', () => {
   it('shares installer builds with tag publication and isolates manual signing', () => {
@@ -78,6 +79,7 @@ describe('desktop workflows', () => {
       expect(ours?.run, name).toBe(theirs?.run)
       expect(ours?.env, name).toEqual(theirs?.env)
     }
+    expect(job.steps?.find((step) => step.name === verify)?.run).toContain('resources/sandbox/wxc-exec.exe')
     expect(names(job.steps)).toContain('pnpm --filter @dinkster/desktop verify:installed')
     expect(names(job.steps)).toContain('Keep the signed installer')
     const source = JSON.stringify(signed)
@@ -116,6 +118,8 @@ describe('desktop workflows', () => {
     expect(windowsCommands).toContain(
       'pnpm --filter @dinkster/desktop verify:update-feed',
     )
+    expect(windowsCommands).toContain('node packages/desktop/scripts/verify-installed-mxc.mjs packages/desktop/release/win-unpacked/resources')
+    expect(full.jobs['windows-package']!.steps?.some((step) => step.uses === 'dtolnay/rust-toolchain@master' && step.with?.toolchain === 1.93)).toBe(true)
     const smokeCommands = full.jobs['desktop-smoke']!.steps?.flatMap(
       (step) => step.run ?? [],
     )
@@ -146,10 +150,18 @@ describe('desktop workflows', () => {
     const upload = full.jobs['windows-package']!.steps?.find((step) => step.uses === 'actions/upload-artifact@v4')
     expect(upload?.with?.['name']).toBe(download?.with?.['name'])
     expect(installed.steps?.map((step) => step.run)).toContain('pnpm --filter @dinkster/desktop verify:installed')
+    expect(installed.steps?.some((step) => step.run?.includes('verify-installed-mxc.mjs'))).toBe(true)
     expect(full.jobs['main-status']!.needs).toContain('windows-installed')
     const requireSuccess = full.jobs['main-status']!.steps?.find((step) => step.name === 'Require every lane to pass')
     expect(requireSuccess?.env?.['INSTALLED_RESULT']).toBe('${{ needs.windows-installed.result }}')
     expect(requireSuccess?.run).toContain('test "$INSTALLED_RESULT" = success')
+  })
+
+  it('installs the pinned MXC Rust toolchain before development Windows packaging', () => {
+    const rust = development.jobs['development']!.steps?.find((step) => step.uses === 'dtolnay/rust-toolchain@master')
+    expect(rust?.if).toBe("runner.os == 'Windows'")
+    expect(rust?.with?.toolchain).toBe(1.93)
+    expect(development.jobs['development']!.steps?.find((step) => step.run === 'pnpm --filter @dinkster/desktop package:win')).toMatchObject({ if: "runner.os == 'Windows'" })
   })
 
   it('packages unsigned arm64 macOS without the signing environment or publication', () => {
@@ -193,9 +205,13 @@ describe('desktop workflows', () => {
     const steps = job.steps!
     expect(steps.find((step) => step.run === 'pnpm --filter @dinkster/desktop package:linux')?.if).toBe("matrix.os == 'linux'")
     expect(steps.find((step) => step.run === 'pnpm --filter @dinkster/desktop package:win')?.if).toBe("matrix.os == 'windows'")
+    const rust = steps.find((step) => step.uses === 'dtolnay/rust-toolchain@master')
+    expect(rust?.if).toBe("matrix.os == 'windows'")
+    expect(rust?.with?.toolchain).toBe(1.93)
     for (const name of ['Extract Linux installer and verify resources', 'Install Windows package and verify resources']) {
       expect(steps.find((step) => step.name === name)?.run).toContain('verify-installed-tools.mjs')
     }
+    expect(steps.find((step) => step.name === 'Install Windows package and verify resources')?.run).toContain('verify-installed-mxc.mjs')
     expect(steps.find((step) => step.uses === 'actions/upload-artifact@v4')?.with).toMatchObject({
       name: 'desktop-${{ matrix.os }}-installer', 'if-no-files-found': 'error',
     })

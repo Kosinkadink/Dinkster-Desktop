@@ -6,6 +6,11 @@ on:
   pull_request:
     paths:
       - '.github/workflows/full-validation.yml'
+      - 'packages/desktop/package.json'
+      - 'packages/desktop/resources/sandbox/**'
+      - 'packages/desktop/scripts/prepare-mxc.mjs'
+      - 'packages/desktop/scripts/sign-mxc.mjs'
+      - 'packages/desktop/scripts/verify-installed-mxc.mjs'
       - 'packages/desktop/src/release.ts'
       - 'packages/desktop/src/backend-release.json'
       - 'packages/desktop/src/engine.ts'
@@ -107,12 +112,16 @@ jobs:
           node-version: 26.12.0
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm --filter @dinkster/desktop package:win
       - run: pnpm --filter @dinkster/desktop verify:update-feed
+      - run: node packages/desktop/scripts/verify-installed-mxc.mjs packages/desktop/release/win-unpacked/resources
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
@@ -159,6 +168,7 @@ jobs:
       - run: pnpm --filter @dinkster/desktop verify:installed
         env:
           DINKSTER_ACCELERATOR: cpu
+      - run: node packages/desktop/scripts/verify-installed-mxc.mjs (Split-Path $env:DINKSTER_DESKTOP_EXECUTABLE -Parent | Join-Path -ChildPath resources)
       - name: Preserve installed-app evidence
         if: always()
         uses: actions/upload-artifact@v4

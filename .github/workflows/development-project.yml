@@ -5,6 +5,10 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/development-project.yml'
+      - 'packages/desktop/package.json'
+      - 'packages/desktop/resources/sandbox/**'
+      - 'packages/desktop/scripts/prepare-mxc.mjs'
+      - 'packages/desktop/scripts/verify-installed-mxc.mjs'
       - 'packages/desktop/src/environment.ts'
       - 'packages/desktop/src/environment-tools-release.json'
       - 'packages/desktop/src/main.ts'
@@ -95,6 +99,10 @@ jobs:
         with:
           node-version: 26.12.0
           cache: pnpm
+      - if: runner.os == 'Windows'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
       - run: pnpm install --frozen-lockfile
       - name: Install contributor frontend dependencies
         if: matrix.frontend == 'dev-server'

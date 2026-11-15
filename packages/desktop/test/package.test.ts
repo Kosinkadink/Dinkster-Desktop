@@ -58,6 +58,39 @@ describe('desktop package inputs', () => {
     )
   })
 
+  it('builds the pinned, unrouted MXC executor from source for Windows packages', async () => {
+    const manifest = JSON.parse(await readFile(resolve(root, 'packages/desktop/package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+      build: { win: { extraResources: { from: string; to: string }[] } }
+    }
+    const preparation = await readFile(resolve(root, 'packages/desktop/scripts/prepare-mxc.mjs'), 'utf8')
+    const signer = await readFile(resolve(root, 'packages/desktop/scripts/sign-mxc.mjs'), 'utf8')
+    const verifier = await readFile(resolve(root, 'packages/desktop/scripts/verify-installed-mxc.mjs'), 'utf8')
+    const provenance = JSON.parse(await readFile(resolve(root, 'packages/desktop/resources/sandbox/MXC-PROVENANCE.json'), 'utf8')) as Record<string, unknown>
+    const license = await readFile(resolve(root, 'packages/desktop/resources/sandbox/MXC-LICENSE.txt'), 'utf8')
+
+    expect(provenance).toMatchObject({
+      name: 'wxc-exec.exe',
+      source: 'https://github.com/microsoft/mxc',
+      commit: 'c66201839d63cae2239db5e92f1f1d6076cf5181',
+      license: 'MIT',
+      toolchain: 'Rust 1.93',
+    })
+    expect(provenance.build).toEqual([
+      'MXC_TELEMETRY_COMPONENT_PATH=',
+      'cargo build --locked --release -p wxc --target x86_64-pc-windows-msvc',
+    ])
+    expect(license).toMatch(/^MIT License\r?\n/m)
+    expect(preparation).toContain("MXC_TELEMETRY_COMPONENT_PATH: ''")
+    expect(preparation).toContain("['build', '--locked', '--release', '-p', 'wxc', '--target', 'x86_64-pc-windows-msvc']")
+    expect(preparation).toContain('mxc/archive/${commit}.zip')
+    expect(manifest.scripts['package:win']).toContain('package:win:prepare')
+    expect(manifest.scripts['package:win:signed']).toContain('sign:mxc')
+    expect(manifest.build.win.extraResources).toContainEqual({ from: 'resources/sandbox', to: 'sandbox' })
+    expect(signer).toContain('createArtifactSigningHook(artifactSigning)')
+    expect(verifier).toContain("provenance.commit, 'c66201839d63cae2239db5e92f1f1d6076cf5181'")
+  })
+
   it('keeps both tinkerer launchers on the shared web runtime', async () => {
     const windows = await readFile(resolve(root, 'scripts/start-dinkster.bat'), 'utf8')
     const bash = await readFile(resolve(root, 'scripts/start-dinkster.sh'), 'utf8')

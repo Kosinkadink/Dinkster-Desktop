@@ -125,6 +125,13 @@ source approval digest, so changed source inputs require a new review. Engine
 and pack edits reload; library edits require an engine restart. Development
 sources are marked in the project list and active engine window. Engine windows
 retain the same narrow local-file bridge, without project-manager or shell access.
+Instead of a built frontend folder, select a frontend dev server origin for live
+reload. Loopback is allowed by default; a remote address requires the separate
+**Explicitly allow a non-loopback frontend dev server** checkbox and plan review.
+Use only trusted frontend code: it retains the project's existing narrow local-file
+capabilities. Credentials, URL paths, queries and fragments are refused. A folder
+and dev server cannot be selected together. The environment command retains the
+choice and permission across engine restarts, not Desktop-managed state.
 
 Before setup or a variant change, select the project root, mirrors and assigned
 GPU indexes, then use **Inspect hardware and variants**. Desktop calls the

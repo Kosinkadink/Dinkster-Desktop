@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { crc32, deflateRawSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EnvironmentClient, type EnvironmentOperation, type EnvironmentRequest } from '../src/environment.js'
+import { EnvironmentClient, parseDevelopmentSources, type EnvironmentOperation, type EnvironmentRequest } from '../src/environment.js'
 import { channelTools } from '../src/environment-channel.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
@@ -82,6 +82,22 @@ describe('Desktop dinkster-env command client', () => {
     await writeFile(script, original)
     await expect(client.run(request)).rejects.toThrow('source approval response')
     await client.dispose()
+  })
+
+  it('keeps frontend dev origins explicit and remote access off by default', () => {
+    const source = { engine: join(process.cwd(), 'engine'), packs: [] }
+    for (const url of ['http://localhost:5173', 'http://127.0.0.2:5173', 'http://[::1]:5173']) {
+      expect(parseDevelopmentSources({ ...source, frontendDev: url })).toEqual({ ...source, frontendDev: url, allowFrontendDevRemote: false })
+    }
+    for (const url of ['http://localhost.example:5173', 'http://127.example:5173', 'http://192.0.2.1:5173']) {
+      expect(() => parseDevelopmentSources({ ...source, frontendDev: url })).toThrow('explicit permission')
+      expect(parseDevelopmentSources({ ...source, frontendDev: url, allowFrontendDevRemote: true }).frontendDev).toBe(url)
+    }
+    for (const url of ['http://user:password@localhost:5173', 'file:///tmp/frontend', 'http://localhost:5173/path', 'http://localhost:5173?token=value', 'http://localhost:5173#fragment', 'http://localhost:0', 'http://localhost:70000']) {
+      expect(() => parseDevelopmentSources({ ...source, frontendDev: url, allowFrontendDevRemote: true })).toThrow()
+    }
+    expect(() => parseDevelopmentSources({ ...source, allowFrontendDevRemote: true })).toThrow('requires a dev server')
+    expect(() => parseDevelopmentSources({ ...source, frontendRoot: join(process.cwd(), 'bundle'), frontendDev: 'http://localhost:5173' })).toThrow('not both')
   })
 
   it('passes exact host-owned pack reviews and requires explicit apply approval', async () => {

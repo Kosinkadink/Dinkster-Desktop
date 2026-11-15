@@ -44,6 +44,8 @@ function localProject(): DesktopProject {
       ...(field('development-inference') ? { inference: field('development-inference') } : {}),
       ...(field('development-helper') ? { helper: field('development-helper') } : {}),
       ...(field('development-frontend') ? { frontendRoot: field('development-frontend') } : {}),
+      ...(field('development-frontend-dev') ? { frontendDev: field('development-frontend-dev') } : {}),
+      allowFrontendDevRemote: document.querySelector<HTMLInputElement>('#development-frontend-remote')!.checked,
     } } : {}),
   }
 }
@@ -132,7 +134,9 @@ async function render(): Promise<void> {
     title.textContent = project.name
     card.append(title)
     const channel = document.createElement('p')
-    channel.textContent = project.development ? 'Development - unpublished sources' : `Channel: ${project.channel}`
+    channel.textContent = project.sourceStatus === 'unpublished' ? 'Development - unpublished sources'
+      : project.sourceStatus === 'unavailable' ? 'Active sources unavailable - inspect the environment'
+      : `Channel: ${project.channel}${project.development ? ' - development configuration saved' : ''}`
     card.append(channel)
     for (const engine of project.engines) {
       const address = document.createElement('p')
@@ -197,7 +201,9 @@ function populateLocal(project: DesktopProject | undefined, engineId?: string): 
     'development-helper': project?.development?.helper ?? '',
     'development-packs': project?.development?.packs.join('\n') ?? '',
     'development-frontend': project?.development?.frontendRoot ?? '',
+    'development-frontend-dev': project?.development?.frontendDev ?? '',
   })) document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`)!.value = value
+  document.querySelector<HTMLInputElement>('#development-frontend-remote')!.checked = project?.development?.allowFrontendDevRemote === true
   showDevelopment()
   clearHardware()
 }

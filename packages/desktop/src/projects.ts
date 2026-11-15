@@ -13,6 +13,7 @@ export interface DesktopProject {
   readonly name: string
   readonly channel: EnvironmentChannel
   readonly development?: DevelopmentSources
+  readonly sourceStatus?: 'published' | 'unpublished' | 'unavailable'
   readonly root?: string
   readonly engines: readonly ProjectEngine[]
 }

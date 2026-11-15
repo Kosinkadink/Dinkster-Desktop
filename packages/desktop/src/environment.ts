@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { realpath, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
+import { isIP } from 'node:net'
 import { promisify } from 'node:util'
 import type { VariantHardware } from './hardware.js'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
@@ -17,6 +18,8 @@ export interface DevelopmentSources {
   readonly helper?: string
   readonly packs: readonly string[]
   readonly frontendRoot?: string
+  readonly frontendDev?: string
+  readonly allowFrontendDevRemote?: boolean
 }
 
 export interface EnvironmentRequest {
@@ -142,8 +145,21 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
   const inference = row['inference'] === undefined ? undefined : folder(row['inference'])
   const helper = row['helper'] === undefined ? undefined : folder(row['helper'])
   const frontendRoot = row['frontendRoot'] === undefined ? undefined : folder(row['frontendRoot'])
+  let frontendDev: string | undefined
+  const allowFrontendDevRemote = row['allowFrontendDevRemote']
+  if (allowFrontendDevRemote !== undefined && typeof allowFrontendDevRemote !== 'boolean') throw new Error('invalid remote frontend permission')
+  if (row['frontendDev'] !== undefined) {
+    if (typeof row['frontendDev'] !== 'string' || /[\\\\\s\x00-\x1f\x7f?#]/.test(row['frontendDev'])) throw new Error('frontend dev server needs an HTTP(S) origin')
+    const url = new URL(row['frontendDev'])
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.port === '0') throw new Error('frontend dev server needs a credential-free HTTP(S) origin')
+    const loopback = url.hostname === 'localhost' || url.hostname === '[::1]' || (isIP(url.hostname) === 4 && url.hostname.startsWith('127.'))
+    if (!loopback && allowFrontendDevRemote !== true) throw new Error('non-loopback frontend dev server requires explicit permission')
+    frontendDev = url.origin
+  } else if (allowFrontendDevRemote === true) throw new Error('remote frontend permission requires a dev server')
+  if (frontendRoot !== undefined && frontendDev !== undefined) throw new Error('choose a frontend folder or dev server, not both')
   return { engine, packs, ...(inference === undefined ? {} : { inference }),
-    ...(helper === undefined ? {} : { helper }), ...(frontendRoot === undefined ? {} : { frontendRoot }) }
+    ...(helper === undefined ? {} : { helper }), ...(frontendRoot === undefined ? {} : { frontendRoot }),
+    ...(frontendDev === undefined ? {} : { frontendDev, allowFrontendDevRemote: allowFrontendDevRemote === true }) }
 }
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
@@ -157,6 +173,8 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     for (const path of sources.packs) args.push('--pack-source', path, '--live-pack', path)
     for (const path of [sources.inference, sources.helper]) if (path !== undefined) args.push('--library-source', path, '--live-library', path)
     if (sources.frontendRoot !== undefined) args.push('--frontend-root', sources.frontendRoot)
+    if (sources.frontendDev !== undefined) args.push('--frontend-dev', sources.frontendDev)
+    if (sources.allowFrontendDevRemote === true) args.push('--allow-frontend-dev-remote')
     if (confirmed) {
       if (!request.sourceApproval || !/^sha256:[a-f0-9]{64}$/.test(request.sourceApproval)) throw new Error('development requires the reviewed source approval digest')
       args.push('--approve', request.sourceApproval)

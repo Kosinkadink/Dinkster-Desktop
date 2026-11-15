@@ -763,6 +763,36 @@ console.log(JSON.stringify(row));
       .screenshot({ path: join(artifacts, 'development-project-list.png') })
     await engine.screenshot({ path: join(artifacts, 'development-engine.png') })
   }
+  await manager.locator('#development-frontend').fill('')
+  await manager
+    .locator('#development-frontend-dev')
+    .fill('http://192.0.2.1:5173')
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#message')).toContainText('explicit permission')
+  await expect(manager.locator('#apply')).toBeHidden()
+  await manager.locator('#development-frontend-remote').check()
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#apply')).toBeVisible()
+  const remoteFrontendCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'develop')
+    .at(-1)
+  assert(remoteFrontendCall.includes('--allow-frontend-dev-remote'))
+  assert.equal(
+    remoteFrontendCall[remoteFrontendCall.indexOf('--frontend-dev') + 1],
+    'http://192.0.2.1:5173',
+  )
+  if (artifacts) {
+    await manager
+      .locator('#development-sources')
+      .screenshot({ path: join(artifacts, 'development-dev-server-setup.png') })
+    await manager
+      .locator('#plan-panel')
+      .screenshot({ path: join(artifacts, 'development-dev-server-plan.png') })
+  }
+  await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
   await manager.locator('#name').fill('Remote studio')
   await manager.locator('#url').fill(urls[1])
   await manager.getByRole('button', { name: 'Save remote project' }).click()

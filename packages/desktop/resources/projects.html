@@ -20,6 +20,7 @@
     label { display: grid; gap: 7px; margin-bottom: 16px; color: #d0d0d0; }
     input, select, textarea, button { font: inherit; border-radius: 6px; padding: 10px 12px; }
     input, select, textarea { min-width: 0; width: 100%; border: 1px solid #555; background: #171717; color: inherit; }
+    input[type="checkbox"] { width: auto; justify-self: start; }
     input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid #8be9fd; outline-offset: 2px; }
     button { cursor: pointer; border: 1px solid #555; background: #303030; color: #ededed; -webkit-app-region: no-drag; }
     button.primary { background: #8be9fd; color: #111; border-color: #8be9fd; font-weight: 600; }
@@ -75,6 +76,9 @@
               <label>dinkster-pack-helpers folder (optional)<input id="development-helper" placeholder="Absolute helper folder"></label>
               <label>Pack folders (one per line, optional)<textarea id="development-packs" rows="3" placeholder="Absolute pack folders"></textarea></label>
               <label>Built frontend folder (optional)<input id="development-frontend" placeholder="Absolute bundle folder containing index.html"></label>
+              <label>Frontend dev server (instead of a bundle)<input id="development-frontend-dev" placeholder="http://localhost:5173"></label>
+              <label><input id="development-frontend-remote" type="checkbox"> Explicitly allow a non-loopback frontend dev server</label>
+              <p>A dev server runs its own frontend code with this project's existing local-file capabilities. Use a trusted server. Non-loopback access is off unless explicitly selected and included in the reviewed plan.</p>
             </fieldset>
             <label>Operation<select id="local-operation">
               <option value="develop">Build / refresh development sources</option>

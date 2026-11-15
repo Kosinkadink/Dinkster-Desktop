@@ -402,7 +402,16 @@ async function createProjectManager(): Promise<void> {
 
 ipcMain.handle('desktop:projects-list', async (event) => {
   trustedProjectIpc(event)
-  return readProjects(dataDirectory)
+  const projects = await readProjects(dataDirectory)
+  return { ...projects, projects: await Promise.all(projects.projects.map(async (project) => {
+    if (!project.root) return project
+    try {
+      const status = await environmentClient.run({ root: project.root, operation: 'status' })
+      return { ...project, sourceStatus: status.current === null ? 'unavailable' : status.sourceDescription === undefined ? 'published' : 'unpublished' }
+    } catch {
+      return { ...project, sourceStatus: 'unavailable' }
+    }
+  })) }
 })
 ipcMain.handle('desktop:projects-save', (event, value: unknown) => serializeLifecycle(async () => {
   trustedProjectIpc(event)

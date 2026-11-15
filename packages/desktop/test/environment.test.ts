@@ -84,6 +84,35 @@ describe('Desktop dinkster-env command client', () => {
     await client.dispose()
   })
 
+  it('captures explicitly selected Git refs without treating fetched folders as live sources', async () => {
+    const { root, client } = await commandFixture()
+    const sourceApproval = `sha256:${'e'.repeat(64)}`
+    const script = join(root, 'command.cjs')
+    await writeFile(script, (await readFile(script, 'utf8')).replace('root, current: 2,', `root, current: 2, sourceApproval: '${sourceApproval}',`))
+    const gitEngine = 'https://github.com/Kosinkadink/Dinkster.git#ref=refs/pull/1225/head'
+    const gitPack = 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=main&subdirectory=packages/dinkster-nodes-utilities'
+    const gitInference = 'https://github.com/Kosinkadink/dinkster-inference.git#ref=v0.1.2'
+    const localEngine = join(root, 'engine')
+    const localPack = join(root, 'local pack')
+    const helper = join(root, 'helper')
+    for (const engine of [gitEngine, localEngine]) {
+      const development = { engine, packs: [gitPack, localPack], inference: gitInference, helper }
+      const request = { root, operation: 'develop' as const, development }
+      expect((await client.run(request)).sourceApproval).toBe(sourceApproval)
+      const expected = ['--root', root, 'develop', '--source', engine,
+        ...(engine === localEngine ? ['--contributor', '--live-engine'] : []),
+        '--pack-source', gitPack, '--pack-source', localPack, '--live-pack', localPack,
+        '--library-source', gitInference, '--library-source', helper, '--live-library', helper]
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...expected, '--json', '--plan'])
+      await client.run({ ...request, sourceApproval }, true)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...expected, '--approve', sourceApproval, '--json', '--yes'])
+    }
+    for (const engine of ['http://host/repo.git', 'https://user:secret@host/repo.git', 'https://host/repo.git?token=secret', 'https://host/\nrepo.git', 'file:///tmp/repo', 'relative']) {
+      await expect(client.run({ root, operation: 'develop', development: { engine, packs: [] } })).rejects.toThrow()
+    }
+    await client.dispose()
+  })
+
   it('keeps frontend dev origins explicit and remote access off by default', () => {
     const source = { engine: join(process.cwd(), 'engine'), packs: [] }
     for (const url of ['http://localhost:5173', 'http://127.0.0.2:5173', 'http://[::1]:5173']) {

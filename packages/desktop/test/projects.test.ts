@@ -58,6 +58,10 @@ describe('Desktop project bindings', () => {
       engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [] }] }
     await writeProjects(root, saveProject(await readProjects(root), project))
     expect((await readProjects(root)).projects[0]?.development).toEqual(development)
+    const mixed = { ...development, inference: 'https://github.com/Kosinkadink/dinkster-inference.git#ref=v0.1.2',
+      packs: [...development.packs, 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=main&subdirectory=packages/dinkster-nodes-utilities'] }
+    await writeProjects(root, saveProject(await readProjects(root), { ...project, development: mixed }))
+    expect((await readProjects(root)).projects[0]?.development).toEqual(mixed)
     expect(await readdir(root)).toEqual(['projects.json'])
     expect(() => parseProject({ ...project, development: { ...development, helper: 'relative' } })).toThrow('absolute local folders')
     expect(() => parseProject({ ...project, root: undefined, engines: [{ id: 'remote', name: 'remote', kind: 'remote', url: 'http://localhost:3639' }] })).toThrow('require a local project')

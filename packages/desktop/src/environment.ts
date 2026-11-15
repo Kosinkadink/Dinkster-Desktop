@@ -96,6 +96,11 @@ export interface EnvironmentResult {
   readonly operation: EnvironmentOperation
   readonly sourceApproval?: string
   readonly sourceDescription?: string
+  readonly development?: {
+    readonly sources: readonly { readonly kind: string; readonly git?: {
+      readonly url: string; readonly requestedRef: string | null; readonly commit: string; readonly subdirectory: string
+    } }[]
+  }
   readonly status: 'planned' | 'applied' | 'clean' | 'drift' | 'error' | CleanupAttempt['status']
   readonly root: string
   readonly current: number | null
@@ -139,11 +144,19 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
     if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) throw new Error('development sources need absolute local folders')
     return path
   }
-  if (!Array.isArray(row['packs']) || row['packs'].length > 64) throw new Error('invalid development pack folders')
-  const packs = row['packs'].map(folder)
-  const engine = folder(row['engine'])
-  const inference = row['inference'] === undefined ? undefined : folder(row['inference'])
-  const helper = row['helper'] === undefined ? undefined : folder(row['helper'])
+  const source = (value: unknown): string => {
+    if (typeof value !== 'string' || /[\x00-\x1f\x7f]/.test(value)) throw new Error('development sources need absolute local folders or public HTTPS Git URLs')
+    if (isAbsolute(value)) return folder(value)
+    if (!URL.canParse(value)) throw new Error('development sources need absolute local folders or public HTTPS Git URLs')
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || /[\\\s]/.test(value)) throw new Error('Git sources need public HTTPS URLs without credentials or query')
+    return value
+  }
+  if (!Array.isArray(row['packs']) || row['packs'].length > 64) throw new Error('invalid development pack sources')
+  const packs = row['packs'].map(source)
+  const engine = source(row['engine'])
+  const inference = row['inference'] === undefined ? undefined : source(row['inference'])
+  const helper = row['helper'] === undefined ? undefined : source(row['helper'])
   const frontendRoot = row['frontendRoot'] === undefined ? undefined : folder(row['frontendRoot'])
   let frontendDev: string | undefined
   const allowFrontendDevRemote = row['allowFrontendDevRemote']
@@ -169,9 +182,16 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
   const args = ['--root', request.root, request.operation]
   if (request.operation === 'develop') {
     const sources = parseDevelopmentSources(request.development)
-    args.push('--source', sources.engine, '--contributor', '--live-engine')
-    for (const path of sources.packs) args.push('--pack-source', path, '--live-pack', path)
-    for (const path of [sources.inference, sources.helper]) if (path !== undefined) args.push('--library-source', path, '--live-library', path)
+    args.push('--source', sources.engine)
+    if (isAbsolute(sources.engine)) args.push('--contributor', '--live-engine')
+    for (const source of sources.packs) {
+      args.push('--pack-source', source)
+      if (isAbsolute(source)) args.push('--live-pack', source)
+    }
+    for (const source of [sources.inference, sources.helper]) if (source !== undefined) {
+      args.push('--library-source', source)
+      if (isAbsolute(source)) args.push('--live-library', source)
+    }
     if (sources.frontendRoot !== undefined) args.push('--frontend-root', sources.frontendRoot)
     if (sources.frontendDev !== undefined) args.push('--frontend-dev', sources.frontendDev)
     if (sources.allowFrontendDevRemote === true) args.push('--allow-frontend-dev-remote')
@@ -318,6 +338,19 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     || typeof row['root'] !== 'string' || !isAbsolute(row['root'])
     || !(row['current'] === null || (Number.isInteger(row['current']) && Number(row['current']) > 0))
     || !Array.isArray(row['plan']) || !row['plan'].every((line) => typeof line === 'string')
+    || (row['development'] !== undefined && (!row['development'] || typeof row['development'] !== 'object'
+      || !Array.isArray((row['development'] as Record<string, unknown>)['sources'])
+      || !((row['development'] as Record<string, unknown>)['sources'] as unknown[]).every((entry) => {
+        if (!entry || typeof entry !== 'object') return false
+        const source = entry as Record<string, unknown>
+        if (typeof source['kind'] !== 'string') return false
+        if (source['git'] === undefined) return true
+        if (!source['git'] || typeof source['git'] !== 'object') return false
+        const git = source['git'] as Record<string, unknown>
+        return typeof git['url'] === 'string' && typeof git['subdirectory'] === 'string'
+          && (git['requestedRef'] === null || typeof git['requestedRef'] === 'string')
+          && typeof git['commit'] === 'string' && /^[a-f0-9]{40}$/.test(git['commit'])
+      })))
     || (row['url'] !== undefined && typeof row['url'] !== 'string')
     || (row['channel'] !== undefined && row['channel'] !== null && row['channel'] !== 'stable' && row['channel'] !== 'nightly')
     || (row['variant'] !== undefined && row['variant'] !== null && typeof row['variant'] !== 'string')

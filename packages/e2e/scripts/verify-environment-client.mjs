@@ -131,8 +131,14 @@ const url = ${JSON.stringify(urls)}[updated ? 1 : 0];
 const row = {format:'dinkster.environment-result/1',operation,
 status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,current:updated ? 2 : 1,
 ...(operation === 'doctor' ? JSON.parse(fs.readFileSync(${JSON.stringify(installed)}, 'utf8')) : {}),
-...(operation === 'develop' ? {sourceApproval:'sha256:'+'d'.repeat(64), sourceDescription:'Unpublished local development sources'} : {}),
-plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current'],url,
+...(operation === 'develop' ? {sourceApproval:'sha256:'+'d'.repeat(64), sourceDescription:'Unpublished development sources',
+  development:{sources:args.filter((value) => value.startsWith('https://')).map((value) => {
+    const url = new URL(value); const fields = new URLSearchParams(url.hash.slice(1)); url.hash = '';
+    return {kind:'selected source',git:{url:url.href,requestedRef:fields.get('ref'),commit:'f'.repeat(40),subdirectory:fields.get('subdirectory') ?? '.'}};
+  })}} : {}),
+plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current',
+  ...(args.includes('--frontend-dev') ? ['proxy frontend dev server '+args[args.indexOf('--frontend-dev')+1]] : []),
+  ...(args.includes('--allow-frontend-dev-remote') ? ['explicitly allow a non-loopback frontend dev server'] : [])],url,
 engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]};
 if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
 console.log(JSON.stringify(row));
@@ -791,6 +797,37 @@ console.log(JSON.stringify(row));
     await manager
       .locator('#plan-panel')
       .screenshot({ path: join(artifacts, 'development-dev-server-plan.png') })
+  }
+  await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  const gitPack =
+    'https://github.com/Kosinkadink/dinkster-nodes.git#ref=refs/pull/123/head&subdirectory=packages/dinkster-nodes-utilities'
+  await manager.locator('#development-packs').fill(gitPack)
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#apply')).toBeVisible()
+  await expect(manager.locator('#plan')).toContainText(
+    'Requested ref: refs/pull/123/head',
+  )
+  await expect(manager.locator('#plan')).toContainText(
+    `Resolved commit: ${'f'.repeat(40)}`,
+  )
+  await expect(manager.locator('#plan')).toContainText(
+    'Package folder: packages/dinkster-nodes-utilities',
+  )
+  const gitCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'develop')
+    .at(-1)
+  assert.equal(gitCall[gitCall.indexOf('--pack-source') + 1], gitPack)
+  assert(!gitCall.includes('--live-pack'))
+  if (artifacts) {
+    await manager
+      .locator('#development-sources')
+      .screenshot({ path: join(artifacts, 'development-git-setup.png') })
+    await manager
+      .locator('#plan-panel')
+      .screenshot({ path: join(artifacts, 'development-git-plan.png') })
   }
   await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
   await manager.locator('#name').fill('Remote studio')

@@ -70,11 +70,12 @@
             <label>Project kind<select id="local-kind"><option value="release">Published release</option><option value="development">Development - unpublished sources</option></select></label>
             <fieldset id="development-sources" hidden>
               <legend>Explicit development sources</legend>
-              <p>Selected folders run unpublished code. Engine and packs reload after edits; libraries require an engine restart. Leave optional sources empty to keep the engine's defaults.</p>
-              <label>Engine folder<input id="development-engine" placeholder="Absolute Dinkster checkout folder"></label>
-              <label>dinkster-inference folder (optional)<input id="development-inference" placeholder="Absolute inference folder"></label>
-              <label>dinkster-pack-helpers folder (optional)<input id="development-helper" placeholder="Absolute helper folder"></label>
-              <label>Pack folders (one per line, optional)<textarea id="development-packs" rows="3" placeholder="Absolute pack folders"></textarea></label>
+              <p>Each entered source explicitly opts into unpublished code. Enter an absolute local folder or a public HTTPS Git URL. Add #ref=BRANCH&amp;subdirectory=PATH to select a Git ref and package folder. Git sources are captured, not live; review their resolved commits before confirming. No system Git is required.</p>
+              <p>Selected local engine and pack edits reload; local libraries require an engine restart. Leave optional sources empty to keep the engine's defaults.</p>
+              <label>Engine source<input id="development-engine" placeholder="Absolute checkout folder or https://host/repo.git#ref=branch"></label>
+              <label>dinkster-inference source (optional)<input id="development-inference" placeholder="Absolute folder or public HTTPS Git URL"></label>
+              <label>dinkster-pack-helpers source (optional)<input id="development-helper" placeholder="Absolute folder or public HTTPS Git URL"></label>
+              <label>Pack sources (one per line, optional)<textarea id="development-packs" rows="3" placeholder="Absolute folders or public HTTPS Git URLs"></textarea></label>
               <label>Built frontend folder (optional)<input id="development-frontend" placeholder="Absolute bundle folder containing index.html"></label>
               <label>Frontend dev server (instead of a bundle)<input id="development-frontend-dev" placeholder="http://localhost:5173"></label>
               <label><input id="development-frontend-remote" type="checkbox"> Explicitly allow a non-loopback frontend dev server</label>

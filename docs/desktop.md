@@ -117,12 +117,17 @@ command's read-only plan first and require confirmation. The confirmation
 token applies to exactly that request; it cannot authorize a changed root,
 variant, channel, or destination.
 
-Choose **Development - unpublished sources** to select a local engine checkout
-and optional inference, pack, helper and built frontend folders. Every selected
-folder is explicit; blank optional fields keep the engine's defaults. Review the
-`develop` plan before applying it. Desktop retains the environment command's
-source approval digest, so changed source inputs require a new review. Engine
-and pack edits reload; library edits require an engine restart. Development
+Choose **Development - unpublished sources** to select an engine source and
+optional inference, pack, helper and built frontend folders. Engine, inference,
+helper and pack inputs accept an absolute local folder or a public HTTPS Git
+URL; append `#ref=REF&subdirectory=PATH` to select a branch, tag, commit or pull
+request ref and package directory. Each entered source opts into unpublished
+code; blank optional fields keep the engine's defaults. Git sources are captured
+through `dinkster-env` without system Git, never live temporary folders. Review
+the command's requested refs and resolved commits before confirming the plan.
+Desktop retains its source approval digest, so changed inputs require a new
+review. Local engine and pack edits reload; local libraries require an engine
+restart. Development
 sources are marked in the project list and active engine window. Engine windows
 retain the same narrow local-file bridge, without project-manager or shell access.
 Instead of a built frontend folder, select a frontend dev server origin for live

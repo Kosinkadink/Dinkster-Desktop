@@ -61,6 +61,10 @@ function showPlan(result: EnvironmentResult, token?: string): void {
     label.push(`Engine: ${result.engine.version} (${result.engine.release})`)
     if (result.engine.label) label.push(`Engine label: ${result.engine.label}`)
   }
+  for (const source of result.development?.sources ?? []) {
+    if (source.git) label.push(`Git ${source.kind}: ${source.git.url}`, `Requested ref: ${source.git.requestedRef ?? 'default branch'}`,
+      `Resolved commit: ${source.git.commit}`, `Package folder: ${source.git.subdirectory}`)
+  }
   if (result.cleanup) {
     const cleanup = result.cleanup
     label.push(`Automatic generation cleanup: ${cleanup.policy ? (cleanup.policy.automatic ? 'on' : 'off') : 'unavailable'}`)

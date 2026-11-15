@@ -20,8 +20,10 @@ const scratch = await mkdtemp(join(resolve(artifacts), 'development-'))
 const source = (name) => {
   const value = process.env[name]
   if (!value)
-    throw new Error(`${name} must name an explicit local source folder`)
-  return resolve(value)
+    throw new Error(
+      `${name} must name an explicit local folder or HTTPS Git source`,
+    )
+  return value.startsWith('https://') ? value : resolve(value)
 }
 const sources = {
   engine: source('DINKSTER_DEVELOPMENT_ENGINE'),
@@ -167,16 +169,37 @@ try {
   receipt.selection.sources = receipt.selection.sources.map(
     ({ files, ...row }) => row,
   )
-  const selectedPaths = receipt.selection.sources.map((row) =>
-    resolve(row.path),
-  )
-  for (const path of [
-    sources.engine,
-    sources.inference,
-    sources.helper,
-    sources.pack,
-  ])
-    assert(selectedPaths.includes(path), `selected source missing: ${path}`)
+  for (const [kind, value] of [
+    ['engine', sources.engine],
+    ['library', sources.inference],
+    ['library', sources.helper],
+    ['pack', sources.pack],
+  ]) {
+    if (value.startsWith('https://')) {
+      const selected = new URL(value)
+      const options = new URLSearchParams(selected.hash.slice(1))
+      selected.hash = ''
+      assert.equal(selected.search, '')
+      const row = receipt.selection.sources.find(
+        (entry) =>
+          entry.kind === kind &&
+          entry.git?.url === selected.href &&
+          entry.git.requestedRef === options.get('ref') &&
+          entry.git.subdirectory === (options.get('subdirectory') ?? '.'),
+      )
+      assert(row, `selected Git source missing: ${value}`)
+      assert.equal(row.live, false)
+      assert.match(row.git.commit, /^[0-9a-f]{40}$/)
+      if (/^[0-9a-f]{40}$/.test(options.get('ref') ?? ''))
+        assert.equal(row.git.commit, options.get('ref'))
+    } else
+      assert(
+        receipt.selection.sources.some(
+          (entry) => entry.kind === kind && resolve(entry.path) === value,
+        ),
+        `selected local source missing: ${value}`,
+      )
+  }
   if (frontendDev) assert.equal(receipt.selection.frontendDev, frontendDev)
   else assert.equal(resolve(receipt.selection.frontendRoot), sources.frontend)
   const health = await fetch(`http://127.0.0.1:${port}/api/health`)
@@ -198,13 +221,17 @@ try {
     { env },
   )
   receipt.imports = JSON.parse(imported.stdout)
-  for (const name of ['engine', 'inference', 'helper'])
+  for (const name of ['engine', 'inference', 'helper']) {
+    const expected = sources[name].startsWith('https://')
+      ? generation
+      : sources[name]
     assert(
       resolve(receipt.imports[name]).startsWith(
-        sources[name] + (process.platform === 'win32' ? '\\' : '/'),
+        expected + (process.platform === 'win32' ? '\\' : '/'),
       ),
-      `${name} did not import from its selected folder`,
+      `${name} did not import from its selected source`,
     )
+  }
   const opened = app.waitForEvent('window')
   await manager.getByRole('button', { name: 'Open main', exact: true }).click()
   const engine = await opened

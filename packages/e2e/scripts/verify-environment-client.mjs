@@ -802,6 +802,11 @@ console.log(JSON.stringify(row));
   const gitPack =
     'https://github.com/Kosinkadink/dinkster-nodes.git#ref=refs/pull/123/head&subdirectory=packages/dinkster-nodes-utilities'
   await manager.locator('#development-packs').fill(gitPack)
+  await manager.locator('#development-frontend-dev').fill('')
+  await manager.locator('#development-frontend-remote').uncheck()
+  const gitFrontend =
+    'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=selected-frontend'
+  await manager.locator('#development-frontend-git').fill(gitFrontend)
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await expect(manager.locator('#apply')).toBeVisible()
   await expect(manager.locator('#plan')).toContainText(
@@ -821,6 +826,13 @@ console.log(JSON.stringify(row));
     .at(-1)
   assert.equal(gitCall[gitCall.indexOf('--pack-source') + 1], gitPack)
   assert(!gitCall.includes('--live-pack'))
+  assert.equal(gitCall[gitCall.indexOf('--frontend-source') + 1], gitFrontend)
+  assert(
+    !gitCall.includes('--frontend-dev') && !gitCall.includes('--frontend-root'),
+  )
+  await expect(manager.locator('#plan')).toContainText(
+    'Requested ref: selected-frontend',
+  )
   if (artifacts) {
     await manager
       .locator('#development-sources')

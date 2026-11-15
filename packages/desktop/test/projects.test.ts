@@ -58,7 +58,8 @@ describe('Desktop project bindings', () => {
       engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [] }] }
     await writeProjects(root, saveProject(await readProjects(root), project))
     expect((await readProjects(root)).projects[0]?.development).toEqual(development)
-    const mixed = { ...development, inference: 'https://github.com/Kosinkadink/dinkster-inference.git#ref=v0.1.2',
+    const { frontendRoot: _frontendRoot, ...localSources } = development
+    const mixed = { ...localSources, frontendSource: 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=selected-frontend', inference: 'https://github.com/Kosinkadink/dinkster-inference.git#ref=v0.1.2',
       packs: [...development.packs, 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=main&subdirectory=packages/dinkster-nodes-utilities'] }
     await writeProjects(root, saveProject(await readProjects(root), { ...project, development: mixed }))
     expect((await readProjects(root)).projects[0]?.development).toEqual(mixed)

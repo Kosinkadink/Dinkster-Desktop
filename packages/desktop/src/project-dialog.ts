@@ -44,6 +44,7 @@ function localProject(): DesktopProject {
       ...(field('development-inference') ? { inference: field('development-inference') } : {}),
       ...(field('development-helper') ? { helper: field('development-helper') } : {}),
       ...(field('development-frontend') ? { frontendRoot: field('development-frontend') } : {}),
+      ...(field('development-frontend-git') ? { frontendSource: field('development-frontend-git') } : {}),
       ...(field('development-frontend-dev') ? { frontendDev: field('development-frontend-dev') } : {}),
       allowFrontendDevRemote: document.querySelector<HTMLInputElement>('#development-frontend-remote')!.checked,
     } } : {}),
@@ -205,6 +206,7 @@ function populateLocal(project: DesktopProject | undefined, engineId?: string): 
     'development-helper': project?.development?.helper ?? '',
     'development-packs': project?.development?.packs.join('\n') ?? '',
     'development-frontend': project?.development?.frontendRoot ?? '',
+    'development-frontend-git': project?.development?.frontendSource ?? '',
     'development-frontend-dev': project?.development?.frontendDev ?? '',
   })) document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`)!.value = value
   document.querySelector<HTMLInputElement>('#development-frontend-remote')!.checked = project?.development?.allowFrontendDevRemote === true

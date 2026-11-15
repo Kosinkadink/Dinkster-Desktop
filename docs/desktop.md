@@ -130,8 +130,11 @@ review. Local engine and pack edits reload; local libraries require an engine
 restart. Development
 sources are marked in the project list and active engine window. Engine windows
 retain the same narrow local-file bridge, without project-manager or shell access.
-Instead of a built frontend folder, select a frontend dev server origin for live
-reload. Loopback is allowed by default; a remote address requires the separate
+Instead of a built frontend folder, select a public HTTPS frontend Git URL/ref
+or a frontend dev server origin for live reload. These three frontend choices
+are exclusive. Git frontend assets are captured through the shared command's
+verified CI-bundle or local-build path, and their exact selection is part of
+source approval; Desktop does not fetch or build frontend sources itself. Loopback is allowed by default; a remote address requires the separate
 **Explicitly allow a non-loopback frontend dev server** checkbox and plan review.
 Use only trusted frontend code: it retains the project's existing narrow local-file
 capabilities. Credentials, URL paths, queries and fragments are refused. A folder

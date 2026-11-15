@@ -18,6 +18,7 @@ export interface DevelopmentSources {
   readonly helper?: string
   readonly packs: readonly string[]
   readonly frontendRoot?: string
+  readonly frontendSource?: string
   readonly frontendDev?: string
   readonly allowFrontendDevRemote?: boolean
 }
@@ -158,6 +159,8 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
   const inference = row['inference'] === undefined ? undefined : source(row['inference'])
   const helper = row['helper'] === undefined ? undefined : source(row['helper'])
   const frontendRoot = row['frontendRoot'] === undefined ? undefined : folder(row['frontendRoot'])
+  const frontendSource = row['frontendSource'] === undefined ? undefined : source(row['frontendSource'])
+  if (frontendSource !== undefined && isAbsolute(frontendSource)) throw new Error('frontend Git source requires a public HTTPS URL')
   let frontendDev: string | undefined
   const allowFrontendDevRemote = row['allowFrontendDevRemote']
   if (allowFrontendDevRemote !== undefined && typeof allowFrontendDevRemote !== 'boolean') throw new Error('invalid remote frontend permission')
@@ -169,9 +172,10 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
     if (!loopback && allowFrontendDevRemote !== true) throw new Error('non-loopback frontend dev server requires explicit permission')
     frontendDev = url.origin
   } else if (allowFrontendDevRemote === true) throw new Error('remote frontend permission requires a dev server')
-  if (frontendRoot !== undefined && frontendDev !== undefined) throw new Error('choose a frontend folder or dev server, not both')
+  if ([frontendRoot, frontendSource, frontendDev].filter((value) => value !== undefined).length > 1) throw new Error('choose one frontend folder, Git source or dev server')
   return { engine, packs, ...(inference === undefined ? {} : { inference }),
     ...(helper === undefined ? {} : { helper }), ...(frontendRoot === undefined ? {} : { frontendRoot }),
+    ...(frontendSource === undefined ? {} : { frontendSource }),
     ...(frontendDev === undefined ? {} : { frontendDev, allowFrontendDevRemote: allowFrontendDevRemote === true }) }
 }
 
@@ -193,6 +197,7 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
       if (isAbsolute(source)) args.push('--live-library', source)
     }
     if (sources.frontendRoot !== undefined) args.push('--frontend-root', sources.frontendRoot)
+    if (sources.frontendSource !== undefined) args.push('--frontend-source', sources.frontendSource)
     if (sources.frontendDev !== undefined) args.push('--frontend-dev', sources.frontendDev)
     if (sources.allowFrontendDevRemote === true) args.push('--allow-frontend-dev-remote')
     if (confirmed) {

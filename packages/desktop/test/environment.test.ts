@@ -96,13 +96,15 @@ describe('Desktop dinkster-env command client', () => {
     const localPack = join(root, 'local pack')
     const helper = join(root, 'helper')
     for (const engine of [gitEngine, localEngine]) {
-      const development = { engine, packs: [gitPack, localPack], inference: gitInference, helper }
+      const frontendSource = 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=selected-frontend'
+      const development = { engine, packs: [gitPack, localPack], inference: gitInference, helper, frontendSource }
       const request = { root, operation: 'develop' as const, development }
       expect((await client.run(request)).sourceApproval).toBe(sourceApproval)
       const expected = ['--root', root, 'develop', '--source', engine,
         ...(engine === localEngine ? ['--contributor', '--live-engine'] : []),
         '--pack-source', gitPack, '--pack-source', localPack, '--live-pack', localPack,
-        '--library-source', gitInference, '--library-source', helper, '--live-library', helper]
+        '--library-source', gitInference, '--library-source', helper, '--live-library', helper,
+        '--frontend-source', frontendSource]
       expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...expected, '--json', '--plan'])
       await client.run({ ...request, sourceApproval }, true)
       expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...expected, '--approve', sourceApproval, '--json', '--yes'])
@@ -126,7 +128,14 @@ describe('Desktop dinkster-env command client', () => {
       expect(() => parseDevelopmentSources({ ...source, frontendDev: url, allowFrontendDevRemote: true })).toThrow()
     }
     expect(() => parseDevelopmentSources({ ...source, allowFrontendDevRemote: true })).toThrow('requires a dev server')
-    expect(() => parseDevelopmentSources({ ...source, frontendRoot: join(process.cwd(), 'bundle'), frontendDev: 'http://localhost:5173' })).toThrow('not both')
+    expect(() => parseDevelopmentSources({ ...source, frontendRoot: join(process.cwd(), 'bundle'), frontendDev: 'http://localhost:5173' })).toThrow('choose one')
+    const frontendSource = 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=main'
+    for (const alternative of [{ frontendRoot: join(process.cwd(), 'bundle') }, { frontendDev: 'http://localhost:5173' }]) {
+      expect(() => parseDevelopmentSources({ ...source, frontendSource, ...alternative })).toThrow('choose one')
+    }
+    for (const frontendSource of [join(process.cwd(), 'checkout'), 'http://host/repo.git', 'https://user:secret@host/repo.git', 'https://host/repo.git?token=secret']) {
+      expect(() => parseDevelopmentSources({ ...source, frontendSource })).toThrow()
+    }
   })
 
   it('passes exact host-owned pack reviews and requires explicit apply approval', async () => {

@@ -9,6 +9,14 @@ on:
       release_tag:
         type: string
         required: true
+      verification_source:
+        description: Harness revision, independent of the immutable release source
+        type: string
+        default: ''
+      stable_project_only:
+        description: Verify fresh Stable projects without repeating update controls
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ fromJSON(contains(inputs.release_tag, '-rc.') && '["current", "update", "corruption", "downgrade"]' || '["current", "update", "corruption", "downgrade", "stable-project"]') }}
+        scenario: ${{ fromJSON(inputs.stable_project_only && '["stable-project"]' || (contains(inputs.release_tag, '-rc.') && '["current", "update", "corruption", "downgrade"]' || '["current", "update", "corruption", "downgrade", "stable-project"]')) }}
     defaults:
       run:
         shell: pwsh
@@ -31,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source }}
+          ref: ${{ inputs.verification_source || inputs.source }}
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
@@ -122,14 +130,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ fromJSON(contains(inputs.release_tag, '-rc.') && '["current", "update", "corruption", "downgrade"]' || '["current", "update", "corruption", "downgrade", "stable-project"]') }}
+        scenario: ${{ fromJSON(inputs.stable_project_only && '["stable-project"]' || (contains(inputs.release_tag, '-rc.') && '["current", "update", "corruption", "downgrade"]' || '["current", "update", "corruption", "downgrade", "stable-project"]')) }}
     env:
       DINKSTER_ACCELERATOR: cpu
       CUDA_VISIBLE_DEVICES: ''
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source }}
+          ref: ${{ inputs.verification_source || inputs.source }}
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:

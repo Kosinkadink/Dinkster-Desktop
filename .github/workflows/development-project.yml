@@ -52,7 +52,7 @@ jobs:
       CUDA_VISIBLE_DEVICES: ''
       DINKSTER_ACCELERATOR: cpu
       DINKSTER_DEVELOPMENT_ARTIFACTS: ${{ github.workspace }}/test-results/development
-      DINKSTER_DEVELOPMENT_ENGINE: ${{ matrix.sources == 'mixed-git' && 'https://github.com/Kosinkadink/Dinkster.git#ref=33db5d4ab2123547e26f518f13c4c53adf2b2d6e' || format('{0}/test-sources/engine', github.workspace) }}
+      DINKSTER_DEVELOPMENT_ENGINE: ${{ matrix.sources == 'mixed-git' && 'https://github.com/Kosinkadink/Dinkster.git#ref=5239725e0d72b690047d178b92ccbf460e45d1ac' || format('{0}/test-sources/engine', github.workspace) }}
       DINKSTER_DEVELOPMENT_INFERENCE: ${{ github.workspace }}/test-sources/inference
       DINKSTER_DEVELOPMENT_HELPER: ${{ matrix.sources == 'mixed-git' && 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=008bc8a2dea546812dc451bcb9078b37e63c9ab3&subdirectory=packages/dinkster-pack-helpers' || format('{0}/test-sources/nodes/packages/dinkster-pack-helpers', github.workspace) }}
       DINKSTER_DEVELOPMENT_PACK: ${{ github.workspace }}/test-sources/nodes/packages/dinkster-nodes-utilities
@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Kosinkadink/Dinkster
-          ref: 33db5d4ab2123547e26f518f13c4c53adf2b2d6e
+          ref: 5239725e0d72b690047d178b92ccbf460e45d1ac
           path: test-sources/engine
           persist-credentials: false
       - uses: actions/checkout@v4

@@ -30,6 +30,8 @@ const sources = {
   pack: source('DINKSTER_DEVELOPMENT_PACK'),
   frontend: join(root, 'packages/app/dist'),
 }
+const frontendDev = process.env.DINKSTER_DEVELOPMENT_FRONTEND_DEV
+const frontendEdit = process.env.DINKSTER_DEVELOPMENT_FRONTEND_EDIT
 const project = join(scratch, 'project')
 const portServer = createServer()
 await new Promise((done) => portServer.listen(0, '127.0.0.1', done))
@@ -53,6 +55,7 @@ if (process.env.DINKSTER_DEVELOPMENT_TOOLS_PYTHON)
     process.env.DINKSTER_DEVELOPMENT_TOOLS_PYTHON,
   )
 let app
+let originalFrontend
 const receipt = {
   platform: process.platform,
   sources,
@@ -89,7 +92,9 @@ try {
     'development-inference': sources.inference,
     'development-helper': sources.helper,
     'development-packs': sources.pack,
-    'development-frontend': sources.frontend,
+    ...(frontendDev
+      ? { 'development-frontend-dev': frontendDev }
+      : { 'development-frontend': sources.frontend }),
   }))
     await manager.locator(`#${id}`).fill(value)
   await manager
@@ -149,7 +154,8 @@ try {
     sources.pack,
   ])
     assert(selectedPaths.includes(path), `selected source missing: ${path}`)
-  assert.equal(resolve(receipt.selection.frontendRoot), sources.frontend)
+  if (frontendDev) assert.equal(receipt.selection.frontendDev, frontendDev)
+  else assert.equal(resolve(receipt.selection.frontendRoot), sources.frontend)
   const health = await fetch(`http://127.0.0.1:${port}/api/health`)
   assert(health.ok)
   receipt.health = await health.json()
@@ -179,6 +185,13 @@ try {
   const opened = app.waitForEvent('window')
   await manager.getByRole('button', { name: 'Open main', exact: true }).click()
   const engine = await opened
+  const connected = []
+  engine.on('websocket', (socket) => {
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload === 'string' && payload.includes('"type":"connected"'))
+        connected.push(new URL(socket.url()).origin)
+    })
+  })
   await expect
     .poll(
       () =>
@@ -197,10 +210,40 @@ try {
     ['chooseDirectory', 'fileCapabilities', 'resolveDroppedFile', 'revealFile'],
   )
   const served = await fetch(`http://127.0.0.1:${port}/`)
-  assert.equal(
-    await served.text(),
-    await readFile(join(sources.frontend, 'index.html'), 'utf8'),
-  )
+  if (frontendDev) {
+    assert((await served.text()).includes('/@vite/client'))
+    await expect.poll(() => connected.length).toBeGreaterThan(0)
+    const engineOrigin = new URL(engine.url()).origin.replace('http:', 'ws:')
+    assert(
+      connected.includes(engineOrigin),
+      'HMR bypassed the Desktop engine gateway',
+    )
+    receipt.hmrOrigins = connected
+    if (frontendEdit) {
+      originalFrontend = await readFile(frontendEdit, 'utf8')
+      await writeFile(
+        frontendEdit,
+        originalFrontend.replace(
+          '</body>',
+          '<script>document.body.dataset.developmentEdit="received"</script></body>',
+        ),
+      )
+      await engine.waitForFunction(
+        () => document.body.dataset.developmentEdit === 'received',
+      )
+      receipt.liveEdit = 'received without manual reload'
+    }
+  } else
+    assert.equal(
+      await served.text(),
+      await readFile(join(sources.frontend, 'index.html'), 'utf8'),
+    )
+  await expect(engine.getByText('connected', { exact: true })).toBeVisible({
+    timeout: 120_000,
+  })
+  await expect(
+    engine.getByText('27 node schemas', { exact: true }),
+  ).toBeVisible({ timeout: 120_000 })
   await manager
     .locator('#projects')
     .screenshot({ path: join(scratch, 'development-project-list.png') })
@@ -223,6 +266,8 @@ try {
   }
   throw error
 } finally {
+  if (originalFrontend !== undefined)
+    await writeFile(frontendEdit, originalFrontend)
   if (app) await app.close().catch(() => {})
   await writeFile(
     join(scratch, 'receipt.json'),

@@ -40,6 +40,12 @@ jobs:
           - os: windows-latest
             frontend: dev-server
             sources: mixed-git
+          - os: ubuntu-latest
+            frontend: git
+            sources: mixed-git
+          - os: windows-latest
+            frontend: git
+            sources: mixed-git
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -51,6 +57,7 @@ jobs:
       DINKSTER_DEVELOPMENT_HELPER: ${{ matrix.sources == 'mixed-git' && 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=008bc8a2dea546812dc451bcb9078b37e63c9ab3&subdirectory=packages/dinkster-pack-helpers' || format('{0}/test-sources/nodes/packages/dinkster-pack-helpers', github.workspace) }}
       DINKSTER_DEVELOPMENT_PACK: ${{ github.workspace }}/test-sources/nodes/packages/dinkster-nodes-utilities
       DINKSTER_DEVELOPMENT_FRONTEND_SOURCE: ${{ matrix.frontend == 'dev-server' && format('{0}/test-sources/frontend', github.workspace) || '' }}
+      DINKSTER_DEVELOPMENT_FRONTEND_GIT: ${{ matrix.frontend == 'git' && 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=6af6cb494d2989331b56cef9cfa610e06fd77da5' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:

@@ -35,8 +35,13 @@ const sources = {
 let frontendDev = process.env.DINKSTER_DEVELOPMENT_FRONTEND_DEV
 let frontendEdit = process.env.DINKSTER_DEVELOPMENT_FRONTEND_EDIT
 const frontendSource = process.env.DINKSTER_DEVELOPMENT_FRONTEND_SOURCE
-if (frontendSource && frontendDev)
-  throw new Error('choose an owned frontend source or an existing dev server')
+const frontendGit = process.env.DINKSTER_DEVELOPMENT_FRONTEND_GIT
+if ([frontendSource, frontendDev, frontendGit].filter(Boolean).length > 1)
+  throw new Error(
+    'choose a frontend Git source, owned source or existing dev server',
+  )
+if (frontendGit && !frontendGit.startsWith('https://'))
+  throw new Error('frontend Git selection requires an explicit HTTPS source')
 const project = join(scratch, 'project')
 const portServer = createServer()
 await new Promise((done) => portServer.listen(0, '127.0.0.1', done))
@@ -117,9 +122,11 @@ try {
     'development-inference': sources.inference,
     'development-helper': sources.helper,
     'development-packs': sources.pack,
-    ...(frontendDev
-      ? { 'development-frontend-dev': frontendDev }
-      : { 'development-frontend': sources.frontend }),
+    ...(frontendGit
+      ? { 'development-frontend-git': frontendGit }
+      : frontendDev
+        ? { 'development-frontend-dev': frontendDev }
+        : { 'development-frontend': sources.frontend }),
   }))
     await manager.locator(`#${id}`).fill(value)
   await manager
@@ -174,6 +181,7 @@ try {
     ['library', sources.inference],
     ['library', sources.helper],
     ['pack', sources.pack],
+    ...(frontendGit ? [['frontend', frontendGit]] : []),
   ]) {
     if (value.startsWith('https://')) {
       const selected = new URL(value)
@@ -201,7 +209,8 @@ try {
       )
   }
   if (frontendDev) assert.equal(receipt.selection.frontendDev, frontendDev)
-  else assert.equal(resolve(receipt.selection.frontendRoot), sources.frontend)
+  else if (!frontendGit)
+    assert.equal(resolve(receipt.selection.frontendRoot), sources.frontend)
   const health = await fetch(`http://127.0.0.1:${port}/api/health`)
   assert(health.ok)
   receipt.health = await health.json()
@@ -283,6 +292,20 @@ try {
       )
       receipt.liveEdit = 'received without manual reload'
     }
+  } else if (frontendGit) {
+    const installed = await execute(
+      python,
+      [
+        '-I',
+        '-c',
+        "import importlib.resources as r; import sys; p=r.files('dinkster_frontend').joinpath('static/index.html'); assert p.is_relative_to(sys.prefix); sys.stdout.buffer.write(p.read_bytes())",
+      ],
+      { env, maxBuffer: 16 * 1024 * 1024 },
+    )
+    assert.equal(await served.text(), installed.stdout)
+    receipt.frontendGit = frontendGit
+    receipt.frontendHtml =
+      'served bytes match the installed captured Git frontend'
   } else
     assert.equal(
       await served.text(),

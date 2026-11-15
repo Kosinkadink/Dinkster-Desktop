@@ -1,7 +1,9 @@
 import { createHash, createPublicKey, verify } from 'node:crypto'
 
-// An empty trust set refuses every signature; mirrors cannot provision keys.
-const CHANNEL_KEYS: Readonly<Record<string, string>> = {}
+// Trust roots are provisioned independently of mirrors and channel contents.
+const CHANNEL_KEYS: Readonly<Record<string, string>> = {
+  'sha256:4b5b2c78b32db1ebedc4702a92d6e4e252c17531f0e102ab82dd910be6dec7b9': 'm6rm7XY806I6eifUgiElbaK4nYkWQlDU+WjdsH8Eb9Q='
+}
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)

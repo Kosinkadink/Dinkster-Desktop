@@ -57,6 +57,58 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('selects managed source components with CLI-owned approval and keeps refs read-only', async () => {
+    const { root, client } = await commandFixture()
+    const approval = `sha256:${'c'.repeat(64)}`
+    const base = { root, operation: 'source' as const, sourceAction: 'add' as const,
+      sourceUrl: 'https://github.com/Kosinkadink/source#subdirectory=packages/helper', sourceRef: 'refs/pull/23/head',
+      gitMirror: 'https://mirror.example.org', packageIndex: 'https://packages.example.org/simple' }
+    for (const [target, flags] of [
+      ['engine', []], ['pack', ['--pack', 'selected-pack']],
+      ['inference', ['--library', 'dinkster-inference']], ['helper', ['--library', 'dinkster-pack-helpers']], ['frontend', ['--frontend']],
+    ] as const) {
+      const request = { ...base, sourceTarget: target, ...(target === 'pack' ? { sourceName: 'selected-pack' } : {}) }
+      await client.run(request)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+        '--root', root, 'source', 'add', base.sourceUrl, ...flags, '--ref', base.sourceRef,
+        '--git-mirror', base.gitMirror, '--package-index', base.packageIndex, '--json', '--plan',
+      ])
+      await expect(client.run(request, true)).rejects.toThrow('reviewed supervisor approval')
+      await client.run({ ...request, sourceApproval: approval }, true)
+      const args = JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8')) as string[]
+      expect(args.slice(args.indexOf('--source-approval'), args.indexOf('--source-approval') + 2)).toEqual(['--source-approval', approval])
+      expect(args.at(-1)).toBe('--yes')
+      await expect(client.run({ ...request, sourceApproval: approval })).rejects.toThrow('reviewed supervisor approval')
+    }
+    await client.run({ root, operation: 'source', sourceAction: 'refs', sourceUrl: base.sourceUrl, gitMirror: base.gitMirror })
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'source', 'refs', base.sourceUrl, '--git-mirror', base.gitMirror, '--json'])
+    await client.run({ root, operation: 'source', sourceAction: 'release' })
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'source', 'release', '--json', '--plan'])
+    await client.run({ root, operation: 'restore', historyEntry: 7 }, true)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'restore', '7', '--json', '--yes'])
+    for (const changes of [
+      { sourceUrl: 'https://user:password@example.org/repo' }, { sourceUrl: 'file:///source' },
+      { sourceRef: '--yes' }, { sourceTarget: 'pack' as const, sourceName: '--yes' }, { channel: 'stable' as const },
+    ]) await expect(client.run({ ...base, sourceTarget: 'engine', ...changes })).rejects.toThrow()
+    await client.dispose()
+  })
+
+  it('requires the planned published frontend identity before confirming a version', async () => {
+    const { root, client } = await commandFixture()
+    const request = { root, operation: 'update' as const, frontendVersion: '0.3.2rc1' }
+    await client.run(request)
+    await expect(client.run(request, true)).rejects.toThrow('reviewed supervisor approval')
+    const approval = `sha256:${'d'.repeat(64)}`
+    await client.run({ ...request, frontendApproval: approval }, true)
+    const args = JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8')) as string[]
+    expect(args).toContain('0.3.2rc1')
+    expect(args.slice(args.indexOf('--frontend-approval'), args.indexOf('--frontend-approval') + 2)).toEqual(['--frontend-approval', approval])
+    await expect(client.run({ ...request, frontendApproval: approval })).rejects.toThrow('reviewed supervisor approval')
+    await expect(client.run({ ...request, frontendVersion: '--yes' })).rejects.toThrow('published frontend version')
+    await expect(client.run({ root, operation: 'status', frontendVersion: '0.3.2' })).rejects.toThrow('setup or update')
+    await client.dispose()
+  })
+
   it('passes exact host-owned pack reviews and requires explicit apply approval', async () => {
     const { root, client } = await commandFixture()
     const inputs = join(root, 'review inputs')

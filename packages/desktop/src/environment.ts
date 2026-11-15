@@ -8,7 +8,7 @@ import { channelTools } from './environment-channel.js'
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply'
+export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply' | 'source' | 'restore'
 export type EnvironmentChannel = 'stable' | 'nightly'
 
 export interface EnvironmentRequest {
@@ -29,6 +29,17 @@ export interface EnvironmentRequest {
   readonly progress?: string
   readonly automaticCleanup?: boolean
   readonly keepPreviousGenerations?: number
+  readonly sourceAction?: 'add' | 'update' | 'refs' | 'release'
+  readonly sourceTarget?: 'engine' | 'pack' | 'inference' | 'helper' | 'frontend'
+  readonly sourceUrl?: string
+  readonly sourceName?: string
+  readonly sourceRef?: string
+  readonly gitMirror?: string
+  readonly packageIndex?: string
+  readonly sourceApproval?: string
+  readonly frontendVersion?: string
+  readonly frontendApproval?: string
+  readonly historyEntry?: number
 }
 
 export interface EnvironmentEngine {
@@ -91,6 +102,14 @@ export interface EnvironmentResult {
   readonly packPlan?: Readonly<Record<string, unknown>>
   readonly approval?: string
   readonly expiresInSeconds?: number
+  readonly sourceApproval?: string
+  readonly frontendApproval?: string
+  readonly restoredFrom?: number
+  readonly source?: string
+  readonly published?: boolean
+  readonly reproducible?: boolean
+  readonly sources?: Readonly<Record<string, unknown>>
+  readonly frontend?: Readonly<Record<string, unknown>>
   readonly engines?: readonly EnvironmentEngine[]
   readonly cleanup?: EnvironmentCleanup
   readonly cleanupAttempt?: CleanupAttempt
@@ -119,9 +138,68 @@ export interface EnvironmentResult {
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
-  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'space', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
+  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'space', 'packs-plan', 'packs-apply', 'source', 'restore'].includes(request.operation)) throw new Error('unsupported environment operation')
   if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
+  const sourceFields = ['sourceAction', 'sourceTarget', 'sourceUrl', 'sourceName', 'sourceRef', 'gitMirror', 'sourceApproval'] as const
+  if (request.operation === 'source') {
+    if (!request.sourceAction || !['add', 'update', 'refs', 'release'].includes(request.sourceAction)) throw new Error('choose a managed source operation')
+    if (['channel', 'variant', 'mirrors', 'data', 'port', 'destination', 'repair', 'engine', 'gpus', 'packs', 'inputs', 'approval', 'progress', 'automaticCleanup', 'keepPreviousGenerations', 'frontendVersion', 'frontendApproval', 'historyEntry'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) throw new Error('source operations retain current project settings')
+    args.push(request.sourceAction)
+    if (request.sourceAction === 'add' || request.sourceAction === 'refs') {
+      const url = new URL(request.sourceUrl ?? '')
+      if (url.protocol !== 'https:' || url.username || url.password || url.search) throw new Error('source URL requires credential-free public HTTPS')
+      args.push(request.sourceUrl!)
+    } else if (request.sourceUrl !== undefined) throw new Error('only add or refs accepts a source URL')
+    if (request.sourceAction === 'release' || request.sourceAction === 'refs') {
+      if (request.sourceTarget !== undefined || request.sourceName !== undefined || request.sourceRef !== undefined || request.sourceApproval !== undefined || request.packageIndex !== undefined || (request.sourceAction === 'release' && request.gitMirror !== undefined)) throw new Error('release and refs do not accept source selection inputs')
+    } else {
+      if (!request.sourceTarget || !['engine', 'pack', 'inference', 'helper', 'frontend'].includes(request.sourceTarget)) throw new Error('choose a managed source target')
+      if (request.sourceTarget === 'pack') {
+        if (request.sourceName !== undefined && !/^[a-z][a-z0-9-]*$/.test(request.sourceName)) throw new Error('invalid source pack name')
+        if (request.sourceAction === 'update' && !request.sourceName) throw new Error('pack update needs its installed name')
+        args.push('--pack', ...(request.sourceName ? [request.sourceName] : []))
+      } else {
+        if (request.sourceName !== undefined) throw new Error('only pack sources accept a pack name')
+        if (request.sourceTarget === 'frontend') args.push('--frontend')
+        if (request.sourceTarget === 'inference' || request.sourceTarget === 'helper') args.push('--library', request.sourceTarget === 'inference' ? 'dinkster-inference' : 'dinkster-pack-helpers')
+      }
+      if (request.sourceRef !== undefined) {
+        if (!request.sourceRef || request.sourceRef.startsWith('-') || /[\x00-\x1f]/.test(request.sourceRef)) throw new Error('invalid source ref')
+        args.push('--ref', request.sourceRef)
+      }
+      if (confirmed !== (request.sourceApproval !== undefined)) throw new Error('source apply requires the reviewed supervisor approval')
+      if (request.sourceApproval !== undefined) {
+        if (!/^sha256:[a-f0-9]{64}$/.test(request.sourceApproval)) throw new Error('invalid source approval')
+        args.push('--source-approval', request.sourceApproval)
+      }
+    }
+    for (const [flag, value] of [['--git-mirror', request.gitMirror], ['--package-index', request.packageIndex]] as const) {
+      if (value !== undefined) {
+        if (!value || value.startsWith('-') || /[\x00-\x1f]/.test(value)) throw new Error('invalid source mirror or package index')
+        args.push(flag, value)
+      }
+    }
+    return [...args, '--json', ...(request.sourceAction === 'refs' ? [] : [confirmed ? '--yes' : '--plan'])]
+  }
+  if (sourceFields.some((key) => request[key] !== undefined)) throw new Error('source selection requires a source operation')
+  if (request.historyEntry !== undefined) {
+    if (request.operation !== 'restore' || !Number.isSafeInteger(request.historyEntry) || request.historyEntry < 1) throw new Error('restore requires an exact history entry')
+    args.push(String(request.historyEntry))
+  } else if (request.operation === 'restore') throw new Error('restore requires an exact history entry')
+  if (request.frontendVersion !== undefined) {
+    if (!['setup', 'update'].includes(request.operation) || !/^[0-9][a-zA-Z0-9.!+_-]*$/.test(request.frontendVersion)) throw new Error('published frontend version requires setup or update')
+    if (confirmed !== (request.frontendApproval !== undefined)) throw new Error('frontend apply requires the reviewed supervisor approval')
+    args.push('--frontend-version', request.frontendVersion)
+    if (request.frontendApproval !== undefined) {
+      if (!/^sha256:[a-f0-9]{64}$/.test(request.frontendApproval)) throw new Error('invalid frontend approval')
+      args.push('--frontend-approval', request.frontendApproval)
+    }
+  } else if (request.frontendApproval !== undefined) throw new Error('frontend approval requires a published version')
+  if (request.packageIndex !== undefined) {
+    if (!['setup', 'update'].includes(request.operation) || !request.packageIndex || request.packageIndex.startsWith('-')) throw new Error('package index requires setup or update')
+    args.push('--package-index', request.packageIndex)
+  }
   if (request.operation === 'packs-plan' || request.operation === 'packs-apply') {
     if (!request.inputs || !isAbsolute(request.inputs)) throw new Error('pack installation needs an absolute host-owned review directory')
     if (['channel', 'variant', 'mirrors', 'data', 'port', 'destination', 'repair', 'engine', 'gpus', 'automaticCleanup', 'keepPreviousGenerations'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) {
@@ -274,6 +352,17 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
   }
+  for (const key of ['sourceApproval', 'frontendApproval']) {
+    if (row[key] !== undefined && (typeof row[key] !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(row[key] as string))) throw new Error('unsupported supervisor source approval')
+  }
+  if (row['restoredFrom'] !== undefined && (!Number.isSafeInteger(row['restoredFrom']) || Number(row['restoredFrom']) < 1)) throw new Error('unsupported restored history entry')
+  for (const key of ['sources', 'frontend']) {
+    if (row[key] !== undefined && (!row[key] || typeof row[key] !== 'object' || Array.isArray(row[key]))) throw new Error('unsupported source metadata')
+  }
+  for (const key of ['published', 'reproducible']) {
+    if (row[key] !== undefined && typeof row[key] !== 'boolean') throw new Error('unsupported source disclosure')
+  }
+  if (row['source'] !== undefined && typeof row['source'] !== 'string') throw new Error('unsupported source kind')
   if ((row['cleanup'] !== undefined && !validCleanup(row['cleanup']))
     || (row['cleanupAttempt'] !== undefined && !validAttempt(row['cleanupAttempt']))) throw new Error('unsupported dinkster-env cleanup response')
   if ((row['space'] !== undefined && !validSpace(row['space'], String(row['root'])))
@@ -415,7 +504,7 @@ export class EnvironmentClient {
       throw new Error(`dinkster-env ${request.operation} did not complete; inspect the project journal.`)
     }
     const result = resultFrom(stdout, request.operation)
-    if ((request.operation === 'packs-plan' || request.operation === 'packs-apply')
+    if (['packs-plan', 'packs-apply', 'source', 'restore'].includes(request.operation)
       && await realpath(result.root) !== await realpath(request.root)) throw new Error('dinkster-env returned a different project root')
     if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))
     return result

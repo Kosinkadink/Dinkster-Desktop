@@ -52,6 +52,10 @@ function showPlan(result: EnvironmentResult, token?: string): void {
     label.push(`Engine: ${result.engine.version} (${result.engine.release})`)
     if (result.engine.label) label.push(`Engine label: ${result.engine.label}`)
   }
+  if (result.source || result.published !== undefined) label.push(`Source kind: ${result.source ?? 'source'}`, `Published: ${result.published === true ? 'yes' : 'no'}`, `Reproducible: ${result.reproducible === true ? 'yes' : 'no'}`)
+  if (result.sources) label.push('Selected source identities:', JSON.stringify(result.sources, null, 2))
+  if (result.frontend) label.push('Selected frontend:', JSON.stringify(result.frontend, null, 2))
+  if (result.restoredFrom !== undefined) label.push(`Restore recorded release history entry: ${result.restoredFrom}`)
   if (result.cleanup) {
     const cleanup = result.cleanup
     label.push(`Automatic generation cleanup: ${cleanup.policy ? (cleanup.policy.automatic ? 'on' : 'off') : 'unavailable'}`)
@@ -185,8 +189,13 @@ function populateLocal(project: DesktopProject | undefined, engineId?: string): 
     'local-port': String(engine?.kind === 'local' ? engine.port ?? 3639 : 3639),
     'local-operation': project ? 'update' : 'setup',
   })) document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`)!.value = value
+  document.querySelector<HTMLElement>('#source-settings')!.hidden = field('local-operation') !== 'source'
   clearHardware()
 }
+
+document.querySelector<HTMLSelectElement>('#local-operation')!.addEventListener('change', () => {
+  document.querySelector<HTMLElement>('#source-settings')!.hidden = field('local-operation') !== 'source'
+})
 
 document.querySelector<HTMLSelectElement>('#local-project')!.addEventListener('change', () => {
   populateLocal(savedProjects.find((project) => project.id === field('local-project')))
@@ -258,6 +267,19 @@ document.querySelector<HTMLFormElement>('#local')!.addEventListener('submit', (e
       ...(operation === 'move' ? { destination: field('local-destination') } : {}),
       ...(operation === 'cleanup' && field('local-cleanup') !== 'keep' ? { automaticCleanup: field('local-cleanup') === 'on' } : {}),
       ...(operation === 'cleanup' && field('local-keep-previous') !== '' ? { keepPreviousGenerations: Number(field('local-keep-previous')) } : {}),
+      ...(['setup', 'update'].includes(operation) && field('local-frontend-version') ? { frontendVersion: field('local-frontend-version') } : {}),
+      ...(['setup', 'update'].includes(operation) && field('local-package-index') ? { packageIndex: field('local-package-index') } : {}),
+      ...(operation === 'source' ? {
+        sourceAction: field('source-action') as NonNullable<EnvironmentRequest['sourceAction']>,
+        ...(['add', 'refs'].includes(field('source-action')) ? { sourceUrl: field('source-url') } : {}),
+        ...(['add', 'update'].includes(field('source-action')) ? {
+          sourceTarget: field('source-target') as NonNullable<EnvironmentRequest['sourceTarget']>,
+          ...(field('source-target') === 'pack' && field('source-name') ? { sourceName: field('source-name') } : {}),
+          ...(field('source-ref') ? { sourceRef: field('source-ref') } : {}),
+          ...(field('local-package-index') ? { packageIndex: field('local-package-index') } : {}),
+        } : {}),
+        ...(field('source-action') !== 'release' && field('source-mirror') ? { gitMirror: field('source-mirror') } : {}),
+      } : {}),
     }
     const planned = await bridge.plan(project, request)
     showPlan(planned.result, planned.token)

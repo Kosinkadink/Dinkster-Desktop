@@ -11,6 +11,7 @@ export interface EnvironmentToolsInput {
   readonly sha256: string
   readonly release: string
   readonly cacheRoot?: string
+  readonly platform?: 'linux'
 }
 
 function source(location: string): URL | string {
@@ -85,7 +86,8 @@ async function acquireTools(input: EnvironmentToolsInput): Promise<{ python: str
     await acquire(input.manifest, manifestPath, 8 * 1024 * 1024)
     await verifyFile(manifestPath, input.sha256)
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as ToolsManifest
-    const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
+    const platform = input.platform ?? process.platform
+    const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[platform as 'win32' | 'linux' | 'darwin']
     const arch = { x64: 'x86_64', arm64: 'arm64' }[process.arch as 'x64' | 'arm64']
     if (!os || !arch) throw new Error('unsupported tools platform')
     const artifacts = validateToolsManifest(manifest, input.sha256, input.label)
@@ -93,7 +95,7 @@ async function acquireTools(input: EnvironmentToolsInput): Promise<{ python: str
     const rows = artifacts.filter((row) => row.name === name)
     const row = rows[0]
     if (rows.length !== 1 || !validArtifact(row)) throw new Error('tools manifest has no unique pinned native tools archive')
-    const interpreter = process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'
+    const interpreter = platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'
     const allocations: { name: string; sha256: string }[] = []
     let cached: string | undefined
     if (input.cacheRoot) {

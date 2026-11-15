@@ -90,6 +90,10 @@ contextBridge.exposeInMainWorld('dinksterDesktop', localFilesOnly ? {
 } : bridge)
 
 const projects: ProjectDialogBridge = {
+  wslStatus: () => ipcRenderer.invoke('desktop:wsl-status'),
+  prepareWsl: () => ipcRenderer.invoke('desktop:wsl-prepare'),
+  wslProjectRoot: (id) => ipcRenderer.invoke('desktop:wsl-project-root', id),
+  copyWslModels: () => ipcRenderer.invoke('desktop:wsl-copy-models'),
   list: () => ipcRenderer.invoke('desktop:projects-list') as Promise<DesktopProjects>,
   save: (project) => ipcRenderer.invoke('desktop:projects-save', project) as Promise<void>,
   remove: (projectId) => ipcRenderer.invoke('desktop:projects-remove', projectId) as Promise<void>,

@@ -3,6 +3,7 @@ import { dirname, isAbsolute, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { DesktopAssetIdentity, DesktopDroppedFileResult, DesktopFileCapabilities } from './types.js'
 import { validProjectId } from './window-layout.js'
+import { wslLinuxPath, wslWindowsPath } from './wsl.js'
 
 export async function chooseDirectory(
   packaged: boolean,
@@ -40,7 +41,7 @@ export function requireLocalFiles(backendUrl: unknown, managedUrl: string | unde
 }
 
 /** Only the managed backend supplies host paths; renderer input is identity only. */
-export async function assetLocations(backendUrl: string, input: unknown, project: string): Promise<readonly { path: string; root: string }[]> {
+export async function assetLocations(backendUrl: string, input: unknown, project: string, distribution?: string): Promise<readonly { path: string; root: string }[]> {
   if (!input || typeof input !== 'object') throw new Error('Invalid local asset identity')
   const asset = input as DesktopAssetIdentity
   if (Object.keys(asset).some((key) => !['digest', 'scope', 'project'].includes(key))
@@ -56,6 +57,15 @@ export async function assetLocations(backendUrl: string, input: unknown, project
     vault?: unknown
     locations?: { storage?: unknown; path?: unknown; mount?: unknown }[]
     activeMounts?: { id?: unknown; path?: unknown }[]
+  }
+  if (distribution) {
+    if (typeof body.vault === 'string') body.vault = wslWindowsPath(distribution, body.vault)
+    if (Array.isArray(body.locations)) for (const location of body.locations) {
+      if (typeof location?.path === 'string') location.path = wslWindowsPath(distribution, location.path)
+    }
+    if (Array.isArray(body.activeMounts)) for (const mount of body.activeMounts) {
+      if (typeof mount?.path === 'string') mount.path = wslWindowsPath(distribution, mount.path)
+    }
   }
   if (typeof body.vault !== 'string' || !isAbsolute(body.vault) || !Array.isArray(body.locations) || !Array.isArray(body.activeMounts)) {
     throw new Error('This backend cannot authorize exact local asset reveal')
@@ -90,10 +100,11 @@ export async function dropResolutionSupported(backendUrl: string): Promise<boole
 }
 
 /** Only advertised support permits sending a native path to the resolver. */
-export async function resolveDroppedPath(backendUrl: string, path: unknown, project: string, authorize: () => Promise<void>): Promise<DesktopDroppedFileResult> {
+export async function resolveDroppedPath(backendUrl: string, path: unknown, project: string, authorize: () => Promise<void>, distribution?: string): Promise<DesktopDroppedFileResult> {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || !validProjectId(project)) {
     throw new Error('Invalid native file resolution request')
   }
+  const enginePath = distribution ? wslLinuxPath(distribution, path) : path
   await authorize()
   const url = new URL('/api/mounts/resolve-path', backendUrl)
   try {
@@ -102,7 +113,7 @@ export async function resolveDroppedPath(backendUrl: string, path: unknown, proj
     if (!supported) return { status: 'refused', reason: 'unsupported-backend' }
     const response = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path, project, scope: 'local' }),
+      body: JSON.stringify({ path: enginePath, project, scope: 'local' }),
       redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
     })
     await authorize()

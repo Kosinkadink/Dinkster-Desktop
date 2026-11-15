@@ -30,6 +30,31 @@ approval gate later, the owner adds themselves as a required reviewer under
 Settings -> Environments -> desktop-signing; no workflow change is needed.
 The desk controls release timing through the `Release` label; the tag job creates the version ref and the publisher creates its release without moving that ref.
 
+## WSL2 engine on Windows x64
+
+In **Manage a local installation**, select **WSL2 - private Linux disk**.
+**Check WSL2** reports availability and installation guidance; Desktop never
+changes the Windows version. After WSL2 is enabled, **Prepare private
+distribution** downloads Ubuntu 24.04, installs Bubblewrap, and creates a
+Desktop-owned distribution. It does not adopt or reconfigure existing user
+distributions. The private distribution disables Windows drive automount and
+Windows executable interop.
+
+**Use Linux project folder** selects a project under `/home/dinkster/projects`
+on that distribution's disk. Its environment tools, library and engines run
+through `wsl.exe` as a non-root Linux user, with verified Linux tools acquired
+from the pinned tools release or the selected channel's tools pin. Windows
+Python and development-executable overrides do not run WSL projects.
+
+**Copy Windows model folder** makes a separate copy under
+`/home/dinkster/models`; originals stay in place. Links and existing destination
+names are refused. Add the copied Linux folder in the engine's model settings.
+Native folder choice, dropped paths and exact-file reveal translate only paths
+on the project's private WSL disk. A Windows-drive folder must be copied first;
+it is not passed into the pack jail. The project manager stores the native
+`\\wsl.localhost\Dinkster-Desktop-...` path while environment commands receive
+its Linux spelling.
+
 ## Apple Silicon macOS
 
 Apple Silicon on macOS 14 or newer is the supported Mac target. Intel Macs

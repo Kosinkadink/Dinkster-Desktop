@@ -131,7 +131,16 @@ const url = ${JSON.stringify(urls)}[updated ? 1 : 0];
 const row = {format:'dinkster.environment-result/1',operation,
 status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,current:updated ? 2 : 1,
 ...(operation === 'doctor' ? JSON.parse(fs.readFileSync(${JSON.stringify(installed)}, 'utf8')) : {}),
-plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current'],url,
+...(operation === 'source' ? (args.includes('release') ? {restoredFrom:7} : {sourceApproval:'sha256:'+'e'.repeat(64),source:'git',published:false,reproducible:true,sources:{engine:{commit:'a'.repeat(40)}}}) : {}),
+...(args.includes('--frontend-version') ? {frontendApproval:'sha256:'+'b'.repeat(64),frontend:{version:args[args.indexOf('--frontend-version')+1]}} : {}),
+...(operation === 'develop' ? {sourceApproval:'sha256:'+'d'.repeat(64), sourceDescription:'Unpublished development sources',
+  development:{sources:args.filter((value) => value.startsWith('https://')).map((value) => {
+    const url = new URL(value); const fields = new URLSearchParams(url.hash.slice(1)); url.hash = '';
+    return {kind:'selected source',git:{url:url.href,requestedRef:fields.get('ref'),commit:'f'.repeat(40),subdirectory:fields.get('subdirectory') ?? '.'}};
+  })}} : {}),
+plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current',
+  ...(args.includes('--frontend-dev') ? ['proxy frontend dev server '+args[args.indexOf('--frontend-dev')+1]] : []),
+  ...(args.includes('--allow-frontend-dev-remote') ? ['explicitly allow a non-loopback frontend dev server'] : [])],url,
 engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]};
 if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
 console.log(JSON.stringify(row));
@@ -682,6 +691,231 @@ console.log(JSON.stringify(row));
       path: join(artifacts, 'local-applied.png'),
       fullPage: true,
     })
+  await manager.locator('#local-kind').selectOption('development')
+  await manager
+    .locator('#development-engine')
+    .fill(join(scratch, 'engine checkout'))
+  await manager
+    .locator('#development-inference')
+    .fill(join(scratch, 'inference'))
+  await manager.locator('#development-helper').fill(join(scratch, 'helper'))
+  await manager.locator('#development-packs').fill(join(scratch, 'pack one'))
+  await manager
+    .locator('#development-frontend')
+    .fill(join(scratch, 'frontend dist'))
+  await manager
+    .getByRole('button', { name: 'Inspect hardware and variants' })
+    .click()
+  await manager.locator('#local-variant').selectOption('linux-cpu')
+  if (artifacts)
+    await manager
+      .locator('#local-settings')
+      .screenshot({ path: join(artifacts, 'development-setup.png') })
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await manager.getByRole('button', { name: 'Confirm and apply' }).waitFor()
+  let developmentCalls = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'develop')
+  assert.equal(developmentCalls.length, 1)
+  assert(developmentCalls[0].includes('--plan'))
+  assert(!developmentCalls[0].includes('--approve'))
+  await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await expect(manager.locator('#apply')).toBeHidden()
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
+  await expect(manager.locator('#projects')).toContainText(
+    'Development - unpublished sources',
+  )
+  await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
+  await expect
+    .poll(() =>
+      engine
+        .locator('body')
+        .evaluate((body) => getComputedStyle(body, '::after').content),
+    )
+    .toBe('"Development project - unpublished sources"')
+  assert(
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().some(
+        (window) =>
+          window.getTitle() ===
+          'Dinkster Desktop - Development - unpublished sources',
+      ),
+    ),
+  )
+  assert.equal(
+    await engine.evaluate(() => typeof window.dinksterProjects),
+    'undefined',
+  )
+  assert.deepEqual(
+    await engine.evaluate(() => Object.keys(window.dinksterDesktop).sort()),
+    ['chooseDirectory', 'fileCapabilities', 'resolveDroppedFile', 'revealFile'],
+  )
+  developmentCalls = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'develop')
+  assert.equal(developmentCalls.length, 3)
+  const appliedDevelopment = developmentCalls[2]
+  assert.equal(
+    appliedDevelopment[appliedDevelopment.indexOf('--approve') + 1],
+    'sha256:' + 'd'.repeat(64),
+  )
+  assert(appliedDevelopment.includes('--yes'))
+  if (artifacts) {
+    await manager
+      .locator('#projects')
+      .screenshot({ path: join(artifacts, 'development-project-list.png') })
+    await engine.screenshot({ path: join(artifacts, 'development-engine.png') })
+  }
+  await manager.locator('#development-frontend').fill('')
+  await manager
+    .locator('#development-frontend-dev')
+    .fill('http://192.0.2.1:5173')
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#message')).toContainText('explicit permission')
+  await expect(manager.locator('#apply')).toBeHidden()
+  await manager.locator('#development-frontend-remote').check()
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#apply')).toBeVisible()
+  const remoteFrontendCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'develop')
+    .at(-1)
+  assert(remoteFrontendCall.includes('--allow-frontend-dev-remote'))
+  assert.equal(
+    remoteFrontendCall[remoteFrontendCall.indexOf('--frontend-dev') + 1],
+    'http://192.0.2.1:5173',
+  )
+  if (artifacts) {
+    await manager
+      .locator('#development-sources')
+      .screenshot({ path: join(artifacts, 'development-dev-server-setup.png') })
+    await manager
+      .locator('#plan-panel')
+      .screenshot({ path: join(artifacts, 'development-dev-server-plan.png') })
+  }
+  await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  const gitPack =
+    'https://github.com/Kosinkadink/dinkster-nodes.git#ref=refs/pull/123/head&subdirectory=packages/dinkster-nodes-utilities'
+  await manager.locator('#development-packs').fill(gitPack)
+  await manager.locator('#development-frontend-dev').fill('')
+  await manager.locator('#development-frontend-remote').uncheck()
+  const gitFrontend =
+    'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=selected-frontend'
+  await manager.locator('#development-frontend-git').fill(gitFrontend)
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#apply')).toBeVisible()
+  await expect(manager.locator('#plan')).toContainText(
+    'Requested ref: refs/pull/123/head',
+  )
+  await expect(manager.locator('#plan')).toContainText(
+    `Resolved commit: ${'f'.repeat(40)}`,
+  )
+  await expect(manager.locator('#plan')).toContainText(
+    'Package folder: packages/dinkster-nodes-utilities',
+  )
+  const gitCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'develop')
+    .at(-1)
+  assert.equal(gitCall[gitCall.indexOf('--pack-source') + 1], gitPack)
+  assert(!gitCall.includes('--live-pack'))
+  assert.equal(gitCall[gitCall.indexOf('--frontend-source') + 1], gitFrontend)
+  assert(
+    !gitCall.includes('--frontend-dev') && !gitCall.includes('--frontend-root'),
+  )
+  await expect(manager.locator('#plan')).toContainText(
+    'Requested ref: selected-frontend',
+  )
+  if (artifacts) {
+    await manager
+      .locator('#development-sources')
+      .screenshot({ path: join(artifacts, 'development-git-setup.png') })
+    await manager
+      .locator('#plan-panel')
+      .screenshot({ path: join(artifacts, 'development-git-plan.png') })
+  }
+  await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await manager.locator('#local-operation').selectOption('source')
+  await expect(manager.locator('#source-settings')).toBeVisible()
+  await manager.locator('#local-kind').selectOption('release')
+  await expect(manager.locator('#source-settings')).toBeHidden()
+  await expect(manager.locator('#development-sources')).toBeHidden()
+  await manager.locator('#local-operation').selectOption('source')
+  await manager
+    .locator('#source-url')
+    .fill('https://github.com/Kosinkadink/Dinkster.git')
+  await manager.locator('#source-ref').fill('selected-managed-ref')
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#apply')).toBeVisible()
+  await expect(manager.locator('#plan')).toContainText(
+    `"commit": "${'a'.repeat(40)}"`,
+  )
+  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
+  await expect(manager.locator('#message')).toContainText(
+    'Environment operation completed',
+  )
+  let managedCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'source' && args.includes('--yes'))
+    .at(-1)
+  assert.equal(
+    managedCall[managedCall.indexOf('--source-approval') + 1],
+    `sha256:${'e'.repeat(64)}`,
+  )
+  assert(!managedCall.includes('--approve'))
+  await manager.locator('#source-action').selectOption('release')
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#plan')).toContainText(
+    'Restore recorded release history entry: 7',
+  )
+  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
+  await expect(manager.locator('#message')).toContainText(
+    'Environment operation completed',
+  )
+  managedCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'restore')
+    .at(-1)
+  assert.deepEqual(managedCall.slice(2), ['restore', '7', '--json', '--yes'])
+  await manager.locator('#local-operation').selectOption('update')
+  await manager.locator('#local-frontend-version').fill('0.3.2rc1')
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#plan')).toContainText('0.3.2rc1')
+  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
+  await expect(manager.locator('#message')).toContainText(
+    'Environment operation completed',
+  )
+  managedCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'update' && args.includes('--yes'))
+    .at(-1)
+  assert.equal(
+    managedCall[managedCall.indexOf('--frontend-approval') + 1],
+    `sha256:${'b'.repeat(64)}`,
+  )
+  assert(
+    !managedCall.includes('--source-approval') &&
+      !managedCall.includes('--approve'),
+  )
+  if (artifacts)
+    await manager
+      .locator('#plan-panel')
+      .screenshot({ path: join(artifacts, 'managed-frontend-plan.png') })
   await manager.locator('#name').fill('Remote studio')
   await manager.locator('#url').fill(urls[1])
   await manager.getByRole('button', { name: 'Save remote project' }).click()
@@ -820,7 +1054,17 @@ console.log(JSON.stringify(row));
   history = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse)
   assert.deepEqual(
     history.filter((args) => args.includes('--yes')).map((args) => args[2]),
-    ['setup', 'start', 'update', 'rollback', 'stop'],
+    [
+      'setup',
+      'start',
+      'update',
+      'rollback',
+      'develop',
+      'source',
+      'restore',
+      'update',
+      'stop',
+    ],
   )
   console.log(
     'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, top-frame-only pack install, retained document, replay refusal, remote-only routing, identity-checked stop delegation.',

@@ -82,6 +82,40 @@ Runtime settings such as max running jobs can be edited in Backends and are
 kept in the engine's library across app restarts. A plain `dinkster-serve`
 without that flag still refuses settings edits.
 
+## Managed source selection
+
+In Projects, manage a local installation and choose Managed Git sources. Select
+an engine, node pack, inference library, pack helpers or frontend repository.
+The URL must be credential-free public HTTPS; a URL fragment can select a
+repository-relative subdirectory. Choose a branch, tag, PR ref or full commit.
+List repository refs and tags uses Git protocol without changing the project.
+A pack update requires its installed name. Update selected source / change ref
+retains its recorded URL and updates only the chosen component.
+
+Git mirror base rewrites official Kosinkadink repositories to the mirror's
+`Kosinkadink/repository.git` route without original-host fallback. Package index
+is used only for missing wheels. Source operations keep the installed release
+base and all unselected sources; they do not enable develop mode. Plans and
+status disclose exact URL/ref/commit identities and unpublished,
+non-reproducible status. Frontend Git prefers the exact official commit's
+verified CI bundle; otherwise a local frozen build needs Node and pnpm.
+
+Review the CLI plan before confirming. The main process retains the CLI-owned
+source approval and consumes its one-shot confirmation token before applying.
+A moved ref, changed project or changed frontend artifact refuses and requires
+a new plan. Desktop never stores temporary fetched checkout paths or computes
+its own source digest. Return all sources to a recorded release retains the
+exact history entry shown in the plan; Rollback uses the environment's exact
+recorded software history. Missing recovery inputs refuse without silently
+selecting a different ref or release.
+
+Install and Update also accept an exact published frontend version. Leave it
+empty to retain the normal frontend selection. The environment tools verify
+the permanent wheel hash and declared engine API range and bind confirmation
+to the planned frontend identity. Unsupported older tools refuse rather than
+applying an unbound selection. Frontend folder/dev-server development settings
+are separate from managed source selection.
+
 ## Native asset files
 
 Local engine windows receive only the file-capability, directory-choice,
@@ -119,11 +153,36 @@ use credential-free HTTPS without a hostname allowlist; HTTP is restricted
 to numeric loopback addresses. Referenced tools still require their pinned
 hashes and sizes. Installed-engine operations do not consult moving channels.
 
-The project manager delegates setup, update, rollback, move, doctor, garbage
-collection, and named engine start/stop to `dinkster-env`. Mutations show the
+The project manager delegates setup, development, update, rollback, move, doctor,
+garbage collection, and named engine start/stop to `dinkster-env`. Mutations show the
 command's read-only plan first and require confirmation. The confirmation
 token applies to exactly that request; it cannot authorize a changed root,
 variant, channel, or destination.
+
+Choose **Development - unpublished sources** to select an engine source and
+optional inference, pack, helper and built frontend folders. Engine, inference,
+helper and pack inputs accept an absolute local folder or a public HTTPS Git
+URL; append `#ref=REF&subdirectory=PATH` to select a branch, tag, commit or pull
+request ref and package directory. Each entered source opts into unpublished
+code; blank optional fields keep the engine's defaults. Git sources are captured
+through `dinkster-env` without system Git, never live temporary folders. Review
+the command's requested refs and resolved commits before confirming the plan.
+Desktop retains its source approval digest, so changed inputs require a new
+review. Local engine and pack edits reload; local libraries require an engine
+restart. Development sources are marked in the project list and active engine
+window. Engine windows retain the same narrow local-file bridge, without
+project-manager or shell access.
+Instead of a built frontend folder, select a public HTTPS frontend Git URL/ref
+or a frontend dev server origin for live reload. These three frontend choices
+are exclusive. Git frontend assets are captured through the shared command's
+verified CI-bundle or local-build path, and their exact selection is part of
+source approval; Desktop does not fetch or build frontend sources itself.
+Frontend dev servers allow loopback by default; another address requires the
+separate **Explicitly allow a non-loopback frontend dev server** checkbox and
+plan review. Dev server origins refuse credentials, paths, queries and fragments.
+Use only trusted frontend code: it retains the project's existing narrow
+local-file capabilities. The environment command retains the frontend choice
+and permission across engine restarts, not Desktop-managed state.
 
 Before setup or a variant change, select the project root, mirrors and assigned
 GPU indexes, then use **Inspect hardware and variants**. Desktop calls the

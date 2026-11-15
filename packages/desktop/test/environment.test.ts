@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { crc32, deflateRawSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EnvironmentClient, type EnvironmentOperation, type EnvironmentRequest } from '../src/environment.js'
+import { EnvironmentClient, parseDevelopmentSources, type EnvironmentOperation, type EnvironmentRequest } from '../src/environment.js'
 import { channelTools } from '../src/environment-channel.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
@@ -78,6 +78,139 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('reviews explicit local development folders and confirms the exact source digest', async () => {
+    const { root, client } = await commandFixture()
+    const development = { engine: join(root, 'engine checkout'), inference: join(root, 'inference'),
+      helper: join(root, 'helper'), packs: [join(root, 'pack one'), join(root, 'pack two')], frontendRoot: join(root, 'frontend dist') }
+    const sourceApproval = `sha256:${'c'.repeat(64)}`
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    await writeFile(script, original.replace("root, current: 2,", `root, current: 2, sourceApproval: '${sourceApproval}',`))
+    const request = { root, operation: 'develop' as const, development, variant: 'cpu' }
+    expect((await client.run(request)).sourceApproval).toBe(sourceApproval)
+    const args = ['--root', root, 'develop', '--source', development.engine, '--contributor', '--live-engine',
+      '--pack-source', development.packs[0], '--live-pack', development.packs[0],
+      '--pack-source', development.packs[1], '--live-pack', development.packs[1],
+      '--library-source', development.inference, '--live-library', development.inference,
+      '--library-source', development.helper, '--live-library', development.helper,
+      '--frontend-root', development.frontendRoot]
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...args, '--variant', 'cpu', '--json', '--plan'])
+    await expect(client.run(request, true)).rejects.toThrow('reviewed source approval')
+    expect((await client.run({ ...request, sourceApproval }, true)).status).toBe('applied')
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...args, '--approve', sourceApproval, '--variant', 'cpu', '--json', '--yes'])
+    await expect(client.run({ ...request, operation: 'setup' })).rejects.toThrow('require develop')
+    await expect(client.run({ ...request, development: { ...development, engine: 'relative' } })).rejects.toThrow('absolute local folders')
+    await writeFile(script, original)
+    await expect(client.run(request)).rejects.toThrow('source approval response')
+    await client.dispose()
+  })
+
+  it('captures explicitly selected Git refs without treating fetched folders as live sources', async () => {
+    const { root, client } = await commandFixture()
+    const sourceApproval = `sha256:${'e'.repeat(64)}`
+    const script = join(root, 'command.cjs')
+    await writeFile(script, (await readFile(script, 'utf8')).replace('root, current: 2,', `root, current: 2, sourceApproval: '${sourceApproval}',`))
+    const gitEngine = 'https://github.com/Kosinkadink/Dinkster.git#ref=refs/pull/1225/head'
+    const gitPack = 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=main&subdirectory=packages/dinkster-nodes-utilities'
+    const gitInference = 'https://github.com/Kosinkadink/dinkster-inference.git#ref=v0.1.2'
+    const localEngine = join(root, 'engine')
+    const localPack = join(root, 'local pack')
+    const helper = join(root, 'helper')
+    for (const engine of [gitEngine, localEngine]) {
+      const frontendSource = 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=selected-frontend'
+      const development = { engine, packs: [gitPack, localPack], inference: gitInference, helper, frontendSource }
+      const request = { root, operation: 'develop' as const, development }
+      expect((await client.run(request)).sourceApproval).toBe(sourceApproval)
+      const expected = ['--root', root, 'develop', '--source', engine,
+        ...(engine === localEngine ? ['--contributor', '--live-engine'] : []),
+        '--pack-source', gitPack, '--pack-source', localPack, '--live-pack', localPack,
+        '--library-source', gitInference, '--library-source', helper, '--live-library', helper,
+        '--frontend-source', frontendSource]
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...expected, '--json', '--plan'])
+      await client.run({ ...request, sourceApproval }, true)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...expected, '--approve', sourceApproval, '--json', '--yes'])
+    }
+    for (const engine of ['http://host/repo.git', 'https://user:secret@host/repo.git', 'https://host/repo.git?token=secret', 'https://host/\nrepo.git', 'file:///tmp/repo', 'relative']) {
+      await expect(client.run({ root, operation: 'develop', development: { engine, packs: [] } })).rejects.toThrow()
+    }
+    await client.dispose()
+  })
+
+  it('keeps frontend dev origins explicit and remote access off by default', () => {
+    const source = { engine: join(process.cwd(), 'engine'), packs: [] }
+    for (const url of ['http://localhost:5173', 'http://127.0.0.2:5173', 'http://[::1]:5173']) {
+      expect(parseDevelopmentSources({ ...source, frontendDev: url })).toEqual({ ...source, frontendDev: url, allowFrontendDevRemote: false })
+    }
+    for (const url of ['http://localhost.example:5173', 'http://127.example:5173', 'http://192.0.2.1:5173']) {
+      expect(() => parseDevelopmentSources({ ...source, frontendDev: url })).toThrow('explicit permission')
+      expect(parseDevelopmentSources({ ...source, frontendDev: url, allowFrontendDevRemote: true }).frontendDev).toBe(url)
+    }
+    for (const url of ['http://user:password@localhost:5173', 'file:///tmp/frontend', 'http://localhost:5173/path', 'http://localhost:5173?token=value', 'http://localhost:5173#fragment', 'http://localhost:0', 'http://localhost:70000']) {
+      expect(() => parseDevelopmentSources({ ...source, frontendDev: url, allowFrontendDevRemote: true })).toThrow()
+    }
+    expect(() => parseDevelopmentSources({ ...source, allowFrontendDevRemote: true })).toThrow('requires a dev server')
+    expect(() => parseDevelopmentSources({ ...source, frontendRoot: join(process.cwd(), 'bundle'), frontendDev: 'http://localhost:5173' })).toThrow('choose one')
+    const frontendSource = 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=main'
+    for (const alternative of [{ frontendRoot: join(process.cwd(), 'bundle') }, { frontendDev: 'http://localhost:5173' }]) {
+      expect(() => parseDevelopmentSources({ ...source, frontendSource, ...alternative })).toThrow('choose one')
+    }
+    for (const frontendSource of [join(process.cwd(), 'checkout'), 'http://host/repo.git', 'https://user:secret@host/repo.git', 'https://host/repo.git?token=secret']) {
+      expect(() => parseDevelopmentSources({ ...source, frontendSource })).toThrow()
+    }
+  })
+
+  it('selects managed source components with CLI-owned approval and keeps refs read-only', async () => {
+    const { root, client } = await commandFixture()
+    const approval = `sha256:${'c'.repeat(64)}`
+    const base = { root, operation: 'source' as const, sourceAction: 'add' as const,
+      sourceUrl: 'https://github.com/Kosinkadink/source#subdirectory=packages/helper', sourceRef: 'refs/pull/23/head',
+      gitMirror: 'https://mirror.example.org', packageIndex: 'https://packages.example.org/simple' }
+    for (const [target, flags] of [
+      ['engine', []], ['pack', ['--pack', 'selected-pack']],
+      ['inference', ['--library', 'dinkster-inference']], ['helper', ['--library', 'dinkster-pack-helpers']], ['frontend', ['--frontend']],
+    ] as const) {
+      const request = { ...base, sourceTarget: target, ...(target === 'pack' ? { sourceName: 'selected-pack' } : {}) }
+      await client.run(request)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+        '--root', root, 'source', 'add', base.sourceUrl, ...flags, '--ref', base.sourceRef,
+        '--git-mirror', base.gitMirror, '--package-index', base.packageIndex, '--json', '--plan',
+      ])
+      await expect(client.run(request, true)).rejects.toThrow('reviewed supervisor approval')
+      await client.run({ ...request, sourceApproval: approval }, true)
+      const args = JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8')) as string[]
+      expect(args.slice(args.indexOf('--source-approval'), args.indexOf('--source-approval') + 2)).toEqual(['--source-approval', approval])
+      expect(args.at(-1)).toBe('--yes')
+      await expect(client.run({ ...request, sourceApproval: approval })).rejects.toThrow('reviewed supervisor approval')
+    }
+    await client.run({ root, operation: 'source', sourceAction: 'refs', sourceUrl: base.sourceUrl, gitMirror: base.gitMirror })
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'source', 'refs', base.sourceUrl, '--git-mirror', base.gitMirror, '--json'])
+    await client.run({ root, operation: 'source', sourceAction: 'release' })
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'source', 'release', '--json', '--plan'])
+    await client.run({ root, operation: 'restore', historyEntry: 7 }, true)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'restore', '7', '--json', '--yes'])
+    for (const changes of [
+      { sourceUrl: 'https://user:password@example.org/repo' }, { sourceUrl: 'file:///source' },
+      { sourceRef: '--yes' }, { sourceTarget: 'pack' as const, sourceName: '--yes' }, { channel: 'stable' as const },
+    ]) await expect(client.run({ ...base, sourceTarget: 'engine', ...changes })).rejects.toThrow()
+    await client.dispose()
+  })
+
+  it('requires the planned published frontend identity before confirming a version', async () => {
+    const { root, client } = await commandFixture()
+    const request = { root, operation: 'update' as const, frontendVersion: '0.3.2rc1' }
+    await client.run(request)
+    await expect(client.run(request, true)).rejects.toThrow('reviewed supervisor approval')
+    const approval = `sha256:${'d'.repeat(64)}`
+    await client.run({ ...request, frontendApproval: approval }, true)
+    const args = JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8')) as string[]
+    expect(args).toContain('0.3.2rc1')
+    expect(args.slice(args.indexOf('--frontend-approval'), args.indexOf('--frontend-approval') + 2)).toEqual(['--frontend-approval', approval])
+    await expect(client.run({ ...request, frontendApproval: approval })).rejects.toThrow('reviewed supervisor approval')
+    await expect(client.run({ ...request, frontendVersion: '--yes' })).rejects.toThrow('published frontend version')
+    await expect(client.run({ root, operation: 'status', frontendVersion: '0.3.2' })).rejects.toThrow('setup or update')
+    await client.dispose()
+  })
+
   it('passes exact host-owned pack reviews and requires explicit apply approval', async () => {
     const { root, client } = await commandFixture()
     const inputs = join(root, 'review inputs')

@@ -5,6 +5,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
 import { _electron as electron, expect } from '@playwright/test'
+import { verifyChannel } from '../../desktop/src/channel-signatures.ts'
 
 assert.equal(
   process.env.RUNNER_ENVIRONMENT,
@@ -16,12 +17,13 @@ const root = resolve(process.env.DINKSTER_DESKTOP_VERIFY_ROOT)
 await mkdir(root)
 await mkdir(join(root, 'temporary'))
 const publicRoot = 'https://releases.dinkster.org'
-const channel = await fetch(`${publicRoot}/channels/stable.json`).then(
+const channelText = await fetch(`${publicRoot}/channels/stable.json`).then(
   (response) => {
     assert(response.ok)
-    return response.json()
+    return response.text()
   },
 )
+const channel = verifyChannel(channelText, 'stable')
 assert(channel.tools, 'Stable must select current environment tools')
 const location = channel.engine.locations.find(
   (location) => location.type === 'mirror',
@@ -152,10 +154,12 @@ import importlib.metadata as metadata, json, subprocess, sys
 from pathlib import Path
 from packaging.version import Version
 from packaging.specifiers import SpecifierSet
+from dinkster import __version__
 from dinkster_workers import load_manifest
 from dinkster_workers.pack_wheel import pack_manifest_path
 root = Path(sys.argv[1])
 packages = {name: metadata.version(name) for name in ('dinkster', 'dinkster-engine', 'dinkster-inference', 'dinkster-frontend')}
+assert __version__ == packages['dinkster'] == packages['dinkster-engine']
 assert Version(packages['dinkster']) >= Version('0.0.4')
 assert Version(packages['dinkster-inference']) >= Version('0.1.2')
 assert Version(packages['dinkster-frontend']) >= Version('0.1.0')

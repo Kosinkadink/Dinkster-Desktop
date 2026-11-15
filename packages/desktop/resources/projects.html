@@ -20,6 +20,7 @@
     label { display: grid; gap: 7px; margin-bottom: 16px; color: #d0d0d0; }
     input, select, textarea, button { font: inherit; border-radius: 6px; padding: 10px 12px; }
     input, select, textarea { min-width: 0; width: 100%; border: 1px solid #555; background: #171717; color: inherit; }
+    input[type="checkbox"] { width: auto; justify-self: start; }
     input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid #8be9fd; outline-offset: 2px; }
     button { cursor: pointer; border: 1px solid #555; background: #303030; color: #ededed; -webkit-app-region: no-drag; }
     button.primary { background: #8be9fd; color: #111; border-color: #8be9fd; font-weight: 600; }
@@ -28,7 +29,9 @@
     .endpoint { overflow-wrap: anywhere; font-size: 12px; }
     details { margin-top: 20px; border: 1px solid #3c3c3c; border-radius: 10px; padding: 20px; background: #202020; }
     #local { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
-    #local p, #local .actions { grid-column: 1 / -1; }
+    #local p, #local .actions, #development-sources { grid-column: 1 / -1; }
+    fieldset { min-width: 0; border: 1px solid #555; border-radius: 6px; margin: 0 0 20px; padding: 20px; }
+    fieldset p { color: #f3cf80; }
     summary { cursor: pointer; font-weight: 600; margin-bottom: 16px; }
     .plan { margin-top: 24px; border-color: #8be9fd; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.5; }
@@ -64,8 +67,24 @@
             <label>Project name<input id="local-name" required maxlength="128" placeholder="Local studio"></label>
             <label>Install root<input id="local-root" required placeholder="Absolute project directory"></label>
             <label>Channel<select id="local-channel"><option value="stable">Stable</option><option value="nightly">Nightly</option></select></label>
+            <label>Project kind<select id="local-kind"><option value="release">Published release</option><option value="development">Development - unpublished sources</option></select></label>
+            <fieldset id="development-sources" hidden>
+              <legend>Explicit development sources</legend>
+              <p>Each entered source explicitly opts into unpublished code. Enter an absolute local folder or a public HTTPS Git URL. Add #ref=BRANCH&amp;subdirectory=PATH to select a Git ref and package folder. Git sources are captured, not live; review their resolved commits before confirming. No system Git is required.</p>
+              <p>Selected local engine and pack edits reload; local libraries require an engine restart. Leave optional sources empty to keep the engine's defaults.</p>
+              <label>Engine source<input id="development-engine" placeholder="Absolute checkout folder or https://host/repo.git#ref=branch"></label>
+              <label>dinkster-inference source (optional)<input id="development-inference" placeholder="Absolute folder or public HTTPS Git URL"></label>
+              <label>dinkster-pack-helpers source (optional)<input id="development-helper" placeholder="Absolute folder or public HTTPS Git URL"></label>
+              <label>Pack sources (one per line, optional)<textarea id="development-packs" rows="3" placeholder="Absolute folders or public HTTPS Git URLs"></textarea></label>
+              <label>Built frontend folder (optional)<input id="development-frontend" placeholder="Absolute bundle folder containing index.html"></label>
+              <label>Frontend Git source (instead of a folder or server)<input id="development-frontend-git" placeholder="https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=COMMIT"></label>
+              <label>Frontend dev server (instead of a bundle)<input id="development-frontend-dev" placeholder="http://localhost:5173"></label>
+              <label><input id="development-frontend-remote" type="checkbox"> Explicitly allow a non-loopback frontend dev server</label>
+              <p>A dev server runs its own frontend code with this project's existing local-file capabilities. Use a trusted server. Non-loopback access is off unless explicitly selected and included in the reviewed plan.</p>
+            </fieldset>
             <label>Operation<select id="local-operation">
-              <option value="setup">Install</option><option value="update">Update / change variant</option>
+              <option value="develop">Build / refresh development sources</option>
+              <option value="setup" selected>Install</option><option value="update">Update / change variant</option>
               <option value="rollback">Rollback</option><option value="move">Move</option>
               <option value="doctor">Check drift</option><option value="gc">Garbage collection</option>
               <option value="status">Cleanup status (read-only)</option><option value="cleanup">Generation cleanup / retry</option>

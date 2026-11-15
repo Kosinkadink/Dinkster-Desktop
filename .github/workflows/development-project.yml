@@ -1,0 +1,137 @@
+name: Desktop development projects
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/development-project.yml'
+      - 'packages/desktop/src/environment.ts'
+      - 'packages/desktop/src/environment-tools-release.json'
+      - 'packages/desktop/src/main.ts'
+      - 'packages/desktop/src/project-dialog.ts'
+      - 'packages/desktop/src/projects.ts'
+      - 'packages/desktop/src/window-chrome.ts'
+      - 'packages/desktop/resources/projects.html'
+      - 'packages/e2e/scripts/verify-development-project.mjs'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-development-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  development:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    name: Installed development project - ${{ matrix.os }} - ${{ matrix.frontend }} - ${{ matrix.sources }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        frontend: [bundle, dev-server]
+        sources: [local]
+        include:
+          - os: ubuntu-latest
+            frontend: bundle
+            sources: mixed-git
+          - os: windows-latest
+            frontend: dev-server
+            sources: mixed-git
+          - os: ubuntu-latest
+            frontend: git
+            sources: mixed-git
+          - os: windows-latest
+            frontend: git
+            sources: mixed-git
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CUDA_VISIBLE_DEVICES: ''
+      DINKSTER_ACCELERATOR: cpu
+      DINKSTER_DEVELOPMENT_ARTIFACTS: ${{ github.workspace }}/test-results/development
+      DINKSTER_DEVELOPMENT_ENGINE: ${{ matrix.sources == 'mixed-git' && 'https://github.com/Kosinkadink/Dinkster.git#ref=705e67106d4e61f4affa9a88d71534aa100c7173' || format('{0}/test-sources/engine', github.workspace) }}
+      DINKSTER_DEVELOPMENT_INFERENCE: ${{ github.workspace }}/test-sources/inference
+      DINKSTER_DEVELOPMENT_HELPER: ${{ matrix.sources == 'mixed-git' && 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=008bc8a2dea546812dc451bcb9078b37e63c9ab3&subdirectory=packages/dinkster-pack-helpers' || format('{0}/test-sources/nodes/packages/dinkster-pack-helpers', github.workspace) }}
+      DINKSTER_DEVELOPMENT_PACK: ${{ github.workspace }}/test-sources/nodes/packages/dinkster-nodes-utilities
+      DINKSTER_DEVELOPMENT_FRONTEND_SOURCE: ${{ matrix.frontend == 'dev-server' && format('{0}/test-sources/frontend', github.workspace) || '' }}
+      DINKSTER_DEVELOPMENT_FRONTEND_GIT: ${{ matrix.frontend == 'git' && 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=6af6cb494d2989331b56cef9cfa610e06fd77da5' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Kosinkadink/Dinkster
+          ref: 705e67106d4e61f4affa9a88d71534aa100c7173
+          path: test-sources/engine
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Kosinkadink/dinkster-inference
+          ref: 7127b42fe881a5b8f3588f96f77220f516c3633c
+          path: test-sources/inference
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Kosinkadink/dinkster-nodes
+          ref: 008bc8a2dea546812dc451bcb9078b37e63c9ab3
+          path: test-sources/nodes
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.frontend == 'dev-server'
+        with:
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: 6af6cb494d2989331b56cef9cfa610e06fd77da5
+          path: test-sources/frontend
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install contributor frontend dependencies
+        if: matrix.frontend == 'dev-server'
+        run: pnpm --dir test-sources/frontend install --frozen-lockfile
+      - run: pnpm build
+      - name: Package Linux Desktop
+        if: runner.os == 'Linux'
+        run: |
+          pnpm --filter @dinkster/desktop prepare:tools
+          pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        run: pnpm --filter @dinkster/desktop package:win
+      - name: Install Windows Desktop
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $destination = Join-Path $env:RUNNER_TEMP desktop-development-installed
+          if (Test-Path $destination) { throw 'Installation directory must be fresh' }
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          "DINKSTER_ELECTRON_EXECUTABLE=$(Join-Path $destination 'Dinkster Desktop.exe')" >> $env:GITHUB_ENV
+      - name: Exercise installed Windows development project
+        if: runner.os == 'Windows'
+        run: node packages/e2e/scripts/verify-development-project.mjs
+      - name: Exercise packaged Linux development project
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-development-project.mjs
+        env:
+          DINKSTER_ELECTRON_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: development-project-${{ matrix.os }}-${{ matrix.frontend }}-${{ matrix.sources }}
+          path: |
+            test-results/development/development-*/*.png
+            test-results/development/development-*/receipt.json
+          retention-days: 7
+          if-no-files-found: error

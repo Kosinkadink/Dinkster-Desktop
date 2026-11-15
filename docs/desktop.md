@@ -145,11 +145,36 @@ those files or defines substitute formats for them.
 
 ## Environment commands
 
-The project manager delegates setup, update, rollback, move, doctor, garbage
-collection, and named engine start/stop to `dinkster-env`. Mutations show the
+The project manager delegates setup, development, update, rollback, move, doctor,
+garbage collection, and named engine start/stop to `dinkster-env`. Mutations show the
 command's read-only plan first and require confirmation. The confirmation
 token applies to exactly that request; it cannot authorize a changed root,
 variant, channel, or destination.
+
+Choose **Development - unpublished sources** to select an engine source and
+optional inference, pack, helper and built frontend folders. Engine, inference,
+helper and pack inputs accept an absolute local folder or a public HTTPS Git
+URL; append `#ref=REF&subdirectory=PATH` to select a branch, tag, commit or pull
+request ref and package directory. Each entered source opts into unpublished
+code; blank optional fields keep the engine's defaults. Git sources are captured
+through `dinkster-env` without system Git, never live temporary folders. Review
+the command's requested refs and resolved commits before confirming the plan.
+Desktop retains its source approval digest, so changed inputs require a new
+review. Local engine and pack edits reload; local libraries require an engine
+restart. Development sources are marked in the project list and active engine
+window. Engine windows retain the same narrow local-file bridge, without
+project-manager or shell access.
+Instead of a built frontend folder, select a public HTTPS frontend Git URL/ref
+or a frontend dev server origin for live reload. These three frontend choices
+are exclusive. Git frontend assets are captured through the shared command's
+verified CI-bundle or local-build path, and their exact selection is part of
+source approval; Desktop does not fetch or build frontend sources itself.
+Frontend dev servers allow loopback by default; another address requires the
+separate **Explicitly allow a non-loopback frontend dev server** checkbox and
+plan review. Dev server origins refuse credentials, paths, queries and fragments.
+Use only trusted frontend code: it retains the project's existing narrow
+local-file capabilities. The environment command retains the frontend choice
+and permission across engine restarts, not Desktop-managed state.
 
 Before setup or a variant change, select the project root, mirrors and assigned
 GPU indexes, then use **Inspect hardware and variants**. Desktop calls the

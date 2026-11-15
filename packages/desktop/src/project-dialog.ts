@@ -38,6 +38,16 @@ function localProject(): DesktopProject {
   return {
     id: existing?.id ?? newProjectId, name: field('local-name'), channel, root: field('local-root'),
     engines: [...(existing?.engines.filter((entry) => entry.id !== engineId) ?? []), engine],
+    ...(field('local-kind') === 'development' ? { development: {
+      engine: field('development-engine'),
+      packs: field('development-packs').split('\n').map((path) => path.trim()).filter(Boolean),
+      ...(field('development-inference') ? { inference: field('development-inference') } : {}),
+      ...(field('development-helper') ? { helper: field('development-helper') } : {}),
+      ...(field('development-frontend') ? { frontendRoot: field('development-frontend') } : {}),
+      ...(field('development-frontend-git') ? { frontendSource: field('development-frontend-git') } : {}),
+      ...(field('development-frontend-dev') ? { frontendDev: field('development-frontend-dev') } : {}),
+      allowFrontendDevRemote: document.querySelector<HTMLInputElement>('#development-frontend-remote')!.checked,
+    } } : {}),
   }
 }
 
@@ -51,6 +61,10 @@ function showPlan(result: EnvironmentResult, token?: string): void {
   if (result.engine) {
     label.push(`Engine: ${result.engine.version} (${result.engine.release})`)
     if (result.engine.label) label.push(`Engine label: ${result.engine.label}`)
+  }
+  for (const source of result.development?.sources ?? []) {
+    if (source.git) label.push(`Git ${source.kind}: ${source.git.url}`, `Requested ref: ${source.git.requestedRef ?? 'default branch'}`,
+      `Resolved commit: ${source.git.commit}`, `Package folder: ${source.git.subdirectory}`)
   }
   if (result.source || result.published !== undefined) label.push(`Source kind: ${result.source ?? 'source'}`, `Published: ${result.published === true ? 'yes' : 'no'}`, `Reproducible: ${result.reproducible === true ? 'yes' : 'no'}`)
   if (result.sources) label.push('Selected source identities:', JSON.stringify(result.sources, null, 2))
@@ -129,7 +143,9 @@ async function render(): Promise<void> {
     title.textContent = project.name
     card.append(title)
     const channel = document.createElement('p')
-    channel.textContent = `Channel: ${project.channel}`
+    channel.textContent = project.sourceStatus === 'unpublished' ? 'Development - unpublished sources'
+      : project.sourceStatus === 'unavailable' ? 'Active sources unavailable - inspect the environment'
+      : `Channel: ${project.channel}${project.development ? ' - development configuration saved' : ''}`
     card.append(channel)
     for (const engine of project.engines) {
       const address = document.createElement('p')
@@ -187,11 +203,33 @@ function populateLocal(project: DesktopProject | undefined, engineId?: string): 
     'local-name': project?.name ?? '', 'local-root': project?.root ?? '', 'local-channel': project?.channel ?? 'stable',
     'local-engine': engine?.id ?? 'main', 'local-gpus': engine?.kind === 'local' ? engine.gpus.join(',') : '',
     'local-port': String(engine?.kind === 'local' ? engine.port ?? 3639 : 3639),
-    'local-operation': project ? 'update' : 'setup',
+    'local-operation': project?.development ? 'develop' : project ? 'update' : 'setup',
+    'local-kind': project?.development ? 'development' : 'release',
+    'development-engine': project?.development?.engine ?? '',
+    'development-inference': project?.development?.inference ?? '',
+    'development-helper': project?.development?.helper ?? '',
+    'development-packs': project?.development?.packs.join('\n') ?? '',
+    'development-frontend': project?.development?.frontendRoot ?? '',
+    'development-frontend-git': project?.development?.frontendSource ?? '',
+    'development-frontend-dev': project?.development?.frontendDev ?? '',
   })) document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`)!.value = value
+  document.querySelector<HTMLInputElement>('#development-frontend-remote')!.checked = project?.development?.allowFrontendDevRemote === true
+  showDevelopment()
   document.querySelector<HTMLElement>('#source-settings')!.hidden = field('local-operation') !== 'source'
   clearHardware()
 }
+
+function showDevelopment(): void {
+  const development = field('local-kind') === 'development'
+  document.querySelector<HTMLElement>('#development-sources')!.hidden = !development
+  document.querySelector<HTMLInputElement>('#development-engine')!.required = development
+}
+
+document.querySelector<HTMLSelectElement>('#local-kind')!.addEventListener('change', () => {
+  showDevelopment()
+  document.querySelector<HTMLSelectElement>('#local-operation')!.value = field('local-kind') === 'development' ? 'develop' : 'setup'
+  document.querySelector<HTMLElement>('#source-settings')!.hidden = true
+})
 
 document.querySelector<HTMLSelectElement>('#local-operation')!.addEventListener('change', () => {
   document.querySelector<HTMLElement>('#source-settings')!.hidden = field('local-operation') !== 'source'
@@ -258,12 +296,14 @@ document.querySelector<HTMLFormElement>('#local')!.addEventListener('submit', (e
   void perform(async () => {
     const project = localProject()
     const operation = field('local-operation') as EnvironmentRequest['operation']
-    if (operation === 'setup' && !field('local-variant')) throw new Error('Choose an explicit variant before installation. CPU is not selected automatically.')
+    if (operation === 'develop' && !project.development) throw new Error('Choose a development project and explicit sources first.')
+    if (['setup', 'develop'].includes(operation) && !field('local-variant')) throw new Error('Choose an explicit variant before installation. CPU is not selected automatically.')
     const request: EnvironmentRequest = {
       root: project.root!, operation,
-      ...(['setup', 'update'].includes(operation) ? { channel: project.channel, ...(field('local-variant') ? { variant: field('local-variant') } : {}) } : {}),
-      ...(operation === 'setup' ? { mirrors: field('local-mirrors').split('\n').map((mirror) => mirror.trim()).filter(Boolean), port: Number(field('local-port')), engine: field('local-engine') } : {}),
-      ...(['setup', 'move'].includes(operation) && field('local-data') ? { data: field('local-data') } : {}),
+      ...(['setup', 'update', 'develop'].includes(operation) ? { channel: project.channel, ...(field('local-variant') ? { variant: field('local-variant') } : {}) } : {}),
+      ...(['setup', 'develop'].includes(operation) ? { mirrors: field('local-mirrors').split('\n').map((mirror) => mirror.trim()).filter(Boolean), port: Number(field('local-port')), engine: field('local-engine') } : {}),
+      ...(operation === 'develop' ? { development: project.development! } : {}),
+      ...(['setup', 'move', 'develop'].includes(operation) && field('local-data') ? { data: field('local-data') } : {}),
       ...(operation === 'move' ? { destination: field('local-destination') } : {}),
       ...(operation === 'cleanup' && field('local-cleanup') !== 'keep' ? { automaticCleanup: field('local-cleanup') === 'on' } : {}),
       ...(operation === 'cleanup' && field('local-keep-previous') !== '' ? { keepPreviousGenerations: Number(field('local-keep-previous')) } : {}),

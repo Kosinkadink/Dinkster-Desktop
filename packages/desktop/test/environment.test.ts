@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { crc32, deflateRawSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EnvironmentClient, type EnvironmentOperation, type EnvironmentRequest } from '../src/environment.js'
+import { EnvironmentClient, parseDevelopmentSources, type EnvironmentOperation, type EnvironmentRequest } from '../src/environment.js'
 import { channelTools } from '../src/environment-channel.js'
 import { acquireEnvironmentTools } from '../src/environment-tools.js'
 
@@ -57,6 +57,87 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('reviews explicit local development folders and confirms the exact source digest', async () => {
+    const { root, client } = await commandFixture()
+    const development = { engine: join(root, 'engine checkout'), inference: join(root, 'inference'),
+      helper: join(root, 'helper'), packs: [join(root, 'pack one'), join(root, 'pack two')], frontendRoot: join(root, 'frontend dist') }
+    const sourceApproval = `sha256:${'c'.repeat(64)}`
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    await writeFile(script, original.replace("root, current: 2,", `root, current: 2, sourceApproval: '${sourceApproval}',`))
+    const request = { root, operation: 'develop' as const, development, variant: 'cpu' }
+    expect((await client.run(request)).sourceApproval).toBe(sourceApproval)
+    const args = ['--root', root, 'develop', '--source', development.engine, '--contributor', '--live-engine',
+      '--pack-source', development.packs[0], '--live-pack', development.packs[0],
+      '--pack-source', development.packs[1], '--live-pack', development.packs[1],
+      '--library-source', development.inference, '--live-library', development.inference,
+      '--library-source', development.helper, '--live-library', development.helper,
+      '--frontend-root', development.frontendRoot]
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...args, '--variant', 'cpu', '--json', '--plan'])
+    await expect(client.run(request, true)).rejects.toThrow('reviewed source approval')
+    expect((await client.run({ ...request, sourceApproval }, true)).status).toBe('applied')
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...args, '--approve', sourceApproval, '--variant', 'cpu', '--json', '--yes'])
+    await expect(client.run({ ...request, operation: 'setup' })).rejects.toThrow('require develop')
+    await expect(client.run({ ...request, development: { ...development, engine: 'relative' } })).rejects.toThrow('absolute local folders')
+    await writeFile(script, original)
+    await expect(client.run(request)).rejects.toThrow('source approval response')
+    await client.dispose()
+  })
+
+  it('captures explicitly selected Git refs without treating fetched folders as live sources', async () => {
+    const { root, client } = await commandFixture()
+    const sourceApproval = `sha256:${'e'.repeat(64)}`
+    const script = join(root, 'command.cjs')
+    await writeFile(script, (await readFile(script, 'utf8')).replace('root, current: 2,', `root, current: 2, sourceApproval: '${sourceApproval}',`))
+    const gitEngine = 'https://github.com/Kosinkadink/Dinkster.git#ref=refs/pull/1225/head'
+    const gitPack = 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=main&subdirectory=packages/dinkster-nodes-utilities'
+    const gitInference = 'https://github.com/Kosinkadink/dinkster-inference.git#ref=v0.1.2'
+    const localEngine = join(root, 'engine')
+    const localPack = join(root, 'local pack')
+    const helper = join(root, 'helper')
+    for (const engine of [gitEngine, localEngine]) {
+      const frontendSource = 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=selected-frontend'
+      const development = { engine, packs: [gitPack, localPack], inference: gitInference, helper, frontendSource }
+      const request = { root, operation: 'develop' as const, development }
+      expect((await client.run(request)).sourceApproval).toBe(sourceApproval)
+      const expected = ['--root', root, 'develop', '--source', engine,
+        ...(engine === localEngine ? ['--contributor', '--live-engine'] : []),
+        '--pack-source', gitPack, '--pack-source', localPack, '--live-pack', localPack,
+        '--library-source', gitInference, '--library-source', helper, '--live-library', helper,
+        '--frontend-source', frontendSource]
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...expected, '--json', '--plan'])
+      await client.run({ ...request, sourceApproval }, true)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...expected, '--approve', sourceApproval, '--json', '--yes'])
+    }
+    for (const engine of ['http://host/repo.git', 'https://user:secret@host/repo.git', 'https://host/repo.git?token=secret', 'https://host/\nrepo.git', 'file:///tmp/repo', 'relative']) {
+      await expect(client.run({ root, operation: 'develop', development: { engine, packs: [] } })).rejects.toThrow()
+    }
+    await client.dispose()
+  })
+
+  it('keeps frontend dev origins explicit and remote access off by default', () => {
+    const source = { engine: join(process.cwd(), 'engine'), packs: [] }
+    for (const url of ['http://localhost:5173', 'http://127.0.0.2:5173', 'http://[::1]:5173']) {
+      expect(parseDevelopmentSources({ ...source, frontendDev: url })).toEqual({ ...source, frontendDev: url, allowFrontendDevRemote: false })
+    }
+    for (const url of ['http://localhost.example:5173', 'http://127.example:5173', 'http://192.0.2.1:5173']) {
+      expect(() => parseDevelopmentSources({ ...source, frontendDev: url })).toThrow('explicit permission')
+      expect(parseDevelopmentSources({ ...source, frontendDev: url, allowFrontendDevRemote: true }).frontendDev).toBe(url)
+    }
+    for (const url of ['http://user:password@localhost:5173', 'file:///tmp/frontend', 'http://localhost:5173/path', 'http://localhost:5173?token=value', 'http://localhost:5173#fragment', 'http://localhost:0', 'http://localhost:70000']) {
+      expect(() => parseDevelopmentSources({ ...source, frontendDev: url, allowFrontendDevRemote: true })).toThrow()
+    }
+    expect(() => parseDevelopmentSources({ ...source, allowFrontendDevRemote: true })).toThrow('requires a dev server')
+    expect(() => parseDevelopmentSources({ ...source, frontendRoot: join(process.cwd(), 'bundle'), frontendDev: 'http://localhost:5173' })).toThrow('choose one')
+    const frontendSource = 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=main'
+    for (const alternative of [{ frontendRoot: join(process.cwd(), 'bundle') }, { frontendDev: 'http://localhost:5173' }]) {
+      expect(() => parseDevelopmentSources({ ...source, frontendSource, ...alternative })).toThrow('choose one')
+    }
+    for (const frontendSource of [join(process.cwd(), 'checkout'), 'http://host/repo.git', 'https://user:secret@host/repo.git', 'https://host/repo.git?token=secret']) {
+      expect(() => parseDevelopmentSources({ ...source, frontendSource })).toThrow()
+    }
+  })
+
   it('selects managed source components with CLI-owned approval and keeps refs read-only', async () => {
     const { root, client } = await commandFixture()
     const approval = `sha256:${'c'.repeat(64)}`

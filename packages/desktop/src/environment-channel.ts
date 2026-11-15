@@ -42,7 +42,7 @@ export async function channelTools(request: EnvironmentRequest, desktopVersion: 
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
   const channel = request.channel ?? settings.channel ?? 'stable'
   const mirrors = request.mirrors?.length ? request.mirrors : settings.mirrors ?? []
-  if (channel !== 'main' && channel !== 'stable') throw new Error('unsupported channel')
+  if (channel !== 'nightly' && channel !== 'stable') throw new Error('unsupported channel')
   let document: Record<string, unknown> | undefined
   for (const mirror of mirrors) {
     const directory = await mkdtemp(join(tmpdir(), 'dinkster-channel-'))

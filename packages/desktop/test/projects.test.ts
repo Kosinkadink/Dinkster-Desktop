@@ -15,7 +15,7 @@ async function directory(): Promise<string> {
 describe('Desktop project bindings', () => {
   it('persists remote-only projects without creating a local generation or store', async () => {
     const root = await directory()
-    const project = { id: 'remote-studio', name: 'Remote studio', channel: 'main', engines: [
+    const project = { id: 'remote-studio', name: 'Remote studio', channel: 'nightly', engines: [
       { id: 'server-a', name: 'Server A', kind: 'remote', url: 'https://server.example.test/' },
       { id: 'server-b', name: 'Server B', kind: 'remote', url: 'http://127.0.0.1:44000' },
     ] }
@@ -36,9 +36,9 @@ describe('Desktop project bindings', () => {
     ] }
     const initial = saveProject(await readProjects(root), project)
     await writeProjects(root, initial)
-    const next = saveProject(await readProjects(root), { ...project, channel: 'main' })
+    const next = saveProject(await readProjects(root), { ...project, channel: 'nightly' })
     expect(next.projects).toHaveLength(1)
-    expect(next.projects[0]).toMatchObject({ channel: 'main', root: join(root, 'install'), engines: project.engines })
+    expect(next.projects[0]).toMatchObject({ channel: 'nightly', root: join(root, 'install'), engines: project.engines })
     expect(() => saveProject(next, { ...project, id: 'duplicate-root' })).toThrow('already belongs')
     expect(() => saveProject(next, { ...project, id: 'equivalent-root', root: `${root}/install/../install` })).toThrow('already belongs')
     expect(saveProject(next, { ...project, id: 'default', root: join(root, 'default') }).projects).toHaveLength(2)
@@ -54,7 +54,7 @@ describe('Desktop project bindings', () => {
     const root = await directory()
     const development = { engine: join(root, 'engine'), inference: join(root, 'inference'), helper: join(root, 'helper'),
       packs: [join(root, 'pack')], frontendRoot: join(root, 'frontend') }
-    const project = { id: 'development', name: 'Development', channel: 'main', root: join(root, 'project'), development,
+    const project = { id: 'development', name: 'Development', channel: 'nightly', root: join(root, 'project'), development,
       engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [] }] }
     await writeProjects(root, saveProject(await readProjects(root), project))
     expect((await readProjects(root)).projects[0]?.development).toEqual(development)
@@ -70,10 +70,10 @@ describe('Desktop project bindings', () => {
     for (const url of ['file:///tmp/server', 'javascript:alert(1)', 'https://user:secret@example.test', 'https://example.test?token=secret']) {
       expect(() => serverUrl(url)).toThrow('server address')
     }
-    const local = { id: 'local', name: 'Local', channel: 'main', root: 'relative', engines: [{ id: 'engine', name: 'Engine', kind: 'local', gpus: [] }] }
+    const local = { id: 'local', name: 'Local', channel: 'nightly', root: 'relative', engines: [{ id: 'engine', name: 'Engine', kind: 'local', gpus: [] }] }
     expect(() => parseProject(local)).toThrow('absolute install root')
     expect(() => parseProject({ ...local, root, engines: [...local.engines, ...local.engines] })).toThrow('duplicate engine')
-    expect(() => parseProject({ ...local, root, channel: 'nightly' })).toThrow('invalid Desktop project')
+    expect(() => parseProject({ ...local, root, channel: 'main' })).toThrow('invalid Desktop project')
     for (const id of ['', 'UPPER', 'has space', 'x'.repeat(65), 'p_alpha', 7, null]) {
       expect(() => parseProject({ ...local, root, id })).toThrow('invalid Desktop project')
     }

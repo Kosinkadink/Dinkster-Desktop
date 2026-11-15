@@ -69,7 +69,7 @@ the embedded web page's browser title.
 
 Desktop stores its project names and engine bindings in `projects.json` under
 the shell data directory. A local project binds one absolute install root and
-a `stable` or `main` channel to one or more named engines. Additional local
+a `stable` or `nightly` channel to one or more named engines. Additional local
 engines need distinct explicit ports. Each engine records its assigned GPUs.
 Two projects cannot bind the same install root.
 

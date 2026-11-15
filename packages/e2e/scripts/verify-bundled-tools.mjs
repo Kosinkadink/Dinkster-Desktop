@@ -69,7 +69,7 @@ try {
     const request = {
       root: join(root, 'project'),
       operation: 'setup',
-      channel: 'main',
+      channel: 'nightly',
       variant: process.platform === 'win32' ? 'win-cpu' : 'linux-cpu',
       mirrors: ['https://releases.dinkster.org'],
       data: join(root, 'store'),
@@ -80,7 +80,7 @@ try {
     const project = {
       id: 'bundled-tools',
       name: 'Bundled tools local project',
-      channel: 'main',
+      channel: 'nightly',
       root: request.root,
       engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [], port }],
     }

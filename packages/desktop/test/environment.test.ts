@@ -130,7 +130,7 @@ describe('Desktop dinkster-env command client', () => {
     await expect(client.run({ ...request, inputs: 'relative' })).rejects.toThrow('absolute host-owned')
     await expect(client.run({ ...request, progress: 'relative' })).rejects.toThrow('absolute host-owned')
     await expect(client.run({ ...apply, progress }, true)).rejects.toThrow('approval digest')
-    await expect(client.run({ ...request, channel: 'main' })).rejects.toThrow('retains the current')
+    await expect(client.run({ ...request, channel: 'nightly' })).rejects.toThrow('retains the current')
     await expect(client.run({ ...apply, approval: 'b'.repeat(64) }, true)).rejects.toThrow('approval digest')
     await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
     await client.dispose()
@@ -194,8 +194,8 @@ describe('Desktop dinkster-env command client', () => {
     const script = join(root, 'command.cjs')
     const client = new EnvironmentClient(process.execPath, [script], undefined, undefined, '0.2.0')
     await mkdir(join(root, 'channels'))
-    const channel = join(root, 'channels', 'main.json')
-    await writeFile(join(root, 'project.json'), JSON.stringify({ channel: 'main', mirrors: [root] }))
+    const channel = join(root, 'channels', 'nightly.json')
+    await writeFile(join(root, 'project.json'), JSON.stringify({ channel: 'nightly', mirrors: [root] }))
     await writeFile(channel, JSON.stringify({ format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.1', signature: null }))
     for (const operation of ['setup', 'update', 'catalog'] as const) {
       await expect(client.run({ root, operation })).rejects.toThrow('DesktopVersionTooOld: channel requires Desktop 0.2.1')
@@ -234,7 +234,7 @@ describe('Desktop dinkster-env command client', () => {
     await mkdir(join(root, 'channels'))
     const manifest = join(root, 'newer-tools.json')
     await writeFile(manifest, '{}')
-    await writeFile(join(root, 'channels', 'main.json'), JSON.stringify({
+    await writeFile(join(root, 'channels', 'nightly.json'), JSON.stringify({
       format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0', signature: null,
       tools: { manifest, sha256: 'a'.repeat(64), release: root },
     }))
@@ -242,7 +242,7 @@ describe('Desktop dinkster-env command client', () => {
       { manifest: join(root, 'bundle-must-not-open'), sha256: 'b'.repeat(64), release: root }, '0.2.0')
     // A checksum error from the channel's real file, not ENOENT from the bundle,
     // proves selection and that the channel pin still goes through verification.
-    await expect(client.run({ root, operation: 'setup', channel: 'main', mirrors: [root] })).rejects.toThrow('checksum mismatch')
+    await expect(client.run({ root, operation: 'setup', channel: 'nightly', mirrors: [root] })).rejects.toThrow('checksum mismatch')
     await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
     await client.dispose()
   })
@@ -375,12 +375,12 @@ describe('Desktop dinkster-env command client', () => {
     await mkdir(release, { recursive: true })
     await writeFile(join(release, 'tools-manifest.json'), manifest)
     await writeFile(join(release, row.name), archive)
-    await writeFile(join(root, 'channels', 'main.json'), JSON.stringify({
+    await writeFile(join(root, 'channels', 'nightly.json'), JSON.stringify({
       format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0', signature: null,
       tools: { label, manifest: join(release, 'tools-manifest.json'), sha256, release },
     }))
 
-    const input = await channelTools({ root, operation: 'setup', channel: 'main', mirrors: [root] }, '0.2.0')
+    const input = await channelTools({ root, operation: 'setup', channel: 'nightly', mirrors: [root] }, '0.2.0')
     expect(input).toEqual({ label, manifest: join(release, 'tools-manifest.json'), sha256, release })
     const tools = await acquireEnvironmentTools(input!)
     roots.push(tools.directory)
@@ -521,12 +521,12 @@ describe('Desktop dinkster-env command client', () => {
 
   it('plans by default and passes explicit confirmation without changing artifact formats', async () => {
     const { root, client } = await commandFixture()
-    const request = { root, operation: 'setup' as const, channel: 'main' as const, variant: 'win-nvidia-cu126', mirrors: [join(root, 'offline mirror'), 'https://releases.dinkster.org'], data: join(root, 'wheel store'), port: 44000, engine: 'compute', gpus: ['1'] }
+    const request = { root, operation: 'setup' as const, channel: 'nightly' as const, variant: 'win-nvidia-cu126', mirrors: [join(root, 'offline mirror'), 'https://releases.dinkster.org'], data: join(root, 'wheel store'), port: 44000, engine: 'compute', gpus: ['1'] }
     const plan = await client.run(request)
     expect(plan.status).toBe('planned')
     expect(plan.plan).toEqual(['reuse the shared wheel store'])
     expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
-      '--root', root, 'setup', '--channel', 'main', '--variant', 'win-nvidia-cu126',
+      '--root', root, 'setup', '--channel', 'nightly', '--variant', 'win-nvidia-cu126',
       '--mirror', join(root, 'offline mirror'), '--mirror', 'https://releases.dinkster.org',
       '--data', join(root, 'wheel store'), '--port', '44000', '--engine', 'compute', '--gpu', '1', '--json', '--plan',
     ])
@@ -638,13 +638,13 @@ describe('Desktop dinkster-env command client', () => {
     const base = `sha256:${'a'.repeat(64)}`
     const manifest = { format: 'dinkster.base/1', id: base, variant: 'custom-base', platform,
       nvidia: { minimumDriver: '580.10.1', minimumComputeCapability: '7.5', maximumExclusiveComputeCapability: null }, parts: [], python: '3.14.10' }
-    const response = { format: 'dinkster.environment-result/1', operation: 'catalog', status: 'clean', root, current: null, plan: [], channel: 'main',
+    const response = { format: 'dinkster.environment-result/1', operation: 'catalog', status: 'clean', root, current: null, plan: [], channel: 'nightly',
       channelManifest: { format: 'dinkster.channel/1', base: { 'custom-base': base } }, variants: [{ variant: 'custom-base', base, manifest, downloadBytes: 123456789 }] }
     const script = join(root, 'catalog.cjs')
     await writeFile(script, `require('node:fs').writeFileSync(${JSON.stringify(join(root, 'catalog-args.json'))},JSON.stringify(process.argv.slice(2))); console.log(${JSON.stringify(JSON.stringify(response))});`)
     const client = new EnvironmentClient(process.execPath, [script])
-    expect(await client.run({ root, operation: 'catalog', channel: 'main', mirrors: [join(root, 'mirror')] }, true)).toEqual(response)
-    expect(JSON.parse(await readFile(join(root, 'catalog-args.json'), 'utf8'))).toEqual(['--root', root, 'catalog', '--channel', 'main', '--mirror', join(root, 'mirror'), '--json'])
+    expect(await client.run({ root, operation: 'catalog', channel: 'nightly', mirrors: [join(root, 'mirror')] }, true)).toEqual(response)
+    expect(JSON.parse(await readFile(join(root, 'catalog-args.json'), 'utf8'))).toEqual(['--root', root, 'catalog', '--channel', 'nightly', '--mirror', join(root, 'mirror'), '--json'])
     for (const invalid of [
       { ...manifest, platform: undefined },
       { ...manifest, platform: { os: 'macos', arch: 'x86_64' } },

@@ -10,7 +10,7 @@ import { channelTools } from './environment-channel.js'
 const execute = promisify(execFile)
 
 export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply'
-export type EnvironmentChannel = 'stable' | 'main'
+export type EnvironmentChannel = 'stable' | 'nightly'
 
 export interface DevelopmentSources {
   readonly engine: string
@@ -165,7 +165,7 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
   if (!['develop', 'setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'space', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
-  if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'main') throw new Error('unsupported channel')
+  if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
   if (request.operation === 'develop') {
     const sources = parseDevelopmentSources(request.development)
@@ -319,7 +319,7 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     || !(row['current'] === null || (Number.isInteger(row['current']) && Number(row['current']) > 0))
     || !Array.isArray(row['plan']) || !row['plan'].every((line) => typeof line === 'string')
     || (row['url'] !== undefined && typeof row['url'] !== 'string')
-    || (row['channel'] !== undefined && row['channel'] !== null && row['channel'] !== 'stable' && row['channel'] !== 'main')
+    || (row['channel'] !== undefined && row['channel'] !== null && row['channel'] !== 'stable' && row['channel'] !== 'nightly')
     || (row['variant'] !== undefined && row['variant'] !== null && typeof row['variant'] !== 'string')
     || (row['changes'] !== undefined && (!Array.isArray(row['changes']) || !row['changes'].every((line) => typeof line === 'string')))
     || (row['engines'] !== undefined && (!Array.isArray(row['engines']) || !row['engines'].every((engine: unknown) => {

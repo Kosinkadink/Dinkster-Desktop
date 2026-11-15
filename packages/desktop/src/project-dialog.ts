@@ -30,7 +30,7 @@ function field(id: string): string {
 
 function localProject(): DesktopProject {
   const channel = field('local-channel')
-  if (channel !== 'stable' && channel !== 'main') throw new Error('unsupported channel')
+  if (channel !== 'stable' && channel !== 'nightly') throw new Error('unsupported channel')
   const existing = savedProjects.find((project) => project.id === field('local-project'))
   const engineId = field('local-engine')
   const engine = { id: engineId, name: engineId, kind: 'local' as const,
@@ -175,7 +175,7 @@ document.querySelector<HTMLFormElement>('#create')!.addEventListener('submit', (
     const name = document.querySelector<HTMLInputElement>('#name')!.value.trim()
     const url = document.querySelector<HTMLInputElement>('#url')!.value.trim()
     const channel = document.querySelector<HTMLSelectElement>('#channel')!.value
-    if (channel !== 'stable' && channel !== 'main') throw new Error('unsupported channel')
+    if (channel !== 'stable' && channel !== 'nightly') throw new Error('unsupported channel')
     await bridge.save({
       id: `project-${crypto.randomUUID()}`,
       name, channel,
@@ -258,7 +258,7 @@ document.querySelector<HTMLButtonElement>('#inspect-hardware')!.addEventListener
   void perform(async () => {
     clearHardware()
     const result = await bridge.inspect({
-      root: field('local-root'), operation: 'catalog', channel: field('local-channel') as 'stable' | 'main',
+      root: field('local-root'), operation: 'catalog', channel: field('local-channel') as 'stable' | 'nightly',
       mirrors: field('local-mirrors').split('\n').map((mirror) => mirror.trim()).filter(Boolean),
       gpus: field('local-gpus').split(',').map((gpu) => gpu.trim()).filter(Boolean),
     })

@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 
+import { writeMxcBuild } from './mxc-build.mjs'
+
 const execute = promisify(execFile)
 const commit = 'c66201839d63cae2239db5e92f1f1d6076cf5181'
 const sourceUrl = `https://github.com/microsoft/mxc/archive/${commit}.zip`
@@ -34,4 +36,5 @@ await execute('cargo', ['build', '--locked', '--release', '-p', 'wxc', '--target
 
 await mkdir(directory, { recursive: true })
 await copyFile(resolve(source, 'src/target/x86_64-pc-windows-msvc/release/wxc-exec.exe'), output)
+await writeMxcBuild(output, resolve(directory, 'mxc-build.json'))
 console.log(`Prepared ${output} from MXC ${commit} with MXC_TELEMETRY_COMPONENT_PATH explicitly empty`)

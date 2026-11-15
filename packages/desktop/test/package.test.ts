@@ -88,7 +88,29 @@ describe('desktop package inputs', () => {
     expect(manifest.scripts['package:win:signed']).toContain('sign:mxc')
     expect(manifest.build.win.extraResources).toContainEqual({ from: 'resources/sandbox', to: 'sandbox' })
     expect(signer).toContain('createArtifactSigningHook(artifactSigning)')
+    expect(signer).toContain("writeMxcBuild(executable, resolve(import.meta.dirname, '../resources/sandbox/mxc-build.json'))")
     expect(verifier).toContain("provenance.commit, 'c66201839d63cae2239db5e92f1f1d6076cf5181'")
+  })
+
+  it('writes the final executor hash into the MXC build manifest', async () => {
+    const { writeMxcBuild } = await import('../scripts/mxc-build.mjs') as {
+      writeMxcBuild(executable: string, destination: string): Promise<void>
+    }
+    const scratch = await mkdtemp(resolve(tmpdir(), 'dinkster-mxc-build-'))
+    const executable = resolve(scratch, 'wxc-exec.exe')
+    const manifest = resolve(scratch, 'mxc-build.json')
+    try {
+      await writeFile(executable, 'unrouted executor')
+      await writeMxcBuild(executable, manifest)
+      expect(JSON.parse(await readFile(manifest, 'utf8'))).toEqual({
+        format: 'dinkster.mxc/1',
+        commit: 'c66201839d63cae2239db5e92f1f1d6076cf5181',
+        telemetryComponent: '',
+        sha256: 'c4a827a50fcd1c036ac659d1c5cc3dfd5e69d82f89aefa4faf81b8c7555cab38',
+      })
+    } finally {
+      await rm(scratch, { recursive: true, force: true })
+    }
   })
 
   it('keeps both tinkerer launchers on the shared web runtime', async () => {

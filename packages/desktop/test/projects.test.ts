@@ -50,6 +50,19 @@ describe('Desktop project bindings', () => {
     expect(await readdir(root)).toEqual(['projects.json'])
   })
 
+  it('retains explicit development selections only on local project bindings', async () => {
+    const root = await directory()
+    const development = { engine: join(root, 'engine'), inference: join(root, 'inference'), helper: join(root, 'helper'),
+      packs: [join(root, 'pack')], frontendRoot: join(root, 'frontend') }
+    const project = { id: 'development', name: 'Development', channel: 'main', root: join(root, 'project'), development,
+      engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [] }] }
+    await writeProjects(root, saveProject(await readProjects(root), project))
+    expect((await readProjects(root)).projects[0]?.development).toEqual(development)
+    expect(await readdir(root)).toEqual(['projects.json'])
+    expect(() => parseProject({ ...project, development: { ...development, helper: 'relative' } })).toThrow('absolute local folders')
+    expect(() => parseProject({ ...project, root: undefined, engines: [{ id: 'remote', name: 'remote', kind: 'remote', url: 'http://localhost:3639' }] })).toThrow('require a local project')
+  })
+
   it('refuses corrupt bindings and credential-bearing or executable server URLs', async () => {
     const root = await directory()
     await writeFile(join(root, 'projects.json'), '{broken')

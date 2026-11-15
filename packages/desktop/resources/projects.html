@@ -28,7 +28,9 @@
     .endpoint { overflow-wrap: anywhere; font-size: 12px; }
     details { margin-top: 20px; border: 1px solid #3c3c3c; border-radius: 10px; padding: 20px; background: #202020; }
     #local { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
-    #local p, #local .actions { grid-column: 1 / -1; }
+    #local p, #local .actions, #development-sources { grid-column: 1 / -1; }
+    fieldset { min-width: 0; border: 1px solid #555; border-radius: 6px; margin: 0 0 20px; padding: 20px; }
+    fieldset p { color: #f3cf80; }
     summary { cursor: pointer; font-weight: 600; margin-bottom: 16px; }
     .plan { margin-top: 24px; border-color: #8be9fd; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.5; }
@@ -64,8 +66,19 @@
             <label>Project name<input id="local-name" required maxlength="128" placeholder="Local studio"></label>
             <label>Install root<input id="local-root" required placeholder="Absolute project directory"></label>
             <label>Channel<select id="local-channel"><option value="stable">Stable</option><option value="main">Main</option></select></label>
+            <label>Project kind<select id="local-kind"><option value="release">Published release</option><option value="development">Development - unpublished sources</option></select></label>
+            <fieldset id="development-sources" hidden>
+              <legend>Explicit development sources</legend>
+              <p>Selected folders run unpublished code. Engine and packs reload after edits; libraries require an engine restart. Leave optional sources empty to keep the engine's defaults.</p>
+              <label>Engine folder<input id="development-engine" placeholder="Absolute Dinkster checkout folder"></label>
+              <label>dinkster-inference folder (optional)<input id="development-inference" placeholder="Absolute inference folder"></label>
+              <label>dinkster-pack-helpers folder (optional)<input id="development-helper" placeholder="Absolute helper folder"></label>
+              <label>Pack folders (one per line, optional)<textarea id="development-packs" rows="3" placeholder="Absolute pack folders"></textarea></label>
+              <label>Built frontend folder (optional)<input id="development-frontend" placeholder="Absolute bundle folder containing index.html"></label>
+            </fieldset>
             <label>Operation<select id="local-operation">
-              <option value="setup">Install</option><option value="update">Update / change variant</option>
+              <option value="develop">Build / refresh development sources</option>
+              <option value="setup" selected>Install</option><option value="update">Update / change variant</option>
               <option value="rollback">Rollback</option><option value="move">Move</option>
               <option value="doctor">Check drift</option><option value="gc">Garbage collection</option>
               <option value="status">Cleanup status (read-only)</option><option value="cleanup">Generation cleanup / retry</option>

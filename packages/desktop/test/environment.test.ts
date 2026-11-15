@@ -57,6 +57,33 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('reviews explicit local development folders and confirms the exact source digest', async () => {
+    const { root, client } = await commandFixture()
+    const development = { engine: join(root, 'engine checkout'), inference: join(root, 'inference'),
+      helper: join(root, 'helper'), packs: [join(root, 'pack one'), join(root, 'pack two')], frontendRoot: join(root, 'frontend dist') }
+    const sourceApproval = `sha256:${'c'.repeat(64)}`
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    await writeFile(script, original.replace("root, current: 2,", `root, current: 2, sourceApproval: '${sourceApproval}',`))
+    const request = { root, operation: 'develop' as const, development, variant: 'cpu' }
+    expect((await client.run(request)).sourceApproval).toBe(sourceApproval)
+    const args = ['--root', root, 'develop', '--source', development.engine, '--contributor', '--live-engine',
+      '--pack-source', development.packs[0], '--live-pack', development.packs[0],
+      '--pack-source', development.packs[1], '--live-pack', development.packs[1],
+      '--library-source', development.inference, '--live-library', development.inference,
+      '--library-source', development.helper, '--live-library', development.helper,
+      '--frontend-root', development.frontendRoot]
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...args, '--variant', 'cpu', '--json', '--plan'])
+    await expect(client.run(request, true)).rejects.toThrow('reviewed source approval')
+    expect((await client.run({ ...request, sourceApproval }, true)).status).toBe('applied')
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...args, '--approve', sourceApproval, '--variant', 'cpu', '--json', '--yes'])
+    await expect(client.run({ ...request, operation: 'setup' })).rejects.toThrow('require develop')
+    await expect(client.run({ ...request, development: { ...development, engine: 'relative' } })).rejects.toThrow('absolute local folders')
+    await writeFile(script, original)
+    await expect(client.run(request)).rejects.toThrow('source approval response')
+    await client.dispose()
+  })
+
   it('passes exact host-owned pack reviews and requires explicit apply approval', async () => {
     const { root, client } = await commandFixture()
     const inputs = join(root, 'review inputs')

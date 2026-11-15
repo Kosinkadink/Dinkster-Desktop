@@ -131,6 +131,7 @@ const url = ${JSON.stringify(urls)}[updated ? 1 : 0];
 const row = {format:'dinkster.environment-result/1',operation,
 status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,current:updated ? 2 : 1,
 ...(operation === 'doctor' ? JSON.parse(fs.readFileSync(${JSON.stringify(installed)}, 'utf8')) : {}),
+...(operation === 'develop' ? {sourceApproval:'sha256:'+'d'.repeat(64), sourceDescription:'Unpublished local development sources'} : {}),
 plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current'],url,
 engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]};
 if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
@@ -682,6 +683,86 @@ console.log(JSON.stringify(row));
       path: join(artifacts, 'local-applied.png'),
       fullPage: true,
     })
+  await manager.locator('#local-kind').selectOption('development')
+  await manager
+    .locator('#development-engine')
+    .fill(join(scratch, 'engine checkout'))
+  await manager
+    .locator('#development-inference')
+    .fill(join(scratch, 'inference'))
+  await manager.locator('#development-helper').fill(join(scratch, 'helper'))
+  await manager.locator('#development-packs').fill(join(scratch, 'pack one'))
+  await manager
+    .locator('#development-frontend')
+    .fill(join(scratch, 'frontend dist'))
+  await manager
+    .getByRole('button', { name: 'Inspect hardware and variants' })
+    .click()
+  await manager.locator('#local-variant').selectOption('linux-cpu')
+  if (artifacts)
+    await manager
+      .locator('#local-settings')
+      .screenshot({ path: join(artifacts, 'development-setup.png') })
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await manager.getByRole('button', { name: 'Confirm and apply' }).waitFor()
+  let developmentCalls = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'develop')
+  assert.equal(developmentCalls.length, 1)
+  assert(developmentCalls[0].includes('--plan'))
+  assert(!developmentCalls[0].includes('--approve'))
+  await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await expect(manager.locator('#apply')).toBeHidden()
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
+  await expect(manager.locator('#projects')).toContainText(
+    'Development - unpublished sources',
+  )
+  await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
+  await expect
+    .poll(() =>
+      engine
+        .locator('body')
+        .evaluate((body) => getComputedStyle(body, '::after').content),
+    )
+    .toBe('"Development project - unpublished sources"')
+  assert(
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().some(
+        (window) =>
+          window.getTitle() ===
+          'Dinkster Desktop - Development - unpublished sources',
+      ),
+    ),
+  )
+  assert.equal(
+    await engine.evaluate(() => typeof window.dinksterProjects),
+    'undefined',
+  )
+  assert.deepEqual(
+    await engine.evaluate(() => Object.keys(window.dinksterDesktop).sort()),
+    ['chooseDirectory', 'fileCapabilities', 'resolveDroppedFile', 'revealFile'],
+  )
+  developmentCalls = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'develop')
+  assert.equal(developmentCalls.length, 3)
+  const appliedDevelopment = developmentCalls[2]
+  assert.equal(
+    appliedDevelopment[appliedDevelopment.indexOf('--approve') + 1],
+    'sha256:' + 'd'.repeat(64),
+  )
+  assert(appliedDevelopment.includes('--yes'))
+  if (artifacts) {
+    await manager
+      .locator('#projects')
+      .screenshot({ path: join(artifacts, 'development-project-list.png') })
+    await engine.screenshot({ path: join(artifacts, 'development-engine.png') })
+  }
   await manager.locator('#name').fill('Remote studio')
   await manager.locator('#url').fill(urls[1])
   await manager.getByRole('button', { name: 'Save remote project' }).click()
@@ -820,7 +901,7 @@ console.log(JSON.stringify(row));
   history = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse)
   assert.deepEqual(
     history.filter((args) => args.includes('--yes')).map((args) => args[2]),
-    ['setup', 'start', 'update', 'rollback', 'stop'],
+    ['setup', 'start', 'update', 'rollback', 'develop', 'stop'],
   )
   console.log(
     'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, top-frame-only pack install, retained document, replay refusal, remote-only routing, identity-checked stop delegation.',

@@ -111,11 +111,20 @@ those files or defines substitute formats for them.
 
 ## Environment commands
 
-The project manager delegates setup, update, rollback, move, doctor, garbage
-collection, and named engine start/stop to `dinkster-env`. Mutations show the
+The project manager delegates setup, development, update, rollback, move, doctor,
+garbage collection, and named engine start/stop to `dinkster-env`. Mutations show the
 command's read-only plan first and require confirmation. The confirmation
 token applies to exactly that request; it cannot authorize a changed root,
 variant, channel, or destination.
+
+Choose **Development - unpublished sources** to select a local engine checkout
+and optional inference, pack, helper and built frontend folders. Every selected
+folder is explicit; blank optional fields keep the engine's defaults. Review the
+`develop` plan before applying it. Desktop retains the environment command's
+source approval digest, so changed source inputs require a new review. Engine
+and pack edits reload; library edits require an engine restart. Development
+sources are marked in the project list and active engine window. Engine windows
+retain the same narrow local-file bridge, without project-manager or shell access.
 
 Before setup or a variant change, select the project root, mirrors and assigned
 GPU indexes, then use **Inspect hardware and variants**. Desktop calls the

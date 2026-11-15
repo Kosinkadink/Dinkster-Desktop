@@ -8,10 +8,20 @@ import { channelTools } from './environment-channel.js'
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply'
+export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply'
 export type EnvironmentChannel = 'stable' | 'main'
 
+export interface DevelopmentSources {
+  readonly engine: string
+  readonly inference?: string
+  readonly helper?: string
+  readonly packs: readonly string[]
+  readonly frontendRoot?: string
+}
+
 export interface EnvironmentRequest {
+  readonly development?: DevelopmentSources
+  readonly sourceApproval?: string
   readonly root: string
   readonly operation: EnvironmentOperation
   readonly channel?: EnvironmentChannel
@@ -81,6 +91,8 @@ export interface EnvironmentSpace {
 export interface EnvironmentResult {
   readonly format: 'dinkster.environment-result/1'
   readonly operation: EnvironmentOperation
+  readonly sourceApproval?: string
+  readonly sourceDescription?: string
   readonly status: 'planned' | 'applied' | 'clean' | 'drift' | 'error' | CleanupAttempt['status']
   readonly root: string
   readonly current: number | null
@@ -117,11 +129,39 @@ export interface EnvironmentResult {
   }[]
 }
 
+export function parseDevelopmentSources(value: unknown): DevelopmentSources {
+  if (!value || typeof value !== 'object') throw new Error('invalid development sources')
+  const row = value as Record<string, unknown>
+  const folder = (path: unknown): string => {
+    if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) throw new Error('development sources need absolute local folders')
+    return path
+  }
+  if (!Array.isArray(row['packs']) || row['packs'].length > 64) throw new Error('invalid development pack folders')
+  const packs = row['packs'].map(folder)
+  const engine = folder(row['engine'])
+  const inference = row['inference'] === undefined ? undefined : folder(row['inference'])
+  const helper = row['helper'] === undefined ? undefined : folder(row['helper'])
+  const frontendRoot = row['frontendRoot'] === undefined ? undefined : folder(row['frontendRoot'])
+  return { engine, packs, ...(inference === undefined ? {} : { inference }),
+    ...(helper === undefined ? {} : { helper }), ...(frontendRoot === undefined ? {} : { frontendRoot }) }
+}
+
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
-  if (!['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'space', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
+  if (!['develop', 'setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'space', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
   if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'main') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
+  if (request.operation === 'develop') {
+    const sources = parseDevelopmentSources(request.development)
+    args.push('--source', sources.engine, '--contributor', '--live-engine')
+    for (const path of sources.packs) args.push('--pack-source', path, '--live-pack', path)
+    for (const path of [sources.inference, sources.helper]) if (path !== undefined) args.push('--library-source', path, '--live-library', path)
+    if (sources.frontendRoot !== undefined) args.push('--frontend-root', sources.frontendRoot)
+    if (confirmed) {
+      if (!request.sourceApproval || !/^sha256:[a-f0-9]{64}$/.test(request.sourceApproval)) throw new Error('development requires the reviewed source approval digest')
+      args.push('--approve', request.sourceApproval)
+    } else if (request.sourceApproval !== undefined) throw new Error('source approval requires confirmation')
+  } else if (request.development !== undefined || request.sourceApproval !== undefined) throw new Error('development sources require develop')
   if (request.operation === 'packs-plan' || request.operation === 'packs-apply') {
     if (!request.inputs || !isAbsolute(request.inputs)) throw new Error('pack installation needs an absolute host-owned review directory')
     if (['channel', 'variant', 'mirrors', 'data', 'port', 'destination', 'repair', 'engine', 'gpus', 'automaticCleanup', 'keepPreviousGenerations'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) {
@@ -274,6 +314,9 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
   }
+  if ((row['sourceApproval'] !== undefined && (typeof row['sourceApproval'] !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(row['sourceApproval'])))
+    || (row['sourceDescription'] !== undefined && typeof row['sourceDescription'] !== 'string')
+    || (operation === 'develop' && row['status'] === 'planned' && row['sourceApproval'] === undefined)) throw new Error('unsupported development source approval response')
   if ((row['cleanup'] !== undefined && !validCleanup(row['cleanup']))
     || (row['cleanupAttempt'] !== undefined && !validAttempt(row['cleanupAttempt']))) throw new Error('unsupported dinkster-env cleanup response')
   if ((row['space'] !== undefined && !validSpace(row['space'], String(row['root'])))

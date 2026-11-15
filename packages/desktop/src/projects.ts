@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { writeFileAtomic } from './atomic-file.js'
 import { validProjectId } from './window-layout.js'
-import type { EnvironmentChannel } from './environment.js'
+import { parseDevelopmentSources, type DevelopmentSources, type EnvironmentChannel } from './environment.js'
 
 export type ProjectEngine =
   | { readonly id: string; readonly name: string; readonly kind: 'local'; readonly gpus: readonly string[]; readonly port?: number }
@@ -12,6 +12,7 @@ export interface DesktopProject {
   readonly id: string
   readonly name: string
   readonly channel: EnvironmentChannel
+  readonly development?: DevelopmentSources
   readonly root?: string
   readonly engines: readonly ProjectEngine[]
 }
@@ -61,8 +62,11 @@ export function parseProject(value: unknown): DesktopProject {
   const hasLocal = engines.some((engine) => engine.kind === 'local')
   if (hasLocal && (typeof row['root'] !== 'string' || !isAbsolute(row['root']))) throw new Error('a local project needs an absolute install root')
   if (!hasLocal && row['root'] !== undefined) throw new Error('a remote-only project has no local install root')
+  if (!hasLocal && row['development'] !== undefined) throw new Error('development sources require a local project')
+  const development = row['development'] === undefined ? undefined : parseDevelopmentSources(row['development'])
   return {
     id: row['id'], name: row['name'].trim(), channel: row['channel'], engines,
+    ...(development === undefined ? {} : { development }),
     ...(hasLocal ? { root: resolve(row['root'] as string) } : {}),
   }
 }

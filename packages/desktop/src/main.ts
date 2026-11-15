@@ -77,7 +77,7 @@ import type {
 const { autoUpdater } = updater
 let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
-const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number }>()
+const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
 const environmentClient = new EnvironmentClient(undefined, undefined, undefined, app.isPackaged ? {
   manifest: join(process.resourcesPath, 'tools', toolsRelease.manifest.name),
@@ -436,11 +436,13 @@ function localEngineUrl(project: DesktopProject, engineId: string, result: Envir
 }
 
 async function handoffProject(project: DesktopProject, result: EnvironmentResult): Promise<void> {
+  const status = await environmentClient.run({ root: project.root!, operation: 'status' })
   for (const [managed, binding] of remoteWindows) {
     if (binding.projectId !== project.id || managed.isDestroyed()) continue
     if (!project.engines.some((engine) => engine.id === binding.engineId && engine.kind === 'local')) continue
     const url = localEngineUrl(project, binding.engineId, result)
     binding.backendUrl = url
+    binding.development = status.sourceDescription !== undefined
     if (binding.gateway) binding.gateway.setTarget(url)
     else binding.url = url
     await managed.loadURL(binding.url)
@@ -452,18 +454,23 @@ ipcMain.handle('desktop:projects-plan', (event, value: unknown, input: Environme
   pendingProjectPlan = undefined
   const project = parseProject(value)
   if (!project.root || input.root !== project.root
-    || !['setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'status', 'space'].includes(input.operation)) throw new Error('invalid local project operation')
+    || !['develop', 'setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'status', 'space'].includes(input.operation)) throw new Error('invalid local project operation')
   // Validate the shell binding before asking the environment owner to mutate it.
   saveProject(await readProjects(dataDirectory), project)
   if (input.operation === 'move') saveProject(await readProjects(dataDirectory), { ...project, root: input.destination })
   const engine = project.engines.find((binding) => binding.kind === 'local' && binding.id === input.engine)
-  if (input.operation === 'setup' && (!engine || engine.kind !== 'local')) throw new Error('select the local engine binding before setup')
+  if (['setup', 'develop'].includes(input.operation) && (!engine || engine.kind !== 'local')) throw new Error('select the local engine binding before setup')
+  if (input.sourceApproval !== undefined) throw new Error('source approval belongs to the reviewed environment plan')
+  if (input.operation === 'develop' && !project.development) throw new Error('development requires explicit project sources')
   const request: EnvironmentRequest = { ...input, root: project.root,
-    ...(input.operation === 'setup' && engine?.kind === 'local' ? { engine: engine.id, gpus: engine.gpus, port: engine.port } : {}) }
+    ...(input.operation === 'develop' ? { development: project.development! } : {}),
+    ...(['setup', 'develop'].includes(input.operation) && engine?.kind === 'local' ? { engine: engine.id, gpus: engine.gpus, port: engine.port } : {}) }
   const result = await environmentClient.run(request)
   if (result.status !== 'planned') return { result }
   const token = randomUUID()
-  pendingProjectPlan = { token, project, request }
+  pendingProjectPlan = { token, project, request: {
+    ...request, ...(result.sourceApproval === undefined ? {} : { sourceApproval: result.sourceApproval }),
+  } }
   return { token, result }
 }))
 ipcMain.handle('desktop:projects-apply', (event, token: unknown) => serializeLifecycle(async () => {
@@ -490,7 +497,7 @@ ipcMain.handle('desktop:projects-apply', (event, token: unknown) => serializeLif
   if (planned.request.operation === 'move') {
     for (const binding of localEngines.values()) if (binding.root === planned.project.root) binding.root = project.root!
   }
-  if (['setup', 'update', 'rollback', 'move'].includes(planned.request.operation)) await handoffProject(project, result)
+  if (['develop', 'setup', 'update', 'rollback', 'move'].includes(planned.request.operation)) await handoffProject(project, result)
   return result
 }))
 ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: unknown) => serializeLifecycle(async () => {
@@ -500,6 +507,7 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   const engine = project?.engines.find((candidate) => candidate.id === engineId)
   if (!engine) throw new Error('engine binding not found')
   let url: string
+  let development = false
   if (engine.kind === 'remote') url = engine.url
   else {
     const root = project!.root!
@@ -510,10 +518,12 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
     if (result.status !== 'applied') throw new Error('dinkster-env did not start the selected engine')
     localEngines.set(`${projectId}/${engineId}`, { root, engine: engine.id })
     url = localEngineUrl(project!, engine.id, result)
+    development = (await environmentClient.run({ root, operation: 'status' })).sourceDescription !== undefined
   }
   const existing = [...remoteWindows].find(([managed, binding]) => !managed.isDestroyed() && binding.projectId === projectId && binding.engineId === engineId)
   if (existing) {
     existing[1].backendUrl = url
+    existing[1].development = development
     if (existing[1].gateway) existing[1].gateway.setTarget(url)
     else existing[1].url = url
     await existing[0].loadURL(existing[1].url)
@@ -528,10 +538,10 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
       ? { ...secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')), additionalArguments: ['--dinkster-local-files'] }
       : { contextIsolation: true, sandbox: true, nodeIntegration: false },
   })
-  installWindowChrome(remote)
+  installWindowChrome(remote, () => binding.development)
   remote.on('page-title-updated', (event) => event.preventDefault())
-  const binding: { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number } = {
-    projectId, engineId, url, backendUrl: url, folderProject: undefined, document: 0,
+  const binding: { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean } = {
+    projectId, engineId, url, backendUrl: url, folderProject: undefined, document: 0, development,
   }
   remoteWindows.set(remote, binding)
   if (engine.kind === 'local') {

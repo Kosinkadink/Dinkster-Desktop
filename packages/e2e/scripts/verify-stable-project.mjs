@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { createServer as createMirror } from 'node:http'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
+import { Readable } from 'node:stream'
 import { _electron as electron, expect } from '@playwright/test'
 import { verifyChannel } from '../../desktop/src/channel-signatures.ts'
 
@@ -82,6 +84,37 @@ await new Promise((done) => server.listen(0, '127.0.0.1', done))
 const port = server.address().port
 await new Promise((done) => server.close(done))
 const projectRoot = join(root, 'project')
+let mirrorChannel = channelText
+let mirrorOnline = true
+const mirrorRequests = []
+const mirror = createMirror(async (request, response) => {
+  mirrorRequests.push(request.url)
+  if (!mirrorOnline) {
+    response.writeHead(503).end('Mirror unavailable')
+    return
+  }
+  if (
+    request.url === '/channels/stable.json' ||
+    request.url === '/channels/nightly.json'
+  ) {
+    response.setHeader('Content-Type', 'application/json')
+    response.end(mirrorChannel)
+    return
+  }
+  try {
+    const upstream = await fetch(`${publicRoot}${request.url}`)
+    response.writeHead(upstream.status)
+    if (upstream.body)
+      Readable.fromWeb(upstream.body)
+        .on('error', () => response.destroy())
+        .pipe(response)
+    else response.end()
+  } catch {
+    response.writeHead(502).end()
+  }
+})
+await new Promise((done) => mirror.listen(0, '127.0.0.1', done))
+const mirrorUrl = `http://127.0.0.1:${mirror.address().port}`
 const app = await electron.launch({
   executablePath,
   args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`],
@@ -112,12 +145,99 @@ try {
     operation: 'setup',
     channel: 'stable',
     variant: process.platform === 'win32' ? 'win-cpu' : 'linux-cpu',
-    mirrors: [publicRoot],
+    mirrors: [mirrorUrl],
     data: join(root, 'store'),
     engine: 'main',
     gpus: [],
     port,
   }
+  const envelope = JSON.parse(channelText)
+  const refusedChannels = {
+    unsigned: JSON.stringify(envelope.signed),
+    tampered: channelText.replace(channel.engine.version, '999.0.0'),
+    wrongKey: channelText.replace(
+      envelope.signatures[0].keyId,
+      `sha256:${'f'.repeat(64)}`,
+    ),
+    wrongChannel: await fetch(`${publicRoot}/channels/nightly.json`).then(
+      (response) => {
+        assert(response.ok)
+        return response.text()
+      },
+    ),
+  }
+  for (const [name, text] of Object.entries(refusedChannels)) {
+    assert.notEqual(text, channelText)
+    mirrorChannel = text
+    await assert.rejects(
+      manager.evaluate(
+        ({ project, request }) =>
+          window.dinksterProjects.plan(project, request),
+        { project, request },
+      ),
+      /no mirror supplied a valid trusted channel/,
+      name,
+    )
+    await assert.rejects(stat(projectRoot), { code: 'ENOENT' })
+  }
+  mirrorChannel = channelText
+  const integrity = await app.evaluate(
+    async ({ app }, { root, tools, manifest }) => {
+      const path = process.getBuiltinModule('node:path')
+      const fs = process.getBuiltinModule('node:fs/promises')
+      const require = process
+        .getBuiltinModule('node:module')
+        .createRequire(path.join(app.getAppPath(), 'package.json'))
+      const { acquireEnvironmentTools } = require(
+        path.join(app.getAppPath(), 'dist/environment-tools.js'),
+      )
+      const directory = path.join(root, 'corrupt-tools')
+      await fs.mkdir(directory)
+      const input = {
+        ...tools,
+        manifest: path.join(directory, 'tools-manifest.json'),
+        release: directory,
+      }
+      const results = {}
+      const refuse = async (name) => {
+        try {
+          const accepted = await acquireEnvironmentTools(input)
+          if (!accepted.persistent)
+            await fs.rm(accepted.directory, { recursive: true })
+          throw new Error(`Accepted corrupt tools: ${name}`)
+        } catch (error) {
+          if (error.message.startsWith('Accepted corrupt tools:')) throw error
+          results[name] = error.message
+        }
+      }
+      await fs.writeFile(input.manifest, '{}')
+      await refuse('manifest')
+      await fs.writeFile(input.manifest, manifest)
+      const native = JSON.parse(manifest).artifacts.find(
+        (row) =>
+          row.name ===
+          `dinkster-tools-${process.platform === 'win32' ? 'windows' : 'linux'}-x86_64.zip`,
+      )
+      const archive = path.join(directory, native.name)
+      await fs.writeFile(archive, 'x')
+      await refuse('size')
+      await fs.truncate(archive, native.size)
+      await refuse('digest')
+      return results
+    },
+    { root, tools: channel.tools, manifest: toolsBytes.toString('utf8') },
+  )
+  assert.match(integrity.manifest, /checksum mismatch/)
+  assert.match(integrity.size, /size mismatch/)
+  assert.match(integrity.digest, /checksum mismatch/)
+  await writeFile(
+    join(root, 'refusals.json'),
+    JSON.stringify(
+      { channels: Object.keys(refusedChannels), integrity },
+      null,
+      2,
+    ),
+  )
   const planned = await manager.evaluate(
     ({ project, request }) => window.dinksterProjects.plan(project, request),
     { project, request },
@@ -233,6 +353,18 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
       { encoding: 'utf8', env },
     ),
   )
+  assert(
+    mirrorRequests.includes(`/${location}`),
+    'engine manifest must pass through the configured mirror',
+  )
+  assert(
+    mirrorRequests.some(
+      (path) => path.startsWith('/base/') && path.includes('base.tar.zst.'),
+    ),
+    'native Base must pass through the configured mirror',
+  )
+  mirrorOnline = false
+  const offlineRequests = mirrorRequests.length
   await manager.reload()
   const writer = spawn(
     toolsPython,
@@ -295,6 +427,9 @@ with writer_lock(Path(sys.argv[1])):
       { timeout: 120_000 },
     )
     .toBe(true)
+  await expect(engine.getByText(/loading schemas/i)).toHaveCount(0, {
+    timeout: 120_000,
+  })
   await engine.screenshot({
     path: join(root, 'stable-project.png'),
     fullPage: true,
@@ -315,6 +450,110 @@ with writer_lock(Path(sys.argv[1])):
       2,
     ),
   )
+  assert.equal(
+    mirrorRequests.length,
+    offlineRequests,
+    'installed start must not consult the unavailable mirror',
+  )
+  mirrorOnline = true
+  mirrorChannel = refusedChannels.wrongChannel
+  const nightly = verifyChannel(mirrorChannel, 'nightly')
+  const updatedPlan = await manager.evaluate(
+    ({ project, request }) => window.dinksterProjects.plan(project, request),
+    {
+      project,
+      request: { ...request, operation: 'update', channel: 'nightly' },
+    },
+  )
+  assert.equal(updatedPlan.result.status, 'planned')
+  assert(updatedPlan.token)
+  const updated = await manager.evaluate(
+    (token) => window.dinksterProjects.apply(token),
+    updatedPlan.token,
+  )
+  assert.equal(updated.status, 'applied')
+  const nextNumber = (
+    await readFile(join(projectRoot, 'current'), 'utf8')
+  ).trim()
+  assert.notEqual(nextNumber, number)
+  const nextGeneration = join(projectRoot, 'generations', nextNumber)
+  const nextRecord = JSON.parse(
+    await readFile(join(nextGeneration, 'generation.json'), 'utf8'),
+  )
+  assert.equal(nextRecord.engine.release, nightly.engine.release)
+  const nextPython = join(
+    nextGeneration,
+    'python',
+    process.platform === 'win32' ? 'python.exe' : 'bin/python3',
+  )
+  assert.equal(
+    execFileSync(
+      nextPython,
+      [
+        '-I',
+        '-c',
+        'from dinkster import __version__; import importlib.metadata as m; assert __version__ == m.version("dinkster-engine"); print(__version__)',
+      ],
+      { encoding: 'utf8', env },
+    ).trim(),
+    nightly.engine.version,
+  )
+  await expect(engine.getByTestId('graph-canvas')).toBeVisible({
+    timeout: 120_000,
+  })
+  await engine.screenshot({
+    path: join(root, 'nightly-project.png'),
+    fullPage: true,
+  })
+  mirrorOnline = false
+  const recoveryRequests = mirrorRequests.length
+  const rollbackPlan = await manager.evaluate(
+    ({ project, request }) => window.dinksterProjects.plan(project, request),
+    {
+      project: { ...project, channel: 'nightly' },
+      request: { root: projectRoot, operation: 'rollback' },
+    },
+  )
+  assert.equal(rollbackPlan.result.status, 'planned')
+  assert(rollbackPlan.token)
+  const rolledBack = await manager.evaluate(
+    (token) => window.dinksterProjects.apply(token),
+    rollbackPlan.token,
+  )
+  assert.equal(rolledBack.status, 'applied')
+  assert.equal(
+    (await readFile(join(projectRoot, 'current'), 'utf8')).trim(),
+    number,
+  )
+  assert.equal(
+    mirrorRequests.length,
+    recoveryRequests,
+    'rollback must not consult the unavailable mirror',
+  )
+  await expect(engine.getByTestId('graph-canvas')).toBeVisible({
+    timeout: 120_000,
+  })
+  assert(
+    (await engine.request.get(new URL('/api/health', engine.url()).href)).ok(),
+  )
+  await engine.screenshot({
+    path: join(root, 'recovered-project.png'),
+    fullPage: true,
+  })
+  await writeFile(
+    join(root, 'mirror-recovery.json'),
+    JSON.stringify(
+      {
+        mirrorUrl,
+        requests: mirrorRequests,
+        updated,
+        generation: nextRecord,
+        rolledBack,
+      },
+      null,
+      2,
+    ),
+  )
   await engine.close()
 } catch (error) {
   await manager
@@ -322,5 +561,10 @@ with writer_lock(Path(sys.argv[1])):
     .catch(() => undefined)
   throw error
 } finally {
-  await app.close()
+  try {
+    await app.close()
+  } finally {
+    mirror.closeAllConnections()
+    await new Promise((done) => mirror.close(done))
+  }
 }

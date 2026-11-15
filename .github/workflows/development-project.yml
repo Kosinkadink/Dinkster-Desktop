@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Kosinkadink/Dinkster
-          ref: 5ade364630827c89c34fe1872be0594f53122d90
+          ref: 90e23becfc4606fb76ee450e79cf6ad3c1063233
           path: test-sources/engine
           persist-credentials: false
       - uses: actions/checkout@v4

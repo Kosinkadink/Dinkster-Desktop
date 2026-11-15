@@ -67,7 +67,7 @@
             <label>Project name<input id="local-name" required maxlength="128" placeholder="Local studio"></label>
             <label>Install root<input id="local-root" required placeholder="Absolute project directory"></label>
             <label>Channel<select id="local-channel"><option value="stable">Stable</option><option value="nightly">Nightly</option></select></label>
-            <fieldset style="grid-column:1 / -1">
+            <fieldset id="sandbox-settings" style="grid-column:1 / -1">
               <legend>Pack sandboxing</legend>
               <label><input id="local-sandbox" type="checkbox" disabled aria-describedby="sandbox-detail"> Sandbox local pack workers</label>
               <p id="sandbox-detail" role="status">Install or select an engine, then check sandbox availability.</p>
@@ -93,6 +93,7 @@
               <option value="develop">Build / refresh development sources</option>
               <option value="setup" selected>Install</option><option value="update">Update / change variant</option>
               <option value="rollback">Rollback</option><option value="move">Move</option>
+              <option value="stop">Stop engine</option>
               <option value="doctor">Check drift</option><option value="gc">Garbage collection</option>
               <option value="status">Cleanup status (read-only)</option><option value="cleanup">Generation cleanup / retry</option>
               <option value="space">Disk space (read-only)</option>

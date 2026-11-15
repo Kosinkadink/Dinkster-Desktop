@@ -348,6 +348,7 @@ document.querySelector<HTMLFormElement>('#local')!.addEventListener('submit', (e
       root: project.root!, operation,
       ...(['setup', 'update', 'develop'].includes(operation) ? { channel: project.channel, ...(field('local-variant') ? { variant: field('local-variant') } : {}) } : {}),
       ...(['setup', 'develop'].includes(operation) ? { mirrors: field('local-mirrors').split('\n').map((mirror) => mirror.trim()).filter(Boolean), port: Number(field('local-port')), engine: field('local-engine') } : {}),
+      ...(operation === 'stop' ? { engine: field('local-engine') } : {}),
       ...(operation === 'develop' ? { development: project.development! } : {}),
       ...(['setup', 'move', 'develop'].includes(operation) && field('local-data') ? { data: field('local-data') } : {}),
       ...(operation === 'move' ? { destination: field('local-destination') } : {}),

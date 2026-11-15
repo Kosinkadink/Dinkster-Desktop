@@ -57,6 +57,26 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('uses engine sandbox readiness and forwards only an explicit start request', async () => {
+    const { root, client } = await commandFixture()
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    const sandbox = { format: 'dinkster.sandbox-readiness/1', available: false, detail: 'bwrap not found; install bubblewrap' }
+    await writeFile(script, original.replace('root, current: 2,', `root, current: 2, sandbox: ${JSON.stringify(sandbox)},`))
+    expect((await client.run({ root, operation: 'doctor', sandbox: true })).sandbox).toEqual(sandbox)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'doctor', '--sandbox', '--json'])
+    for (const sandboxPacks of [true, false]) {
+      await client.run({ root, operation: 'start', sandboxPacks }, true)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'start', ...(sandboxPacks ? ['--sandbox-packs'] : []), '--json', '--yes'])
+    }
+    await expect(client.run({ root, operation: 'update', sandboxPacks: true })).rejects.toThrow('requires start')
+    await expect(client.run({ root, operation: 'doctor', sandbox: true, repair: true })).rejects.toThrow('read-only')
+    await writeFile(script, original.replace('root, current: 2,', 'root, current: 2, sandbox: {format:"dinkster.sandbox-readiness/1",available:"true",detail:"bad"},'))
+    await expect(client.run({ root, operation: 'doctor', sandbox: true })).rejects.toThrow('invalid pack sandbox')
+    await writeFile(script, original.replace("name:'main',generation:2,", "name:'main',generation:2,sandboxPacks:'true',"))
+    await expect(client.run({ root, operation: 'status' })).rejects.toThrow('unsupported dinkster-env response')
+  })
+
   it('reviews explicit local development folders and confirms the exact source digest', async () => {
     const { root, client } = await commandFixture()
     const development = { engine: join(root, 'engine checkout'), inference: join(root, 'inference'),

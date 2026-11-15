@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { realpath, rm } from 'node:fs/promises'
-import { dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
 import { isIP } from 'node:net'
 import { promisify } from 'node:util'
 import type { VariantHardware } from './hardware.js'
@@ -58,6 +58,7 @@ export interface EnvironmentRequest {
 }
 
 export interface EnvironmentEngine {
+  readonly sandboxPacks?: boolean
   readonly name: string
   readonly generation: number
   readonly state: 'starting' | 'ready' | 'failed' | 'stopped'
@@ -103,13 +104,13 @@ export interface EnvironmentSpace {
   readonly reclaimabilityWarnings: readonly string[]
 }
 
-/** The command owner's dinkster.environment-result/1 response, unchanged. */
 export interface SandboxReadiness {
   readonly format: 'dinkster.sandbox-readiness/1'
   readonly available: boolean
   readonly detail: string
 }
 
+/** The command owner's dinkster.environment-result/1 response, unchanged. */
 export interface EnvironmentResult {
   readonly sandbox?: SandboxReadiness
   readonly format: 'dinkster.environment-result/1'
@@ -459,6 +460,7 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
       return typeof entry['name'] === 'string' && Number.isInteger(entry['generation']) && Number(entry['generation']) > 0
         && ['starting', 'ready', 'failed', 'stopped'].includes(String(entry['state']))
         && (entry['url'] === undefined || typeof entry['url'] === 'string')
+        && (entry['sandboxPacks'] === undefined || typeof entry['sandboxPacks'] === 'boolean')
     })))
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
@@ -597,9 +599,11 @@ export class EnvironmentClient {
     const environment = { ...process.env }
     if (prefix[0] === '-I') {
       if (!isAbsolute(executable)) throw new Error('the tools interpreter must be absolute')
-      // Engine descendants must not inherit host Python configuration either.
+      // Keep system tools such as bubblewrap discoverable, but prefer bundled Python.
+      const hostPath = Object.entries(environment).find(([key]) => key.toLowerCase() === 'path')?.[1]
       for (const key of Object.keys(environment)) if (key.toLowerCase() === 'path' || /^PYTHON/i.test(key)) delete environment[key]
-      environment['PATH'] = process.platform === 'win32' ? join(dirname(executable), 'Scripts') : dirname(executable)
+      const toolsPath = [dirname(executable), ...(process.platform === 'win32' ? [join(dirname(executable), 'Scripts')] : [])].join(delimiter)
+      environment['PATH'] = hostPath ? `${toolsPath}${delimiter}${hostPath}` : toolsPath
       // Python retains this prefix when loading native extensions from deep caches.
       executable = toNamespacedPath(executable)
     }

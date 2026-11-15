@@ -526,9 +526,26 @@ with writer_lock(Path(sys.argv[1])):
     rollbackPlan.token,
   )
   assert.equal(rolledBack.status, 'applied')
-  assert.equal(
-    (await readFile(join(projectRoot, 'current'), 'utf8')).trim(),
-    number,
+  const recoveredNumber = (
+    await readFile(join(projectRoot, 'current'), 'utf8')
+  ).trim()
+  assert.notEqual(recoveredNumber, nextNumber)
+  assert.notEqual(recoveredNumber, number)
+  const recovered = JSON.parse(
+    await readFile(
+      join(projectRoot, 'generations', recoveredNumber, 'generation.json'),
+      'utf8',
+    ),
+  )
+  assert.deepEqual(recovered.engine, record.engine)
+  assert.equal(recovered.base, record.base)
+  await writeFile(
+    join(root, 'recovered-generation.json'),
+    JSON.stringify(
+      { previous: number, updated: nextNumber, recovered },
+      null,
+      2,
+    ),
   )
   assert.equal(
     mirrorRequests.length,

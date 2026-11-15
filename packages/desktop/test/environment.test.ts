@@ -811,6 +811,32 @@ describe('Desktop dinkster-env command client', () => {
     await expect(client.run({ root, operation: 'start', gpus: ['display adapter'] }, true)).rejects.toThrow('invalid GPU device')
   })
 
+  it('waits for a transient project writer only when confirming an idempotent start', async () => {
+    const { root, client } = await commandFixture()
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    for (const [operation, confirmed, error, succeeds] of [
+      ['start', true, `another environment writer holds ${root}`, true],
+      ['start', false, `another environment writer holds ${root}`, false],
+      ['update', true, `another environment writer holds ${root}`, false],
+      ['start', true, `another environment writer holds ${join(root, 'runtime')}`, false],
+      ['start', true, 'engine assignment changed; stop it first', false],
+    ] as const) {
+      const marker = join(root, 'writer-released')
+      await rm(marker, { force: true })
+      await writeFile(script, `const f = require('node:fs');
+        if (!f.existsSync(${JSON.stringify(marker)})) {
+          f.writeFileSync(${JSON.stringify(marker)}, 'released');
+          console.log(JSON.stringify({format:'dinkster.environment-result/1',operation:${JSON.stringify(operation)},
+            root:${JSON.stringify(root)},current:2,plan:[],status:'error',error:${JSON.stringify(error)}}));
+          process.exit(1);
+        }\n` + original)
+      const pending = client.run({ root, operation, engine: 'main' }, confirmed)
+      if (succeeds) expect((await pending).engines?.[0]?.state).toBe('ready')
+      else await expect(pending).rejects.toThrow(error)
+    }
+  })
+
   it('rejects nonzero responses even when their status claims success, and surfaces drift details', async () => {
     const { root } = await commandFixture()
     for (const status of ['applied', 'drift']) {

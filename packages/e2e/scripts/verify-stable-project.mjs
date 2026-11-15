@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
@@ -233,9 +234,44 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
     ),
   )
   await manager.reload()
-  const opened = app.waitForEvent('window', { timeout: 120_000 })
-  await manager.getByRole('button', { name: 'Open main', exact: true }).click()
-  const engine = await opened
+  const writer = spawn(
+    toolsPython,
+    [
+      '-I',
+      '-c',
+      `
+import sys, time
+from pathlib import Path
+from dinkster_supervisor.environment_state import writer_lock
+with writer_lock(Path(sys.argv[1])):
+    print('writer acquired', flush=True)
+    time.sleep(10)
+`,
+      projectRoot,
+    ],
+    { env, stdio: ['ignore', 'pipe', 'inherit'] },
+  )
+  const released = once(writer, 'exit')
+  const [ready] = await Promise.race([
+    once(writer.stdout, 'data'),
+    released.then(() => {
+      throw new Error(
+        'competing writer exited before acquiring the project lock',
+      )
+    }),
+  ])
+  assert.equal(ready.toString().trim(), 'writer acquired')
+  let engine
+  try {
+    const opened = app.waitForEvent('window', { timeout: 120_000 })
+    await manager
+      .getByRole('button', { name: 'Open main', exact: true })
+      .click()
+    engine = await opened
+  } finally {
+    const [code] = await released
+    assert.equal(code, 0)
+  }
   await expect(engine.getByTestId('graph-canvas')).toBeVisible({
     timeout: 120_000,
   })

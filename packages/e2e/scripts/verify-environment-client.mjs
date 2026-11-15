@@ -131,6 +131,8 @@ const url = ${JSON.stringify(urls)}[updated ? 1 : 0];
 const row = {format:'dinkster.environment-result/1',operation,
 status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,current:updated ? 2 : 1,
 ...(operation === 'doctor' ? JSON.parse(fs.readFileSync(${JSON.stringify(installed)}, 'utf8')) : {}),
+...(operation === 'source' ? (args.includes('release') ? {restoredFrom:7} : {sourceApproval:'sha256:'+'e'.repeat(64),source:'git',published:false,reproducible:true,sources:{engine:{commit:'a'.repeat(40)}}}) : {}),
+...(args.includes('--frontend-version') ? {frontendApproval:'sha256:'+'b'.repeat(64),frontend:{version:args[args.indexOf('--frontend-version')+1]}} : {}),
 ...(operation === 'develop' ? {sourceApproval:'sha256:'+'d'.repeat(64), sourceDescription:'Unpublished development sources',
   development:{sources:args.filter((value) => value.startsWith('https://')).map((value) => {
     const url = new URL(value); const fields = new URLSearchParams(url.hash.slice(1)); url.hash = '';
@@ -842,6 +844,78 @@ console.log(JSON.stringify(row));
       .screenshot({ path: join(artifacts, 'development-git-plan.png') })
   }
   await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await manager.locator('#local-operation').selectOption('source')
+  await expect(manager.locator('#source-settings')).toBeVisible()
+  await manager.locator('#local-kind').selectOption('release')
+  await expect(manager.locator('#source-settings')).toBeHidden()
+  await expect(manager.locator('#development-sources')).toBeHidden()
+  await manager.locator('#local-operation').selectOption('source')
+  await manager
+    .locator('#source-url')
+    .fill('https://github.com/Kosinkadink/Dinkster.git')
+  await manager.locator('#source-ref').fill('selected-managed-ref')
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#apply')).toBeVisible()
+  await expect(manager.locator('#plan')).toContainText(
+    `"commit": "${'a'.repeat(40)}"`,
+  )
+  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
+  await expect(manager.locator('#message')).toContainText(
+    'Environment operation completed',
+  )
+  let managedCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'source' && args.includes('--yes'))
+    .at(-1)
+  assert.equal(
+    managedCall[managedCall.indexOf('--source-approval') + 1],
+    `sha256:${'e'.repeat(64)}`,
+  )
+  assert(!managedCall.includes('--approve'))
+  await manager.locator('#source-action').selectOption('release')
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#plan')).toContainText(
+    'Restore recorded release history entry: 7',
+  )
+  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
+  await expect(manager.locator('#message')).toContainText(
+    'Environment operation completed',
+  )
+  managedCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'restore')
+    .at(-1)
+  assert.deepEqual(managedCall.slice(2), ['restore', '7', '--json', '--yes'])
+  await manager.locator('#local-operation').selectOption('update')
+  await manager.locator('#local-frontend-version').fill('0.3.2rc1')
+  await manager.getByRole('button', { name: 'Review environment plan' }).click()
+  await expect(manager.locator('#plan')).toContainText('0.3.2rc1')
+  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
+  await expect(manager.locator('#message')).toContainText(
+    'Environment operation completed',
+  )
+  managedCall = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .filter((args) => args[2] === 'update' && args.includes('--yes'))
+    .at(-1)
+  assert.equal(
+    managedCall[managedCall.indexOf('--frontend-approval') + 1],
+    `sha256:${'b'.repeat(64)}`,
+  )
+  assert(
+    !managedCall.includes('--source-approval') &&
+      !managedCall.includes('--approve'),
+  )
+  if (artifacts)
+    await manager
+      .locator('#plan-panel')
+      .screenshot({ path: join(artifacts, 'managed-frontend-plan.png') })
   await manager.locator('#name').fill('Remote studio')
   await manager.locator('#url').fill(urls[1])
   await manager.getByRole('button', { name: 'Save remote project' }).click()
@@ -980,7 +1054,17 @@ console.log(JSON.stringify(row));
   history = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse)
   assert.deepEqual(
     history.filter((args) => args.includes('--yes')).map((args) => args[2]),
-    ['setup', 'start', 'update', 'rollback', 'develop', 'stop'],
+    [
+      'setup',
+      'start',
+      'update',
+      'rollback',
+      'develop',
+      'source',
+      'restore',
+      'update',
+      'stop',
+    ],
   )
   console.log(
     'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, top-frame-only pack install, retained document, replay refusal, remote-only routing, identity-checked stop delegation.',

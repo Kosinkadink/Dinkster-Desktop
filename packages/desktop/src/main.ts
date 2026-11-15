@@ -463,23 +463,33 @@ ipcMain.handle('desktop:projects-plan', (event, value: unknown, input: Environme
   pendingProjectPlan = undefined
   const project = parseProject(value)
   if (!project.root || input.root !== project.root
-    || !['develop', 'setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'status', 'space'].includes(input.operation)) throw new Error('invalid local project operation')
+    || !['develop', 'setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'status', 'space', 'source'].includes(input.operation)
+    || input.sourceApproval !== undefined || input.frontendApproval !== undefined || input.historyEntry !== undefined) throw new Error('invalid local project operation')
   // Validate the shell binding before asking the environment owner to mutate it.
   saveProject(await readProjects(dataDirectory), project)
   if (input.operation === 'move') saveProject(await readProjects(dataDirectory), { ...project, root: input.destination })
   const engine = project.engines.find((binding) => binding.kind === 'local' && binding.id === input.engine)
   if (['setup', 'develop'].includes(input.operation) && (!engine || engine.kind !== 'local')) throw new Error('select the local engine binding before setup')
-  if (input.sourceApproval !== undefined) throw new Error('source approval belongs to the reviewed environment plan')
   if (input.operation === 'develop' && !project.development) throw new Error('development requires explicit project sources')
-  const request: EnvironmentRequest = { ...input, root: project.root,
+  let request: EnvironmentRequest = { ...input, root: project.root,
     ...(input.operation === 'develop' ? { development: project.development! } : {}),
     ...(['setup', 'develop'].includes(input.operation) && engine?.kind === 'local' ? { engine: engine.id, gpus: engine.gpus, port: engine.port } : {}) }
   const result = await environmentClient.run(request)
   if (result.status !== 'planned') return { result }
+  if (request.operation === 'develop' || (request.operation === 'source' && request.sourceAction !== 'release')) {
+    if (!result.sourceApproval) throw new Error('environment tools do not support reviewed managed sources')
+    request = { ...request, sourceApproval: result.sourceApproval }
+  }
+  if (request.frontendVersion !== undefined) {
+    if (!result.frontendApproval) throw new Error('environment tools do not support reviewed frontend versions')
+    request = { ...request, frontendApproval: result.frontendApproval }
+  }
+  if (request.operation === 'source' && request.sourceAction === 'release') {
+    if (result.restoredFrom === undefined) throw new Error('environment tools did not retain the release history entry')
+    request = { root: project.root, operation: 'restore', historyEntry: result.restoredFrom }
+  }
   const token = randomUUID()
-  pendingProjectPlan = { token, project, request: {
-    ...request, ...(result.sourceApproval === undefined ? {} : { sourceApproval: result.sourceApproval }),
-  } }
+  pendingProjectPlan = { token, project, request }
   return { token, result }
 }))
 ipcMain.handle('desktop:projects-apply', (event, token: unknown) => serializeLifecycle(async () => {
@@ -506,7 +516,7 @@ ipcMain.handle('desktop:projects-apply', (event, token: unknown) => serializeLif
   if (planned.request.operation === 'move') {
     for (const binding of localEngines.values()) if (binding.root === planned.project.root) binding.root = project.root!
   }
-  if (['develop', 'setup', 'update', 'rollback', 'move'].includes(planned.request.operation)) await handoffProject(project, result)
+  if (['develop', 'setup', 'update', 'rollback', 'move', 'source', 'restore'].includes(planned.request.operation)) await handoffProject(project, result)
   return result
 }))
 ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: unknown) => serializeLifecycle(async () => {

@@ -82,6 +82,40 @@ Runtime settings such as max running jobs can be edited in Backends and are
 kept in the engine's library across app restarts. A plain `dinkster-serve`
 without that flag still refuses settings edits.
 
+## Managed source selection
+
+In Projects, manage a local installation and choose Managed Git sources. Select
+an engine, node pack, inference library, pack helpers or frontend repository.
+The URL must be credential-free public HTTPS; a URL fragment can select a
+repository-relative subdirectory. Choose a branch, tag, PR ref or full commit.
+List repository refs and tags uses Git protocol without changing the project.
+A pack update requires its installed name. Update selected source / change ref
+retains its recorded URL and updates only the chosen component.
+
+Git mirror base rewrites official Kosinkadink repositories to the mirror's
+`Kosinkadink/repository.git` route without original-host fallback. Package index
+is used only for missing wheels. Source operations keep the installed release
+base and all unselected sources; they do not enable develop mode. Plans and
+status disclose exact URL/ref/commit identities and unpublished,
+non-reproducible status. Frontend Git prefers the exact official commit's
+verified CI bundle; otherwise a local frozen build needs Node and pnpm.
+
+Review the CLI plan before confirming. The main process retains the CLI-owned
+source approval and consumes its one-shot confirmation token before applying.
+A moved ref, changed project or changed frontend artifact refuses and requires
+a new plan. Desktop never stores temporary fetched checkout paths or computes
+its own source digest. Return all sources to a recorded release retains the
+exact history entry shown in the plan; Rollback uses the environment's exact
+recorded software history. Missing recovery inputs refuse without silently
+selecting a different ref or release.
+
+Install and Update also accept an exact published frontend version. Leave it
+empty to retain the normal frontend selection. The environment tools verify
+the permanent wheel hash and declared engine API range and bind confirmation
+to the planned frontend identity. Unsupported older tools refuse rather than
+applying an unbound selection. Frontend folder/dev-server development settings
+are separate from managed source selection.
+
 ## Native asset files
 
 Local engine windows receive only the file-capability, directory-choice,

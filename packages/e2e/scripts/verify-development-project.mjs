@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { _electron as electron, expect } from '@playwright/test'
 
@@ -30,8 +30,11 @@ const sources = {
   pack: source('DINKSTER_DEVELOPMENT_PACK'),
   frontend: join(root, 'packages/app/dist'),
 }
-const frontendDev = process.env.DINKSTER_DEVELOPMENT_FRONTEND_DEV
-const frontendEdit = process.env.DINKSTER_DEVELOPMENT_FRONTEND_EDIT
+let frontendDev = process.env.DINKSTER_DEVELOPMENT_FRONTEND_DEV
+let frontendEdit = process.env.DINKSTER_DEVELOPMENT_FRONTEND_EDIT
+const frontendSource = process.env.DINKSTER_DEVELOPMENT_FRONTEND_SOURCE
+if (frontendSource && frontendDev)
+  throw new Error('choose an owned frontend source or an existing dev server')
 const project = join(scratch, 'project')
 const portServer = createServer()
 await new Promise((done) => portServer.listen(0, '127.0.0.1', done))
@@ -55,6 +58,7 @@ if (process.env.DINKSTER_DEVELOPMENT_TOOLS_PYTHON)
     process.env.DINKSTER_DEVELOPMENT_TOOLS_PYTHON,
   )
 let app
+let frontendServer
 let originalFrontend
 const receipt = {
   platform: process.platform,
@@ -64,6 +68,25 @@ const receipt = {
   toolsOverride: env.DINKSTER_TOOLS_PYTHON ?? null,
 }
 try {
+  if (frontendSource) {
+    const appRoot = join(resolve(frontendSource), 'packages/app')
+    const viteModule = createRequire(join(appRoot, 'package.json')).resolve(
+      'vite',
+    )
+    const { createServer: createViteServer } = await import(
+      pathToFileURL(viteModule).href
+    )
+    process.env.DINKSTER_NATIVE_BACKEND = `http://127.0.0.1:${port}`
+    frontendServer = await createViteServer({
+      root: appRoot,
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await frontendServer.listen()
+    frontendDev = `http://127.0.0.1:${frontendServer.httpServer.address().port}`
+    frontendEdit = join(appRoot, 'index.html')
+    receipt.frontendDev = frontendDev
+    receipt.frontendSource = resolve(frontendSource)
+  }
   app = await electron.launch({
     executablePath:
       process.env.DINKSTER_ELECTRON_EXECUTABLE ??
@@ -269,6 +292,7 @@ try {
   if (originalFrontend !== undefined)
     await writeFile(frontendEdit, originalFrontend)
   if (app) await app.close().catch(() => {})
+  if (frontendServer) await frontendServer.close()
   await writeFile(
     join(scratch, 'receipt.json'),
     JSON.stringify(receipt, null, 2) + '\n',

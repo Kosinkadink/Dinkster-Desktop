@@ -26,11 +26,12 @@ concurrency:
 jobs:
   development:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    name: Installed development project - ${{ matrix.os }}
+    name: Installed development project - ${{ matrix.os }} - ${{ matrix.frontend }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        frontend: [bundle, dev-server]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -41,6 +42,7 @@ jobs:
       DINKSTER_DEVELOPMENT_INFERENCE: ${{ github.workspace }}/test-sources/inference
       DINKSTER_DEVELOPMENT_HELPER: ${{ github.workspace }}/test-sources/nodes/packages/dinkster-pack-helpers
       DINKSTER_DEVELOPMENT_PACK: ${{ github.workspace }}/test-sources/nodes/packages/dinkster-nodes-utilities
+      DINKSTER_DEVELOPMENT_FRONTEND_SOURCE: ${{ matrix.frontend == 'dev-server' && format('{0}/test-sources/frontend', github.workspace) || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,6 +65,13 @@ jobs:
           ref: 008bc8a2dea546812dc451bcb9078b37e63c9ab3
           path: test-sources/nodes
           persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.frontend == 'dev-server'
+        with:
+          repository: Kosinkadink/Dinkster-Frontend
+          ref: 6af6cb494d2989331b56cef9cfa610e06fd77da5
+          path: test-sources/frontend
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -72,6 +81,9 @@ jobs:
           node-version: 26.12.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install contributor frontend dependencies
+        if: matrix.frontend == 'dev-server'
+        run: pnpm --dir test-sources/frontend install --frozen-lockfile
       - run: pnpm build
       - name: Package Linux Desktop
         if: runner.os == 'Linux'
@@ -102,7 +114,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: development-project-${{ matrix.os }}
+          name: development-project-${{ matrix.os }}-${{ matrix.frontend }}
           path: |
             test-results/development/development-*/*.png
             test-results/development/development-*/receipt.json

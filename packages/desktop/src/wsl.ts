@@ -60,8 +60,10 @@ export class WslHost {
       })
       return decode(result.stdout)
     } catch (error) {
-      const failure = error as Error & { stdout?: Buffer | string }
+      const failure = error as Error & { code?: number | string; stdout?: Buffer | string }
       if (Buffer.isBuffer(failure.stdout)) failure.stdout = decode(failure.stdout)
+      // WSL can return valid help text with exit code 0xffffffff; capability checks still inspect it.
+      if (args.length === 1 && args[0] === '--help' && failure.code === 4294967295 && typeof failure.stdout === 'string') return failure.stdout
       throw error
     }
   }

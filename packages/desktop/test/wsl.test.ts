@@ -42,6 +42,19 @@ describe('private WSL readiness', () => {
     expect(await service.status()).toMatchObject({ available: false, ready: false, detail: expect.stringContaining('wsl --update') })
   })
 
+  it('requires supported help switches and keeps operational failures strict', async () => {
+    const service = host()
+    let help = '--name'
+    execute.mockImplementation(async (_file: string, args: string[]) => {
+      if (args[0] === '--version') return { stdout: Buffer.from('WSL version') }
+      if (args[0] === '--help') throw Object.assign(new Error('help exit'), { code: 4294967295, stdout: Buffer.from(help, 'utf16le') })
+      throw Object.assign(new Error('list failed'), { code: 4294967295, stdout: Buffer.from('Ubuntu-24.04', 'utf16le') })
+    })
+    expect(await service.status()).toMatchObject({ available: false, ready: false, detail: expect.stringContaining('wsl --update') })
+    help = '--name --location'
+    await expect(service.status()).rejects.toThrow('list failed')
+  })
+
   it('accepts Windows WSL aliases but refuses a response for another Linux project', async () => {
     const service = host()
     let responseRoot = '/home/dinkster/projects/studio'
@@ -70,7 +83,7 @@ describe('private WSL readiness', () => {
       if (file !== 'wsl.exe') throw new Error('not a WSL command')
       const output = (text: string) => ({ stdout: Buffer.from(text, 'utf16le') })
       if (args[0] === '--version') return output('WSL version: 2.6.3.0')
-      if (args[0] === '--help') return output('--name --location --no-launch --version')
+      if (args[0] === '--help') throw Object.assign(new Error('help exit'), { code: 4294967295, ...output('--name --location --no-launch --version') })
       if (args[0] === '--list') return output(`Ubuntu-24.04\r\n${service.distribution}\r\n`)
       if (args.includes('/etc/dinkster-desktop-owner')) return output(owned ? service.distribution : 'another-owner')
       if (args.includes('/etc/wsl.conf')) return output('[automount]\nenabled=false\n[interop]\nenabled=false\nappendWindowsPath=false\n[user]\ndefault=dinkster')

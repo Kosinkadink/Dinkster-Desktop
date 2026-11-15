@@ -138,7 +138,7 @@ print(json.dumps(build(Path(sys.argv[1]),'linux-cpu',port)))
   )
   await command('cleanup', '--automatic', 'off', '--yes')
   await writeFile(
-    join(fixture.mirror, 'channels/main.json'),
+    join(fixture.mirror, 'channels/nightly.json'),
     await readFile(fixture.updatedChannel),
   )
   await command('update', '--yes')
@@ -199,7 +199,7 @@ executable_release(Path(fixture['mirror']),json.loads(Path(fixture['baseManifest
         {
           id: 'studio',
           name: 'Cleanup integration',
-          channel: 'main',
+          channel: 'nightly',
           root: fixture.root,
           engines: [
             {

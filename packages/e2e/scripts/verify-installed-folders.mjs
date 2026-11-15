@@ -40,7 +40,7 @@ env.LOCALAPPDATA = join(root, 'user-data')
 const project = {
   id: 'installed-folders',
   name: 'Installed folder verification',
-  channel: 'main',
+  channel: 'nightly',
   root: installation,
   engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [], port }],
 }
@@ -114,7 +114,7 @@ try {
       const planned = await window.dinksterProjects.plan(project, {
         root: project.root,
         operation: 'setup',
-        channel: 'main',
+        channel: 'nightly',
         variant,
         mirrors,
         data: root,

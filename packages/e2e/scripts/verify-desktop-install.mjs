@@ -56,7 +56,7 @@ try {
         await page.getByText('No projects yet.', { exact: false }).waitFor()
         await page.locator('#name').fill('Installed remote project')
         await page.locator('#url').fill(url)
-        await page.locator('#channel').selectOption('main')
+        await page.locator('#channel').selectOption('nightly')
         await page.getByRole('button', { name: 'Save remote project' }).click()
       }
       await page.getByRole('button', { name: 'Open Remote engine' }).waitFor()
@@ -74,7 +74,7 @@ try {
       const record = await readFile(path, 'utf8')
       const projects = JSON.parse(record).projects
       assert.equal(projects.length, 1)
-      assert.equal(projects[0].channel, 'main')
+      assert.equal(projects[0].channel, 'nightly')
       assert.equal(projects[0].root, undefined)
       assert.deepEqual(projects[0].engines, [{ id: 'remote', name: 'Remote engine', kind: 'remote', url }])
       if (bindings !== undefined) assert.equal(record, bindings, 'Restart must preserve remote bindings')

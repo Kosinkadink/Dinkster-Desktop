@@ -152,6 +152,12 @@ local copies and every mirror, including Dinkster-operated hosts. Mirrors may
 use credential-free HTTPS without a hostname allowlist; HTTP is restricted
 to numeric loopback addresses. Referenced tools still require their pinned
 hashes and sizes. Installed-engine operations do not consult moving channels.
+For [normal rotation, lost keys and suspected leaks](https://github.com/Kosinkadink/Dinkster/blob/main/docs/channel-signing.md#normal-rotation),
+update Desktop and environment tools through independently authenticated software
+releases. Mirrors cannot replace their own trust roots. Existing security notices
+retain their pack-artifact authority; they do not revoke channel keys or installed
+engine generations. Removing a leaked key does not make an offline installation
+aware of that compromise.
 
 The project manager delegates setup, development, update, rollback, move, doctor,
 garbage collection, and named engine start/stop to `dinkster-env`. Mutations show the

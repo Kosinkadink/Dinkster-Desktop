@@ -289,12 +289,25 @@ try {
   }
   throw error
 } finally {
-  if (originalFrontend !== undefined)
-    await writeFile(frontendEdit, originalFrontend)
-  if (app) await app.close().catch(() => {})
-  if (frontendServer) await frontendServer.close()
+  const passed = receipt.status === 'passed'
+  const cleanup = await Promise.allSettled([
+    originalFrontend === undefined
+      ? Promise.resolve()
+      : writeFile(frontendEdit, originalFrontend),
+    app?.close(),
+    frontendServer?.close(),
+  ])
+  const errors = cleanup
+    .filter((result) => result.status === 'rejected')
+    .map((result) => result.reason)
+  if (errors.length) {
+    receipt.status = 'failed'
+    receipt.cleanupErrors = errors.map(String)
+  }
   await writeFile(
     join(scratch, 'receipt.json'),
     JSON.stringify(receipt, null, 2) + '\n',
   )
+  if (passed && errors.length)
+    throw new AggregateError(errors, 'development acceptance cleanup failed')
 }

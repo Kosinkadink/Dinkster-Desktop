@@ -462,7 +462,12 @@ with writer_lock(Path(sys.argv[1])):
     ({ project, request }) => window.dinksterProjects.plan(project, request),
     {
       project,
-      request: { ...request, operation: 'update', channel: 'nightly' },
+      request: {
+        root: projectRoot,
+        operation: 'update',
+        channel: 'nightly',
+        mirrors: [mirrorUrl],
+      },
     },
   )
   assert.equal(updatedPlan.result.status, 'planned')

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { appendFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
@@ -77,6 +78,19 @@ async function launch(selection) {
     },
     timeout: 60_000,
   })
+  app
+    .process()
+    .stderr?.on('data', (bytes) =>
+      appendFileSync(join(root, 'desktop-stderr.log'), bytes),
+    )
+  app
+    .process()
+    .once('exit', (code, signal) =>
+      appendFileSync(
+        join(root, 'desktop-stderr.log'),
+        `\nDesktop ${selection} exited: ${code}, signal: ${signal}\n`,
+      ),
+    )
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), !sourceOnly)
   assert.equal(
     await app.evaluate(() => process.env.DINKSTER_SERVICES),
@@ -388,6 +402,10 @@ try {
       })
       let previous
       for (const selection of ['production', 'qa', 'production']) {
+        appendFileSync(
+          join(root, 'desktop-stderr.log'),
+          `\nStarting ${channel} ${selection}; previous: ${previous ?? 'none'}\n`,
+        )
         if (previous) {
           const result = await promisify(execFile)(
             tools.python,
@@ -419,11 +437,13 @@ try {
         }
         const manager = await launch(selection)
         const opened = app.waitForEvent('window', { timeout: 120_000 })
-        await manager.evaluate(
-          (id) => window.dinksterProjects.open(id, 'main'),
-          channel,
-        )
-        const engine = await opened
+        const [, engine] = await Promise.all([
+          manager.evaluate(
+            (id) => window.dinksterProjects.open(id, 'main'),
+            channel,
+          ),
+          opened,
+        ])
         await expect(engine.getByTestId('graph-canvas')).toBeVisible({
           timeout: 120_000,
         })
@@ -453,6 +473,12 @@ try {
   }
   await writeFile(join(root, 'services.json'), JSON.stringify(receipt, null, 2))
   console.log(JSON.stringify(receipt))
+} catch (error) {
+  await writeFile(
+    join(root, 'services.json'),
+    JSON.stringify({ ...receipt, failure: String(error) }, null, 2),
+  )
+  throw error
 } finally {
   await app?.close()
   await new Promise((done) => fixture.close(done))

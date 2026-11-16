@@ -69,5 +69,6 @@ jobs:
           path: |
             ${{ runner.temp }}/desktop-services-proof/*.png
             ${{ runner.temp }}/desktop-services-proof/*.json
+            ${{ runner.temp }}/desktop-services-proof/*.log
           retention-days: 7
           if-no-files-found: ignore

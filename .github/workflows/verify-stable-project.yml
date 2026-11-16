@@ -1,14 +1,13 @@
 name: Signed Stable project acceptance
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - '.github/workflows/verify-stable-project.yml'
-      - 'packages/desktop/src/channel-signatures.ts'
-      - 'packages/desktop/src/environment-channel.ts'
-      - 'packages/desktop/src/environment-tools.ts'
-      - 'packages/e2e/scripts/verify-stable-project.mjs'
+  schedule:
+    - cron: '31 11 * * *'
+  workflow_call:
+    inputs:
+      shared_installer:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,6 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -49,8 +49,13 @@ jobs:
           pnpm --filter @dinkster/desktop prepare:tools
           pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
       - name: Package Windows installer
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && !inputs.shared_installer
         run: pnpm --filter @dinkster/desktop package:win
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'Windows' && inputs.shared_installer
+        with:
+          name: windows-installer
+          path: packages/desktop/release
       - name: Install and verify Windows Stable project
         if: runner.os == 'Windows'
         shell: pwsh

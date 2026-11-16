@@ -1,25 +1,7 @@
 name: Desktop development projects
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - '.github/workflows/development-project.yml'
-      - 'packages/desktop/package.json'
-      - 'packages/desktop/resources/sandbox/**'
-      - 'packages/desktop/scripts/prepare-mxc.mjs'
-      - 'packages/desktop/scripts/mxc-build.mjs'
-      - 'packages/desktop/scripts/verify-installed-mxc.mjs'
-      - 'packages/desktop/src/environment.ts'
-      - 'packages/desktop/src/environment-tools-release.json'
-      - 'packages/desktop/src/main.ts'
-      - 'packages/desktop/src/project-dialog.ts'
-      - 'packages/desktop/src/projects.ts'
-      - 'packages/desktop/src/window-chrome.ts'
-      - 'packages/desktop/resources/projects.html'
-      - 'packages/e2e/scripts/verify-development-project.mjs'
-  push:
-    branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
@@ -35,22 +17,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        frontend: [bundle, dev-server]
-        sources: [local]
         include:
           - os: ubuntu-latest
-            frontend: bundle
+            frontend: git
             sources: mixed-git
           - os: windows-latest
             frontend: dev-server
-            sources: mixed-git
-          - os: ubuntu-latest
-            frontend: git
-            sources: mixed-git
-          - os: windows-latest
-            frontend: git
-            sources: mixed-git
+            sources: local
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -67,6 +40,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/checkout@v4
         with:
           repository: Kosinkadink/Dinkster
@@ -100,10 +74,6 @@ jobs:
         with:
           node-version: 26.12.0
           cache: pnpm
-      - if: runner.os == 'Windows'
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.93
       - run: pnpm install --frozen-lockfile
       - name: Install contributor frontend dependencies
         if: matrix.frontend == 'dev-server'
@@ -114,14 +84,16 @@ jobs:
         run: |
           pnpm --filter @dinkster/desktop prepare:tools
           pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
-      - name: Package Windows installer
+      - uses: actions/download-artifact@v4
         if: runner.os == 'Windows'
-        run: pnpm --filter @dinkster/desktop package:win
+        with:
+          name: windows-installer
+          path: installer
       - name: Install Windows Desktop
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $installer = Get-Item installer/*-Setup.exe
           $destination = Join-Path $env:RUNNER_TEMP desktop-development-installed
           if (Test-Path $destination) { throw 'Installation directory must be fresh' }
           $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru

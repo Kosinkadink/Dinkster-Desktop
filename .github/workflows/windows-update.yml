@@ -65,8 +65,8 @@ jobs:
             $otherChannel = if ($scenario -eq 'rc-update') { '0.2.5' } else { '0.2.6-rc.10' }
             $feed = Join-Path $env:RUNNER_TEMP "feed/$scenario"
             New-Item -ItemType Directory $feed | Out-Null
-            Copy-Item "$fixtures/$available/*" $feed
-            Copy-Item "$fixtures/$otherChannel/*" $feed
+            Get-ChildItem "$fixtures/$available/*" -File -Include '*-Setup.exe', '*.yml', '*.blockmap' | Copy-Item -Destination $feed
+            Get-ChildItem "$fixtures/$otherChannel/*" -File -Include '*-Setup.exe', '*.yml', '*.blockmap' | Copy-Item -Destination $feed
             $destination = Join-Path $env:RUNNER_TEMP "installed/$scenario/Dinkster Desktop"
             if (Test-Path $destination) { throw 'Installation must be fresh' }
             $installer = Get-Item "$fixtures/$installed/*-Setup.exe"

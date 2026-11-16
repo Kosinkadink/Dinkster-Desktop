@@ -21,16 +21,21 @@ export function configuredUpdateFeed(raw: string | undefined): string {
   return url.toString().replace(/\/$/, '')
 }
 
-async function releaseCandidateFeed(): Promise<string> {
+async function releaseCandidateFeed(diagnostic?: (message: string) => void): Promise<string> {
   const signal = AbortSignal.timeout(15_000)
   // The built-in GitHub provider cannot select RCs with desktop-v tags.
   // Resolve the published tag, then let the generic provider verify its bytes.
   const candidates: { tag_name: string }[] = []
   for (let page = 1; ; page += 1) {
-    const response = await fetch(`https://api.github.com/repos/Kosinkadink/Dinkster-Desktop/releases?per_page=100&page=${page}`, {
-      signal,
-      headers: { Accept: 'application/vnd.github+json' },
-    })
+    const url = `https://api.github.com/repos/Kosinkadink/Dinkster-Desktop/releases?per_page=100&page=${page}`
+    let response: Response
+    try {
+      response = await fetch(url, { signal, headers: { Accept: 'application/vnd.github+json' } })
+    } catch (error) {
+      diagnostic?.(JSON.stringify({ event: 'desktop-update-feed', url, status: 'network-error' }))
+      throw error
+    }
+    diagnostic?.(JSON.stringify({ event: 'desktop-update-feed', url, status: response.status }))
     if (!response.ok) throw new Error('Unable to resolve the Desktop RC feed')
     const entries: unknown = await response.json()
     if (!Array.isArray(entries)) throw new Error('Invalid Desktop release listing')
@@ -49,10 +54,10 @@ async function releaseCandidateFeed(): Promise<string> {
   return `${releases}/download/${latest.tag_name}`
 }
 
-export async function configureUpdateFeed(target: UpdateFeedTarget, raw: string | undefined, version: string): Promise<string> {
+export async function configureUpdateFeed(target: UpdateFeedTarget, raw: string | undefined, version: string, diagnostic?: (message: string) => void): Promise<string> {
   const rc = /^\d+\.\d+\.\d+-rc\.\d+$/.test(version)
   const channel = rc ? 'rc' : 'latest'
-  const url = raw?.trim() || !rc ? configuredUpdateFeed(raw) : await releaseCandidateFeed()
+  const url = raw?.trim() || !rc ? configuredUpdateFeed(raw) : await releaseCandidateFeed(diagnostic)
   target.channel = channel
   target.allowPrerelease = rc
   // Setting channel enables downgrades in electron-updater; turn it back off.

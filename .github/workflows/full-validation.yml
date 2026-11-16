@@ -71,7 +71,7 @@ jobs:
             case "$path" in
               .github/workflows/*|pnpm-lock.yaml|package.json|pnpm-workspace.yaml)
                 installers=true smoke=true development=true stable=true ;;
-              packages/desktop/src/*|packages/desktop/resources/*)
+              packages/desktop/src/*|packages/desktop/resources/*|packages/desktop/package.json)
                 stable=true ;;
             esac
             case "$path" in
@@ -175,6 +175,9 @@ jobs:
           node-version: 26.12.0
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm --filter @dinkster/desktop package:win
@@ -230,6 +233,10 @@ jobs:
       - run: pnpm --filter @dinkster/desktop verify:installed
         env:
           DINKSTER_ACCELERATOR: cpu
+      - name: Verify installed MXC resources
+        run: |
+          node packages/desktop/scripts/verify-installed-mxc.mjs (Join-Path $env:RUNNER_TEMP 'dinkster-installed/resources') > (Join-Path $env:DINKSTER_DESKTOP_VERIFY_ROOT 'installed-mxc.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Installed MXC verification failed' }
       - name: Preserve installed-app evidence
         if: always()
         uses: actions/upload-artifact@v4

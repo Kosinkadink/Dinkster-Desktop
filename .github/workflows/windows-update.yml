@@ -1,6 +1,14 @@
 name: Windows installed updates
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-update.yml'
+      - 'packages/desktop/**'
+      - 'packages/e2e/scripts/verify-shell-update.mjs'
+      - 'packages/e2e/scripts/advance-update-installer.ps1'
+      - 'pnpm-lock.yaml'
   workflow_call:
 
 permissions:
@@ -12,10 +20,10 @@ env:
 
 jobs:
   installed:
-    name: Windows installed update
+    name: Windows installed ordinary and RC updates
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     defaults:
       run:
         shell: pwsh
@@ -31,12 +39,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 26.12.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm --filter @dinkster/desktop prepare:tools
+      - run: pnpm --filter @dinkster/desktop prepare:mxc
       - name: Package the installed and available versions
         run: |
-          foreach ($version in @('0.2.4', '0.2.5')) {
+          foreach ($version in @('0.2.4', '0.2.5', '0.2.4-rc.1', '0.2.6-rc.10')) {
             $output = Join-Path $env:RUNNER_TEMP "fixtures/$version"
             pnpm --filter @dinkster/desktop exec electron-builder --win nsis "--config.extraMetadata.version=$version" "--config.directories.output=$output" --publish never
             if ($LASTEXITCODE -ne 0) { throw "Packaging $version failed" }
@@ -46,24 +58,36 @@ jobs:
           if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
           Get-ChildItem Env: | Where-Object { $_.Name -match 'TOKEN|SECRET|PASSWORD|CREDENTIAL|^GIT_' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
           $fixtures = Join-Path $env:RUNNER_TEMP fixtures
-          $feed = Join-Path $env:RUNNER_TEMP feed
-          New-Item -ItemType Directory $feed | Out-Null
-          Copy-Item "$fixtures/0.2.5/*" $feed
-          $destination = Join-Path $env:RUNNER_TEMP 'installed/Dinkster Desktop'
-          if (Test-Path $destination) { throw 'Installation must be fresh' }
-          $installer = Get-Item "$fixtures/0.2.4/*-Setup.exe"
-          $process = Start-Process $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
-          $env:DINKSTER_UPDATE_OLD_EXECUTABLE = Join-Path $destination 'Dinkster Desktop.exe'
-          $env:DINKSTER_UPDATE_RELEASE = $feed
-          $env:DINKSTER_UPDATE_EXPECTED_VERSION = '0.2.5'
-          $env:DINKSTER_UPDATE_PROOF_ROOT = Join-Path $env:RUNNER_TEMP update-proof
-          node packages/e2e/scripts/verify-shell-update.mjs
-          if ($LASTEXITCODE -ne 0) { throw 'Installed update verification failed' }
+          New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP update-proof) | Out-Null
+          foreach ($scenario in @('update', 'rc-update')) {
+            $installed = if ($scenario -eq 'rc-update') { '0.2.4-rc.1' } else { '0.2.4' }
+            $available = if ($scenario -eq 'rc-update') { '0.2.6-rc.10' } else { '0.2.5' }
+            $otherChannel = if ($scenario -eq 'rc-update') { '0.2.5' } else { '0.2.6-rc.10' }
+            $feed = Join-Path $env:RUNNER_TEMP "feed/$scenario"
+            New-Item -ItemType Directory $feed | Out-Null
+            Copy-Item "$fixtures/$available/*" $feed
+            Copy-Item "$fixtures/$otherChannel/*" $feed
+            $destination = Join-Path $env:RUNNER_TEMP "installed/$scenario/Dinkster Desktop"
+            if (Test-Path $destination) { throw 'Installation must be fresh' }
+            $installer = Get-Item "$fixtures/$installed/*-Setup.exe"
+            $process = Start-Process $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+            $env:DINKSTER_UPDATE_OLD_EXECUTABLE = Join-Path $destination 'Dinkster Desktop.exe'
+            $env:DINKSTER_UPDATE_RELEASE = $feed
+            $env:DINKSTER_UPDATE_EXPECTED_VERSION = $available
+            $env:DINKSTER_UPDATE_PROOF_ROOT = Join-Path $env:RUNNER_TEMP "update-proof/$scenario"
+            node packages/e2e/scripts/verify-shell-update.mjs
+            if ($LASTEXITCODE -ne 0) { throw "Installed $scenario verification failed" }
+            $uninstaller = Join-Path $destination 'Uninstall Dinkster Desktop.exe'
+            $process = Start-Process $uninstaller -ArgumentList @('/S', '/currentuser') -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Uninstaller exited $($process.ExitCode)" }
+            # The successful harness required absent data before creating this directory.
+            Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'Dinkster Desktop') -Recurse -Force
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-update
-          path: ${{ runner.temp }}/update-proof/*
+          path: ${{ runner.temp }}/update-proof/**/*
           retention-days: 7
           if-no-files-found: ignore

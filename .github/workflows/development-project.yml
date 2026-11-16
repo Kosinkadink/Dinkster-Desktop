@@ -102,10 +102,13 @@ jobs:
       - name: Exercise installed Windows development project
         if: runner.os == 'Windows'
         run: node packages/e2e/scripts/verify-development-project.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Exercise packaged Linux development project
         if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-development-project.mjs
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           DINKSTER_ELECTRON_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
       - uses: actions/upload-artifact@v4
         if: always()

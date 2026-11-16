@@ -61,6 +61,9 @@ jobs:
         with:
           node-version: 26.12.0
           cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
@@ -81,8 +84,9 @@ jobs:
           $files = @(
             Get-ChildItem packages/desktop/release -Filter '*-Setup.exe'
             Get-Item 'packages/desktop/release/win-unpacked/Dinkster Desktop.exe'
+            Get-Item 'packages/desktop/release/win-unpacked/resources/sandbox/wxc-exec.exe'
           )
-          if ($files.Count -ne 2) { throw 'Expected one installer and one application executable' }
+          if ($files.Count -ne 3) { throw 'Expected the installer, application executable, and MXC executor' }
           foreach ($file in $files) {
             $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
             $subject = $signature.SignerCertificate.Subject
@@ -103,6 +107,8 @@ jobs:
           "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
           node packages/desktop/scripts/verify-installed-tools.mjs (Join-Path $destination resources)
           if ($LASTEXITCODE -ne 0) { throw 'Installed tools verification failed' }
+          node packages/desktop/scripts/verify-installed-mxc.mjs (Join-Path $destination resources)
+          if ($LASTEXITCODE -ne 0) { throw 'Installed MXC verification failed' }
       - run: pnpm --filter @dinkster/desktop verify:installed
       - name: Preserve verification evidence
         if: always()

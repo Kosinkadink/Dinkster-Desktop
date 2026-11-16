@@ -1,29 +1,29 @@
 {
   "repository": "Kosinkadink/Dinkster",
-  "commit": "6dd0e6ef440183320e6b3e24af07425b1e0e979f",
-  "releaseTag": "tools-2026-11-16-0.0.8.dev1101-51ab1d8d",
-  "label": "2026-11-16-0.0.8.dev1101-51ab1d8d",
-  "pinnedAt": "2026-11-15T20:39:49-08:00",
+  "commit": "765c659e777da0cd3e6b5ccf866a2b800b9d32e9",
+  "releaseTag": "tools-2026-11-16-0.0.8.dev1106-5375168d",
+  "label": "2026-11-16-0.0.8.dev1106-5375168d",
+  "pinnedAt": "2026-11-16T01:47:01-08:00",
   "manifest": {
     "name": "tools-manifest.json",
     "size": 774,
-    "sha256": "51ab1d8db810ba0b77d071d1ebf9d803b6bed1c1223f5fe0d4ba5df2869a0a7b"
+    "sha256": "5375168dd368cc976cb5189759e673951b3bea81cd723b21e709a4c9128b9bd9"
   },
   "artifacts": [
     {
       "name": "dinkster-tools-linux-x86_64.zip",
-      "size": 113695685,
-      "sha256": "9caa0d6e37ec6de3a850988e777c777578bbc41b5462e9a3bfb3b9eef276d832"
+      "size": 113698645,
+      "sha256": "d87e0de30ba0e24e9f034abf5863d9243c00c57d4357e76a2a003b00f8ee57de"
     },
     {
       "name": "dinkster-tools-macos-arm64.zip",
-      "size": 69123123,
-      "sha256": "ec40d18ba25efc0766790df8e848196d4f79da3f42a8aee47e46b65f86714db1"
+      "size": 69126073,
+      "sha256": "2312835c857f7745702fe4ae4a07ad7bdf5f9048d0a4d80d035a82b7b1d68ac3"
     },
     {
       "name": "dinkster-tools-windows-x86_64.zip",
-      "size": 45713470,
-      "sha256": "2dff889206ea18bf52fbea210a8261fad1b48b66be1fc0566df913956da9b1af"
+      "size": 45716405,
+      "sha256": "68c0815fa83d24b7cd432a8cd99626ce896015ae6d6878b0730966fa4e13556f"
     }
   ]
 }

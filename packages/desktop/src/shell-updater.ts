@@ -33,6 +33,7 @@ export interface ShellUpdaterOptions {
   readonly currentVersion: string
   readonly updateFeed: string | undefined
   readonly packaged: boolean
+  readonly diagnostic?: (message: string) => void
 }
 
 function markerPath(dataDirectory: string): string {
@@ -92,18 +93,18 @@ export class ShellUpdater {
 
   private async startOnce(): Promise<ShellUpdateStatus> {
     if (!this.options.packaged) return this.setStatus('current', 'Update checks are available in installed builds')
-    try {
-      await configureUpdateFeed(this.options.target, this.options.updateFeed, this.options.currentVersion)
-    } catch {
-      return this.setStatus('failed', 'Unable to configure the Dinkster Desktop update feed')
-    }
-
     const marker = await readMarker(this.marker)
     if (marker === 'corrupt') return this.setStatus('failed', 'Update retry state is invalid; installation is blocked')
 
     const pending = marker.pending
     if (pending?.version === this.options.currentVersion) {
       await this.writeMarker({ version: MARKER_VERSION })
+    }
+
+    try {
+      await configureUpdateFeed(this.options.target, this.options.updateFeed, this.options.currentVersion, this.options.diagnostic)
+    } catch {
+      return this.setStatus('failed', 'Unable to configure the Dinkster Desktop update feed')
     }
 
     return this.downloadStartupUpdate(pending)

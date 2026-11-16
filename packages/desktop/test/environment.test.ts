@@ -76,6 +76,24 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('preserves the trusted native sandbox executor for doctor and start', async () => {
+    const { root, client } = await commandFixture()
+    const executor = join(root, 'resources', 'sandbox', 'wxc-exec.exe')
+    vi.stubEnv('DINKSTER_MXC_EXECUTABLE', executor)
+    const script = join(root, 'command.cjs')
+    await writeFile(script, (await readFile(script, 'utf8')) + `
+      fs.writeFileSync(path.join(root, 'sandbox-executable.txt'), process.env.DINKSTER_MXC_EXECUTABLE);
+    `)
+    try {
+      for (const operation of ['doctor', 'start'] as const) {
+        await client.run({ root, operation })
+        expect(await readFile(join(root, 'sandbox-executable.txt'), 'utf8')).toBe(executor)
+      }
+    } finally {
+      await client.dispose()
+    }
+  })
+
   it('reviews explicit local development folders and confirms the exact source digest', async () => {
     const { root, client } = await commandFixture()
     const development = { engine: join(root, 'engine checkout'), inference: join(root, 'inference'),

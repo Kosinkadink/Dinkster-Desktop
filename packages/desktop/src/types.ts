@@ -1,36 +1,6 @@
-import type { EngineAccelerator } from './accelerator.js'
-
-export type LifecyclePhase =
-  | 'idle'
-  | 'detecting'
-  | 'downloading'
-  | 'installing'
-  | 'starting'
-  | 'running'
-  | 'failed'
-  | 'stopped'
-
-export interface LifecycleStatus {
-  readonly phase: LifecyclePhase
-  readonly detail: string
-  readonly variant?: EngineAccelerator
-  readonly error?: string
-}
-
-export interface DesktopEngineRelease {
-  readonly commit: string
-  readonly variant: EngineAccelerator
-  readonly bytes: number
-  readonly active: boolean
-}
-
 export interface DesktopInfo {
   readonly appVersion: string
-  readonly engineCommit: string
-  readonly remoteWorkerProtocol?: number
-  readonly variant: EngineAccelerator
   readonly storageBytes: number
-  readonly releases: readonly DesktopEngineRelease[]
   readonly update: { readonly state: 'idle' | 'checking' | 'available' | 'ready' | 'current' | 'installing' | 'failed'; readonly detail: string }
 }
 
@@ -39,8 +9,6 @@ export interface DesktopSystemCheck {
   readonly architecture: string
   readonly freeBytes: number
   readonly totalBytes: number
-  readonly engineReady: boolean
-  readonly engineDetail: string
   readonly gpu: { readonly available: boolean; readonly name?: string; readonly driver?: string; readonly memoryMiB?: number }
 }
 
@@ -126,18 +94,14 @@ export type DesktopDroppedFileResult =
 
 export interface DesktopBridge {
   locale(): Promise<string>
-  status(): Promise<LifecycleStatus>
-  retry(): Promise<void>
   info(): Promise<DesktopInfo>
-  selectEngine(commit: string, variant: EngineAccelerator): Promise<void>
   checkForUpdates(): Promise<void>
   installUpdate(): Promise<void>
   fileCapabilities(backendUrl: string): Promise<DesktopFileCapabilities>
   chooseDirectory(backendUrl: string): Promise<string | undefined>
   revealFile(backendUrl: string, asset: DesktopAssetIdentity): Promise<{ mode: 'selected' | 'folder' }>
+  revealModelLocation(backendUrl: string, location: string): Promise<void>
   resolveDroppedFile(backendUrl: string, file: File): Promise<DesktopDroppedFileResult>
-  exportSnapshot(): Promise<string | undefined>
-  importSnapshot(): Promise<unknown | undefined>
   systemCheck(): Promise<DesktopSystemCheck>
   clearCache(): Promise<void>
   exportSupportReport(): Promise<string | undefined>
@@ -162,8 +126,6 @@ export interface DesktopBridge {
   removeRemoteWorker(name: string): Promise<void>
   chooseRemoteWorkerFile(kind: 'token' | 'tls-ca'): Promise<DesktopRemoteWorkerFileChoice | undefined>
   takeDeepLinks(): Promise<readonly DesktopDeepLink[]>
-  onStatus(listener: (status: LifecycleStatus) => void): () => void
-  onLog(listener: (line: string) => void): () => void
   onInfo(listener: (info: DesktopInfo) => void): () => void
   onWindowLayout(listener: (layout: DesktopWindowLayout) => void): () => void
   onDeepLinkPending(listener: () => void): () => void

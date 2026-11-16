@@ -107,7 +107,9 @@ const operation = args[args.indexOf('--root') + 2];
 const planned = args.includes('--plan');
 const observed = ${JSON.stringify(join(scratch, 'observed.json'))};
 if (operation === 'status') {
-  const row = JSON.parse(fs.readFileSync(observed, 'utf8'));
+  const row = fs.existsSync(observed)
+    ? JSON.parse(fs.readFileSync(observed, 'utf8'))
+    : {format:'dinkster.environment-result/1',root,current:null,plan:[],engines:[]};
   console.log(JSON.stringify({...row, operation, status:'clean'}));
   process.exit(0);
 }
@@ -240,12 +242,14 @@ console.log(JSON.stringify(row));
     .trim()
     .split('\n')
     .map(JSON.parse)
-  assert.equal(history.length, 2)
-  assert.equal(history[0][2], 'catalog')
-  assert(!history[0].includes('--plan') && !history[0].includes('--yes'))
-  assert(history[1].includes('--plan'))
-  assert(!history[1].includes('--yes'))
-  assert.equal(history[1][history[1].indexOf('--engine') + 1], 'main')
+  const catalog = history.find((args) => args[2] === 'catalog')
+  const setup = history.filter((args) => args[2] === 'setup')
+  assert(catalog && !catalog.includes('--plan') && !catalog.includes('--yes'))
+  assert.equal(setup.length, 1)
+  assert(setup[0].includes('--plan'))
+  assert(!setup[0].includes('--yes'))
+  assert.equal(setup[0][setup[0].indexOf('--engine') + 1], 'main')
+  assert(history.every((args) => !args.includes('--yes')))
   if (artifacts)
     await manager.screenshot({
       path: join(artifacts, 'local-plan.png'),

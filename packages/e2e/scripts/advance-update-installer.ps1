@@ -14,12 +14,19 @@ public static class InstallerWindow {
 }
 '@
 $deadline = [DateTime]::UtcNow.AddMinutes(3)
+$installers = @{}
 while ([DateTime]::UtcNow -lt $deadline) {
     foreach ($process in Get-Process) {
-        if ($process.MainWindowHandle -eq 0 -or $process.MainWindowTitle -notlike 'Dinkster Desktop*Setup*') { continue }
+        if ($process.ProcessName -notlike 'Dinkster*Setup*' -and $process.MainWindowTitle -notlike 'Dinkster Desktop*Setup*') { continue }
         $cachePath = Join-Path $env:LOCALAPPDATA '@dinksterdesktop-updater\'
+        if (-not $process.Path) { continue }
         if (-not $process.Path.StartsWith($rootPath, [StringComparison]::OrdinalIgnoreCase) -and
             -not $process.Path.StartsWith($cachePath, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if (-not $installers.ContainsKey($process.Id)) {
+            try { $null = $process.Handle } catch { continue }
+            $installers[$process.Id] = $process
+        }
+        if ($process.MainWindowHandle -eq 0 -or $process.MainWindowTitle -notlike 'Dinkster Desktop*Setup*') { continue }
         $button = [InstallerWindow]::GetDlgItem($process.MainWindowHandle, 1)
         if ($button -ne [IntPtr]::Zero -and [InstallerWindow]::IsWindowEnabled($button)) {
             # Exercise the real assisted installer's Next/Install/Finish button.
@@ -27,5 +34,10 @@ while ([DateTime]::UtcNow -lt $deadline) {
             "$($process.Id) $($process.MainWindowTitle)" | Add-Content (Join-Path $Root 'installer-buttons.txt')
         }
     }
+    $records = @($installers.Values | ForEach-Object {
+        $exited = $_.HasExited
+        [PSCustomObject]@{ pid = $_.Id; exited = $exited; exitCode = $(if ($exited) { $_.ExitCode } else { $null }) }
+    })
+    [IO.File]::WriteAllText((Join-Path $Root 'installer-processes.json'), (ConvertTo-Json -InputObject $records))
     Start-Sleep -Milliseconds 250
 }

@@ -225,7 +225,11 @@ async function configuration(directory) {
         continue
       const name = `${prefix}${entry.name}`
       if (entry.isDirectory()) await visit(join(path, entry.name), `${name}/`)
-      else if (/\.(json|toml|lock)$/.test(entry.name)) {
+      // The supervisor's .lock is an OS coordination handle, not configuration.
+      else if (
+        entry.name !== '.lock' &&
+        /\.(json|toml|lock)$/.test(entry.name)
+      ) {
         const bytes = await readFile(join(path, entry.name))
         assert(
           !/DINKSTER_SERVICES|"services"\s*:|\[QA\]/.test(bytes.toString()),

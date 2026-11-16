@@ -344,7 +344,7 @@ try {
         mirrors: ['https://releases.dinkster.org'],
         port,
         variant: process.platform === 'win32' ? 'win-cpu' : 'linux-cpu',
-        data: join(root, `${channel}-store`),
+        data: join(root, 'store'),
         engine: 'main',
         gpus: [],
       }

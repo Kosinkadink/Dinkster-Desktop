@@ -6,7 +6,8 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { createServer as createMirror } from 'node:http'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
-import { Readable } from 'node:stream'
+import { writeFileSync } from 'node:fs'
+import { forwardMirror } from './forward-mirror.mjs'
 import { _electron as electron, expect } from '@playwright/test'
 import { verifyChannel } from '../../desktop/src/channel-signatures.ts'
 
@@ -103,6 +104,7 @@ const projectRoot = join(root, 'project')
 let mirrorChannel = channelText
 let mirrorOnline = true
 const mirrorRequests = []
+const mirrorFailures = []
 const mirror = createMirror(async (request, response) => {
   mirrorRequests.push(request.url)
   if (!mirrorOnline) {
@@ -126,15 +128,18 @@ const mirror = createMirror(async (request, response) => {
     return
   }
   try {
-    const upstream = await fetch(`${publicRoot}${request.url}`)
-    response.writeHead(upstream.status)
-    if (upstream.body)
-      Readable.fromWeb(upstream.body)
-        .on('error', () => response.destroy())
-        .pipe(response)
-    else response.end()
-  } catch {
-    response.writeHead(502).end()
+    await forwardMirror(`${publicRoot}${request.url}`, response)
+  } catch (error) {
+    mirrorFailures.push(error)
+    console.error(error)
+    writeFileSync(
+      join(root, 'mirror-failures.json'),
+      JSON.stringify(
+        mirrorFailures.map((failure) => failure.diagnostic),
+        null,
+        2,
+      ),
+    )
   }
 })
 await new Promise((done) => mirror.listen(0, '127.0.0.1', done))
@@ -627,10 +632,20 @@ with writer_lock(Path(sys.argv[1])):
     ),
   )
   await engine.close()
+  assert.equal(
+    mirrorFailures.length,
+    0,
+    'Upstream mirror requests must succeed',
+  )
 } catch (error) {
   await manager
     ?.screenshot({ path: join(root, 'failed.png'), fullPage: true })
     .catch(() => undefined)
+  if (mirrorFailures.length)
+    throw new AggregateError(
+      [error, ...mirrorFailures],
+      'Stable verification failed after upstream mirror errors',
+    )
   throw error
 } finally {
   try {

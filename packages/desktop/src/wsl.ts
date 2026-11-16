@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { cp, lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join, posix, win32 } from 'node:path'
 import { promisify } from 'node:util'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
@@ -152,24 +152,11 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
   private async installTools(input: EnvironmentToolsInput): Promise<string> {
     const status = await this.status()
     if (!status.ready) throw new Error(status.detail)
-    const tools = await acquireEnvironmentTools({ ...input, platform: 'linux', cacheRoot: join(this.directory, 'wsl', 'tools-cache') })
-    const target = `${home}/tools/${input.sha256}`
-    const destination = wslWindowsPath(this.distribution, target)
-    try {
-      if (await readFile(join(destination, 'complete'), 'utf8') === input.sha256) return `${target}/python/bin/python3`
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    const stage = `${target}-${randomUUID()}`
-    const staged = wslWindowsPath(this.distribution, stage)
-    try {
-      await cp(dirname(dirname(tools.python)), join(staged, 'python'), { recursive: true, errorOnExist: true, force: false })
-      await this.command('dinkster', '/bin/sh', '-ec', 'chmod -R u+rwX "$1"; chmod u+x "$1"/python/bin/*', 'dinkster-tools', stage)
-      await writeFile(join(staged, 'complete'), input.sha256)
-      await rename(staged, destination)
-    } catch (error) {
-      await rm(staged, { recursive: true, force: true })
-      throw error
-    }
-    return `${target}/python/bin/python3`
+    const tools = await acquireEnvironmentTools({ ...input, platform: 'linux', cacheRoot: wslWindowsPath(this.distribution, `${home}/tools`) })
+    const python = wslLinuxPath(this.distribution, tools.python)
+    const target = posix.dirname(posix.dirname(python))
+    await this.command('dinkster', '/bin/sh', '-ec', 'chmod -R u+rwX "$1"; chmod u+x "$1"/bin/*', 'dinkster-tools', target)
+    return python
   }
 
   async run(args: readonly string[], input = this.bundledTools): Promise<string> {

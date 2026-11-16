@@ -96,6 +96,19 @@ async function acquireTools(input: EnvironmentToolsInput): Promise<{ python: str
     const row = rows[0]
     if (rows.length !== 1 || !validArtifact(row)) throw new Error('tools manifest has no unique pinned native tools archive')
     const interpreter = platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'
+    if (platform === 'linux') {
+      const check = join(directory, 'case-check')
+      await mkdir(check)
+      try {
+        await writeFile(join(check, 'upper'), '', { flag: 'wx' })
+        await writeFile(join(check, 'UPPER'), '', { flag: 'wx' })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('Linux tools require a case-sensitive filesystem; use the WSL disk')
+        throw error
+      } finally {
+        await rm(check, { recursive: true, force: true })
+      }
+    }
     const allocations: { name: string; sha256: string }[] = []
     let cached: string | undefined
     if (input.cacheRoot) {
@@ -121,7 +134,7 @@ async function acquireTools(input: EnvironmentToolsInput): Promise<{ python: str
         try {
           const payload = join(cached, 'payload')
           if (!(await lstat(payload)).isDirectory() || !(await lstat(join(payload, 'python'))).isDirectory()
-            || (process.platform !== 'win32' && !(await lstat(join(payload, 'python', 'bin'))).isDirectory())
+            || (platform !== 'win32' && !(await lstat(join(payload, 'python', 'bin'))).isDirectory())
             || !(await lstat(join(payload, interpreter))).isFile()) throw new Error('unsafe cached tools interpreter')
           console.info(`Reusing environment tools ${cached}`)
           await rm(directory, { recursive: true, force: true })
@@ -149,7 +162,7 @@ async function acquireTools(input: EnvironmentToolsInput): Promise<{ python: str
       dir: payload,
       onEntry(entry) {
         const name = entry.fileName
-        const key = (process.platform === 'win32' || process.platform === 'darwin' ? name.toLowerCase() : name).replace(/\/$/, '')
+        const key = (platform === 'win32' || platform === 'darwin' ? name.toLowerCase() : name).replace(/\/$/, '')
         const type = (entry.externalFileAttributes >>> 16) & 0o170000
         if (!name.startsWith('python/') || name.includes('\\') || name.includes(':') || name.split('/').some((part) => part === '.' || part === '..')
           || (type !== 0 && type !== 0o100000 && type !== 0o040000) || entries.has(key)) throw new Error('unsafe tools ZIP entry')

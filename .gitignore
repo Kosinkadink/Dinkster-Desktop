@@ -5,6 +5,8 @@ packages/desktop/dist/
 packages/desktop/release/
 packages/desktop/resources/branding/
 packages/desktop/resources/tools/
+packages/desktop/resources/sandbox/wxc-exec.exe
+packages/desktop/resources/sandbox/mxc-build.json
 packages/desktop/resources/engine/*.tar.gz
 packages/desktop/resources/engine/*.zip
 packages/desktop/resources/engine/*.whl

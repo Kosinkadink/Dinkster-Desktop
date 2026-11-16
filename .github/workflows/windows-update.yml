@@ -45,9 +45,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 26.12.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm --filter @dinkster/desktop prepare:tools
+      - run: pnpm --filter @dinkster/desktop prepare:mxc
       - name: Package different installed and available versions
         run: |
           $old = '0.2.4'

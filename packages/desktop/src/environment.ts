@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { realpath, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
 import { isIP } from 'node:net'
+import { setTimeout } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import type { VariantHardware } from './hardware.js'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
@@ -582,22 +583,33 @@ export class EnvironmentClient {
       executable = toNamespacedPath(executable)
     }
     let stdout: string
-    try {
-      const result = await execute(executable, args, {
-        env: environment,
-        windowsHide: true,
-        timeout: 30 * 60_000,
-        maxBuffer: 4 * 1024 * 1024,
-      })
-      stdout = result.stdout
-    } catch (error) {
-      const failure = error as NodeJS.ErrnoException & { stdout?: string }
-      if (failure.stdout) {
-        const result = resultFrom(failure.stdout, request.operation)
-        throw new Error(result.error ?? ([...result.plan, ...(result.changes ?? [])].join('\n') || `dinkster-env ${request.operation} failed`))
+    const writerDeadline = Date.now() + 30_000
+    for (;;) {
+      try {
+        const result = await execute(executable, args, {
+          env: environment,
+          windowsHide: true,
+          timeout: 30 * 60_000,
+          maxBuffer: 4 * 1024 * 1024,
+        })
+        stdout = result.stdout
+        break
+      } catch (error) {
+        const failure = error as NodeJS.ErrnoException & { stdout?: string }
+        if (failure.stdout) {
+          const result = resultFrom(failure.stdout, request.operation)
+          // Start rechecks the current generation and exact assignment on each
+          // attempt. Never replay an approved generation-changing operation.
+          if (confirmed && request.operation === 'start' && result.status === 'error'
+            && result.error === `another environment writer holds ${request.root}` && Date.now() < writerDeadline) {
+            await setTimeout(250)
+            continue
+          }
+          throw new Error(result.error ?? ([...result.plan, ...(result.changes ?? [])].join('\n') || `dinkster-env ${request.operation} failed`))
+        }
+        if (failure.code === 'ENOENT') throw new Error('dinkster-env is not installed. Install the Dinkster environment tools or select their executable.')
+        throw new Error(`dinkster-env ${request.operation} did not complete; inspect the project journal.`)
       }
-      if (failure.code === 'ENOENT') throw new Error('dinkster-env is not installed. Install the Dinkster environment tools or select their executable.')
-      throw new Error(`dinkster-env ${request.operation} did not complete; inspect the project journal.`)
     }
     const result = resultFrom(stdout, request.operation)
     if (['packs-plan', 'packs-apply', 'source', 'restore'].includes(request.operation)

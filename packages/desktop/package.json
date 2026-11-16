@@ -103,6 +103,7 @@
         }
       ],
       "forceCodeSigning": false,
+      "signExts": ["!wxc-exec.exe"],
       "artifactName": "Dinkster-Desktop-${version}-Setup.${ext}"
     },
     "nsis": {

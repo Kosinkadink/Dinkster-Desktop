@@ -25,7 +25,7 @@ try {
   await execute('tar', ['-xf', archive, '-C', temporary])
 
   assert.equal((await stat(source)).isDirectory(), true, 'Downloaded MXC source root')
-  assert.match(await readFile(resolve(source, 'LICENSE.md'), 'utf8'), /^MIT License\r?\n/m, 'MXC source license')
+  assert.match(await readFile(resolve(source, 'LICENSE.md'), 'utf8'), /^[ \t]*MIT License\r?\n/m, 'MXC source license')
   assert.match(await readFile(resolve(source, 'src/rust-toolchain.toml'), 'utf8'), /channel\s*=\s*"1\.93"/, 'MXC Rust toolchain')
 
   await execute('cargo', ['build', '--locked', '--release', '-p', 'wxc', '--target', 'x86_64-pc-windows-msvc'], {

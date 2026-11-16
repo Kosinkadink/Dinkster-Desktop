@@ -87,6 +87,7 @@ describe('desktop package inputs', () => {
     expect(manifest.scripts['package:win']).toContain('package:win:prepare')
     expect(manifest.scripts['package:win:signed']).toContain('sign:mxc')
     expect(manifest.build.win.extraResources).toContainEqual({ from: 'resources/sandbox', to: 'sandbox' })
+    expect((manifest.build.win as { signExts?: string[] }).signExts).toContain('!wxc-exec.exe')
     expect(signer).toContain('createArtifactSigningHook(artifactSigning)')
     expect(signer).toContain("writeMxcBuild(executable, resolve(import.meta.dirname, '../resources/sandbox/mxc-build.json'))")
     expect(verifier).toContain("provenance.commit, 'c66201839d63cae2239db5e92f1f1d6076cf5181'")

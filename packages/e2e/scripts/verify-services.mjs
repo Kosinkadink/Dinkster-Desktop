@@ -64,6 +64,7 @@ const receipt = {
   sourceOnly,
   platform: process.platform,
   launches: [],
+  installations: [],
   engines: [],
 }
 let app
@@ -308,7 +309,7 @@ try {
   const invalid = spawn(executablePath, [...baseArgs, '--services=invalid'], {
     env,
     stdio: ['ignore', 'ignore', 'pipe'],
-    windowsHide: true,
+    windowsHide: false,
   })
   invalid.stderr.on('data', (bytes) => {
     invalidStderr += bytes.toString()
@@ -337,7 +338,12 @@ try {
             $dialog = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
             if ($null -eq $dialog) { Start-Sleep -Milliseconds 100 }
           } while ($null -eq $dialog -and (Get-Date) -lt $deadline)
-          if ($null -eq $dialog) { throw 'Invalid services error dialog did not appear' }
+          if ($null -eq $dialog) {
+            $pidCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$env:DINKSTER_INVALID_PID)
+            $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $pidCondition)
+            $names = ($windows | ForEach-Object { $_.Current.Name }) -join ', '
+            throw "Invalid services error dialog did not appear; process windows: $names"
+          }
           $elements = $dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
           $text = ($elements | ForEach-Object { $_.Current.Name }) -join ' '
           if ($text -notmatch 'Invalid hosted services') { throw 'Error did not name the invalid services option' }
@@ -372,6 +378,10 @@ try {
     }
     receipt.invalidServicesRefused = true
   } finally {
+    appendFileSync(
+      join(root, 'desktop-stderr.log'),
+      `\nInvalid services process ${invalid.pid}; exit: ${invalid.exitCode}; signal: ${invalid.signalCode}\n`,
+    )
     if (invalid.exitCode === null) invalid.kill()
   }
   if (!sourceOnly) {
@@ -405,15 +415,12 @@ try {
         { project, request },
       )
       assert.equal(planned.result.status, 'planned')
-      assert.equal(
-        (
-          await manager.evaluate(
-            (token) => window.dinksterProjects.apply(token),
-            planned.token,
-          )
-        ).status,
-        'applied',
+      const applied = await manager.evaluate(
+        (token) => window.dinksterProjects.apply(token),
+        planned.token,
       )
+      assert.equal(applied.status, 'applied')
+      receipt.installations.push({ channel, engine: applied.engine })
       await app.close()
       app = undefined
       const baseline = await configuration(project.root)

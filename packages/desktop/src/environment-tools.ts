@@ -11,21 +11,37 @@ export interface EnvironmentToolsInput {
   readonly sha256: string
   readonly release: string
   readonly cacheRoot?: string
+  readonly mirrorReleases?: readonly string[]
 }
 
 function source(location: string): URL | string {
   if (isAbsolute(location)) return location
   const url = new URL(location)
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('tools inputs require an absolute path or credential-free HTTPS')
+  const loopback = url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname)
+  if ((!loopback && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash) throw new Error('tools inputs require an absolute path or credential-free HTTPS or loopback HTTP')
   return url
 }
 
-async function acquire(location: string, target: string, maximumBytes: number): Promise<void> {
-  const input = source(location)
-  if (typeof input === 'string') {
-    if ((await stat(input)).size > maximumBytes) throw new Error('tools input exceeds the declared size')
-    await copyFile(input, target)
-  } else await download(input.href, target, undefined, maximumBytes)
+function releaseFile(release: string, name: string): string {
+  const location = source(release)
+  return typeof location === 'string' ? join(location, name) : new URL(name, `${location.href.replace(/\/$/, '')}/`).href
+}
+
+async function acquire(locations: string[], target: string, maximumBytes: number, sha256: string, exactSize = false): Promise<void> {
+  let failure: unknown
+  for (const location of new Set(locations)) {
+    try {
+      const input = source(location)
+      if (typeof input === 'string') {
+        if ((await stat(input)).size > maximumBytes) throw new Error('tools input exceeds the declared size')
+        await copyFile(input, target)
+      } else await download(input.href, target, undefined, maximumBytes)
+      if (exactSize && (await stat(target)).size !== maximumBytes) throw new Error('tools archive size mismatch')
+      await verifyFile(target, sha256)
+      return
+    } catch (error) { failure = error }
+  }
+  throw failure
 }
 
 type ToolsArtifact = { name: string; size: number; sha256: string }
@@ -82,8 +98,8 @@ async function acquireTools(input: EnvironmentToolsInput): Promise<{ python: str
   const directory = await mkdtemp(join(input.cacheRoot ?? tmpdir(), 'dinkster-tools-'))
   try {
     const manifestPath = join(directory, 'tools-manifest.json')
-    await acquire(input.manifest, manifestPath, 8 * 1024 * 1024)
-    await verifyFile(manifestPath, input.sha256)
+    const mirrors = input.mirrorReleases ?? []
+    await acquire([...mirrors.map((release) => releaseFile(release, 'tools-manifest.json')), input.manifest], manifestPath, 8 * 1024 * 1024, input.sha256)
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as ToolsManifest
     const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platform as 'win32' | 'linux' | 'darwin']
     const arch = { x64: 'x86_64', arm64: 'arm64' }[process.arch as 'x64' | 'arm64']
@@ -135,11 +151,8 @@ async function acquireTools(input: EnvironmentToolsInput): Promise<{ python: str
         cached = join(input.cacheRoot, name)
       }
     }
-    const release = source(input.release)
     const archive = join(directory, name)
-    await acquire(typeof release === 'string' ? join(release, name) : new URL(name, `${release.href.replace(/\/$/, '')}/`).href, archive, row.size)
-    if ((await stat(archive)).size !== row.size) throw new Error('tools archive size mismatch')
-    await verifyFile(archive, row.sha256)
+    await acquire([...mirrors, input.release].map((release) => releaseFile(release, name)), archive, row.size, row.sha256, true)
     const payload = join(directory, 'payload')
     await mkdir(payload)
     const entries = new Set<string>()

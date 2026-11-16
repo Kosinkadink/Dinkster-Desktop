@@ -312,6 +312,7 @@ try {
   })
   invalid.stderr.on('data', (bytes) => {
     invalidStderr += bytes.toString()
+    appendFileSync(join(root, 'desktop-stderr.log'), bytes)
   })
   const invalidExited = new Promise((done, reject) => {
     invalid.once('error', reject)
@@ -328,7 +329,7 @@ try {
           `
           Add-Type -AssemblyName UIAutomationClient
           $condition = New-Object System.Windows.Automation.AndCondition(
-            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Invalid hosted services')),
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Error')),
             (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$env:DINKSTER_INVALID_PID))
           )
           $deadline = (Get-Date).AddSeconds(20)
@@ -339,6 +340,7 @@ try {
           if ($null -eq $dialog) { throw 'Invalid services error dialog did not appear' }
           $elements = $dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
           $text = ($elements | ForEach-Object { $_.Current.Name }) -join ' '
+          if ($text -notmatch 'Invalid hosted services') { throw 'Error did not name the invalid services option' }
           if ($text -notmatch 'production or qa') { throw 'Error did not name both allowed values' }
           $ok = $elements | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -eq 'OK' } | Select-Object -First 1
           if ($null -eq $ok) { throw 'Error dialog has no OK button' }

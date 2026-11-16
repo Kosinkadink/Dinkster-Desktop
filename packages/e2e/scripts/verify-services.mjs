@@ -251,6 +251,7 @@ async function configuration(directory) {
 
 try {
   let savedProjects
+  let desktopBaseline
   for (const selection of ['production', 'qa', 'production']) {
     const manager = await launch(selection)
     await mark(manager, selection, 'manager')
@@ -294,6 +295,16 @@ try {
       await require(`${app.getAppPath()}/dist/branding.js`).showAbout(selection)
     }, selection)
     await mark(await aboutOpened, selection, 'about')
+    for (const [index, page] of app.windows().entries()) {
+      const title = await (
+        await app.browserWindow(page)
+      ).evaluate((window) => window.getTitle())
+      await mark(
+        page,
+        selection,
+        title === 'About Dinkster Desktop' ? 'about' : `window-${index}`,
+      )
+    }
     await secondInstance(selection)
     await mark(manager, selection, 'manager')
     assert.equal(
@@ -308,7 +319,16 @@ try {
     })
     await app.close()
     app = undefined
+    const saved = await configuration(env.DINKSTER_DESKTOP_DATA)
+    if (desktopBaseline) {
+      assert.deepEqual(
+        saved,
+        desktopBaseline,
+        'A services-only restart changed Desktop configuration',
+      )
+    } else desktopBaseline = saved
   }
+  receipt.desktopConfigurationUnchanged = true
   let invalidStderr = ''
   const invalid = spawn(executablePath, [...baseArgs, '--services=invalid'], {
     env,

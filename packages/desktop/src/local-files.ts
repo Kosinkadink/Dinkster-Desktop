@@ -81,6 +81,41 @@ export async function assetLocations(backendUrl: string, input: unknown, project
   })
 }
 
+/** Resolve a registered shared folder by id, never by a renderer-supplied path. */
+export async function revealModelLocation(
+  backendUrl: string,
+  location: unknown,
+  project: string,
+  shell: { openExternal(url: string): Promise<void> },
+  authorize: () => Promise<void>,
+): Promise<void> {
+  if (typeof location !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(location) || !validProjectId(project)) throw new Error('Invalid model location identity')
+  const lookup = async (): Promise<string> => {
+    await authorize()
+    const url = new URL('/api/models/settings', backendUrl)
+    url.searchParams.set('project', project)
+    const response = await fetch(url, { redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000) })
+    if (!response.ok) throw new Error('Model location verification failed')
+    const body = await response.json() as { locations?: { id?: unknown; path?: unknown }[] }
+    if (!Array.isArray(body?.locations)) throw new Error('Model location verification failed')
+    const matches = body.locations.filter((row) => row?.id === location)
+    const path = matches.length === 1 ? matches[0]?.path : undefined
+    if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) throw new Error('Model location is no longer registered')
+    await authorize()
+    return path
+  }
+  try {
+    const path = await lookup()
+    const target = await realpath(path)
+    if (!(await stat(target)).isDirectory()) throw new Error()
+    if (await lookup() !== path || await realpath(path) !== target) throw new Error()
+    await authorize()
+    await shell.openExternal(pathToFileURL(target).href)
+  } catch {
+    throw new Error('The registered model folder could not be opened; copy the server path instead')
+  }
+}
+
 /** The operator capability response stays in main; only its boolean is public. */
 export async function dropResolutionSupported(backendUrl: string): Promise<boolean> {
   try {

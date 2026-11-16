@@ -9,7 +9,7 @@ project install-root bindings, and supervisor-per-generation swap contract.
 The desktop shell and its external inputs are pinned independently:
 
 - `scripts/frontend-release.json` pins the permanent `dinkster-frontend` PyPI wheel by version, URL, size and SHA256. `pnpm prepare:frontend` verifies that wheel and copies its application and native branding into the package inputs. The engine selects the same published frontend release; Desktop does not build frontend source.
-- The checkout-development backend selection is pinned in `packages/desktop/src/backend-release.json`. Shell packaging does not download or embed that source archive or native wheels. Project generations are acquired by the environment tools, not by the shell's package builder.
+- `packages/desktop/src/backend-release.json` records backend identity in shell release metadata. Shell packaging does not download or embed that source archive or native wheels. Project generations are acquired by the environment tools, not by the shell's package builder; Desktop has no separate single-engine launcher.
 
 A local build uses the same verified release as CI, without a frontend checkout:
 
@@ -161,24 +161,6 @@ confirmation, changed-port handoff, rollback, remote-only routing and shutdown
 delegation. It is not a substitute for real CLI/generation file comparisons.
 `DINKSTER_ELECTRON_EXECUTABLE` optionally selects the installed Electron binary;
 `DINKSTER_SMOKE_ARTIFACTS` optionally retains screenshots.
-
-The Linux cleanup integration check uses the real Electron IPC and backend
-command on a newly generated disposable CPU installation. After preparing the
-pinned frontend/branding and installing dependencies, set `DINKSTER_BACKEND_ROOT` to a
-backend checkout with its development `.venv` and run
-`node packages/e2e/scripts/verify-cleanup-integration.mjs`. It checks read-only
-status, disabled retry, preference persistence, lock deferral with persistent
-warnings, and confirmed collection while the current engine stays responsive.
-History, user-data sentinels, bindings and a shared-cache sentinel must remain
-byte-identical. It requires a display (or `xvfb-run`), accepts no existing
-installation root, and stops only its generated fixture during teardown. The printed fixture path
-is retained for inspection; `DINKSTER_SMOKE_ARTIFACTS` retains screenshots and
-the result report. The faster `verify-cleanup-dialog.mjs` uses protocol fixtures
-instead; `DINKSTER_CHROMIUM_PATH` can select an installed Chromium binary.
-The real integration requires clean source checkouts before and after the run,
-rebuilds Desktop before launch, and verifies that the backend interpreter imports
-the specified source tree. Its report identifies source commits, not a verified
-packaged release; installed dependencies and prepared branding are not attested.
 
 Pull requests run formatting, types, unit tests, and the Linux build with a
 10-minute budget. Main adds the pinned frontend browser suite and Windows

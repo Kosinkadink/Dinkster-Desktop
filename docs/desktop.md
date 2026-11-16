@@ -119,7 +119,7 @@ are separate from managed source selection.
 ## Native asset files
 
 Local engine windows receive only the file-capability, directory-choice,
-asset-reveal and native-drop methods, not project-manager, credential or shell
+asset-reveal, shared-model-folder reveal and native-drop methods, not project-manager, credential or shell
 lifecycle privileges. Each request checks the saved local binding and the
 environment tools' observed ready generation and URL. Requests from child
 frames, remote engines and unrelated connections have no native authority.
@@ -137,6 +137,15 @@ the file and grant are canonicalized; an escaping symlink is rejected. Windows
 and macOS select the file; Linux opens its containing folder. Native drops use
 Electron's File lookup and the backend's advertised mounted-path resolver,
 without treating transport failures as permission to upload instead.
+
+Model folder reveal supplies only a registered location id. Main reads the
+operator-only shared model settings for the trusted window project, verifies
+that the selected location is unique and an existing directory, then rereads
+registration and rechecks the managed generation before opening its file URL.
+Disabled project visibility does not prevent the operator from finding a shared
+folder in Model management. Removed locations, changed paths, denied lookups
+and remote or stale managed contexts never open the file manager. No model
+files are moved or deleted.
 
 Desktop bindings are not environment state. The environment tools own
 `project.json`, generation records, `current`, `store`, journals, dependency
@@ -282,11 +291,10 @@ in [README](../README.md#environment-client-development) enable extraction-only
 bootstrap without a host interpreter. Desktop does not install missing tools
 by resolving packages at runtime.
 
-The separate checkout-development launcher (`DINKSTER_ENGINE_SOURCE` or
-`start:web`) requires a provisioned checkout with its `.venv` executables.
-It does not download tools, sync dependencies, install native overlays, or
-prepare catalogs. Prepare that checkout using Dinkster's development setup
-before launching it. This path is not used to install project generations.
+Desktop starts in the project manager in both development and installed builds.
+Engine selection, updates and rollback belong to project generations managed by
+the environment tools. Desktop has no separate single-engine launcher,
+selection journal, follow-packaged update or install snapshot restore path.
 
 The retained backend metadata pins the Git-free `main-<commit>` source release
 and `dinkster-source-<version>.zip` checksum for checkout release identity.

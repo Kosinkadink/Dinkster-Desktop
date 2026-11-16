@@ -1,7 +1,16 @@
 name: Windows installed updates
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-update.yml'
+      - 'packages/desktop/**'
+      - 'packages/e2e/scripts/verify-shell-update.mjs'
+      - 'packages/e2e/scripts/advance-update-installer.ps1'
+      - 'pnpm-lock.yaml'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/windows-update.yml'
       - 'packages/desktop/**'
@@ -19,6 +28,7 @@ env:
 jobs:
   fixtures:
     name: Build unsigned Windows update fixtures
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: windows-latest
     timeout-minutes: 20
     defaults:

@@ -418,7 +418,6 @@ try {
         planned.token,
       )
       assert.equal(applied.status, 'applied')
-      receipt.installations.push({ channel, engine: applied.engine })
       await app.close()
       app = undefined
       const baseline = await configuration(project.root)
@@ -442,6 +441,24 @@ try {
         ...toolsInput,
         cacheRoot: join(root, 'foreign-tools'),
       })
+      const status = await promisify(execFile)(
+        tools.python,
+        [
+          '-I',
+          '-m',
+          'dinkster_supervisor.environment',
+          '--root',
+          project.root,
+          'status',
+          '--json',
+        ],
+        { env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
+      )
+      const installed = JSON.parse(status.stdout)
+      assert.equal(installed.status, 'clean')
+      assert.equal(typeof installed.engine?.version, 'string')
+      assert.match(installed.engine.release, /^sha256:[a-f0-9]{64}$/)
+      receipt.installations.push({ channel, engine: installed.engine })
       let previous
       for (const selection of ['production', 'qa', 'production']) {
         appendFileSync(

@@ -100,7 +100,11 @@ pinned Ed25519 public key, then enforces `minimumDesktopVersion`, reporting
 stop and other installed-generation operations do not fetch channel metadata.
 A trusted channel may explicitly supply a `tools` object with `label`, `manifest`,
 `sha256` and `release` to select newer tools through the same verified acquisition
-path. A newer engine alone does not force a tools download. Third-party HTTPS
+path. Desktop first tries each configured mirror's `tools/<label>` directory,
+then the signed origin URLs, without rewriting signed metadata. Each candidate
+must match the signed manifest digest and its native archive's size and digest.
+A complete mirror does not need the official tools host to be reachable.
+A newer engine alone does not force a tools download. Third-party HTTPS
 mirrors use the same signature check as official hosts and local copies; unsigned
 or unknown-key channels refuse. The pinned root has key ID
 `sha256:4b5b2c78b32db1ebedc4702a92d6e4e252c17531f0e102ab82dd910be6dec7b9`.

@@ -6,6 +6,7 @@ on:
       - '.github/workflows/verify-stable-project.yml'
       - 'packages/desktop/src/channel-signatures.ts'
       - 'packages/desktop/src/environment-channel.ts'
+      - 'packages/desktop/src/environment-tools.ts'
       - 'packages/e2e/scripts/verify-stable-project.mjs'
 
 permissions:

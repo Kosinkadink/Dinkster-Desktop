@@ -13,6 +13,14 @@ function toolsLocation(location: string): URL | string {
   return url
 }
 
+function mirrorLocation(mirror: string, path: string): string {
+  if (isAbsolute(mirror)) return join(mirror, path)
+  const url = new URL(mirror)
+  const loopback = url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname)
+  if ((!loopback && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash) throw new Error('channel mirrors require credential-free HTTPS or loopback HTTP')
+  return new URL(path, `${url.href.replace(/\/$/, '')}/`).href
+}
+
 function validToolsPin(tools: Record<string, unknown>): tools is Record<string, unknown> & EnvironmentToolsInput {
   if (typeof tools['manifest'] !== 'string' || typeof tools['sha256'] !== 'string' || !/^[a-f0-9]{64}$/.test(tools['sha256'])
     || typeof tools['release'] !== 'string' || (tools['label'] !== undefined && (typeof tools['label'] !== 'string' || !/^\d{4}-\d{2}-\d{2}-[A-Za-z0-9.+_-]+-[a-f0-9]{8}$/.test(tools['label'])))) return false
@@ -49,13 +57,11 @@ export async function channelTools(request: EnvironmentRequest, desktopVersion: 
     const directory = await mkdtemp(join(tmpdir(), 'dinkster-channel-'))
     try {
       let text: string
-      if (isAbsolute(mirror)) text = await readFile(join(mirror, 'channels', `${channel}.json`), 'utf8')
+      const location = mirrorLocation(mirror, `channels/${channel}.json`)
+      if (isAbsolute(location)) text = await readFile(location, 'utf8')
       else {
-        const url = new URL(mirror)
-        const loopback = url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname)
-        if ((!loopback && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash) throw new Error('channel mirrors require credential-free HTTPS or loopback HTTP')
         const path = join(directory, 'channel.json')
-        await download(new URL(`channels/${channel}.json`, `${url.href.replace(/\/$/, '')}/`).href, path, undefined, 8 * 1024 * 1024)
+        await download(location, path, undefined, 8 * 1024 * 1024)
         text = await readFile(path, 'utf8')
       }
       if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw new Error('channel metadata exceeds size limit')
@@ -77,5 +83,9 @@ export async function channelTools(request: EnvironmentRequest, desktopVersion: 
   const tools = document['tools'] as Record<string, unknown> | undefined
   if (!tools) return undefined
   if (!validToolsPin(tools)) throw new Error('invalid channel tools pin')
-  return { ...(tools.label === undefined ? {} : { label: tools.label }), manifest: tools.manifest, sha256: tools.sha256, release: tools.release }
+  const mirrorReleases = tools.label === undefined ? [] : mirrors.flatMap((mirror) => {
+    try { return [mirrorLocation(mirror, `tools/${tools.label}`)] }
+    catch { return [] }
+  })
+  return { ...(tools.label === undefined ? {} : { label: tools.label, mirrorReleases }), manifest: tools.manifest, sha256: tools.sha256, release: tools.release }
 }

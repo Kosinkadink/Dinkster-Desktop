@@ -53,6 +53,22 @@ assert.equal(
   channel.tools.sha256,
 )
 assert.equal(JSON.parse(toolsBytes).commit, manifest.commit)
+const toolsManifest = JSON.parse(toolsBytes)
+const toolsName = `dinkster-tools-${process.platform === 'win32' ? 'windows' : 'linux'}-x86_64.zip`
+const toolsRow = toolsManifest.artifacts.find((row) => row.name === toolsName)
+assert(toolsRow)
+const toolsArchive = Buffer.from(
+  await fetch(`${channel.tools.release}/${toolsName}`).then((response) => {
+    assert(response.ok)
+    return response.arrayBuffer()
+  }),
+)
+assert.equal(toolsArchive.length, toolsRow.size)
+assert.equal(
+  createHash('sha256').update(toolsArchive).digest('hex'),
+  toolsRow.sha256,
+)
+const toolsPath = `/tools/${channel.tools.label}`
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([name, value]) =>
@@ -101,6 +117,14 @@ const mirror = createMirror(async (request, response) => {
     response.end(mirrorChannel)
     return
   }
+  if (request.url === `${toolsPath}/tools-manifest.json`) {
+    response.end(toolsBytes)
+    return
+  }
+  if (request.url === `${toolsPath}/${toolsName}`) {
+    response.end(toolsArchive)
+    return
+  }
   try {
     const upstream = await fetch(`${publicRoot}${request.url}`)
     response.writeHead(upstream.status)
@@ -124,6 +148,21 @@ const app = await electron.launch({
 let manager
 try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
+  await app.evaluate(() => {
+    const original = globalThis.fetch
+    globalThis.fetch = (input, options) => {
+      const url = new URL(
+        typeof input === 'string' || input instanceof URL ? input : input.url,
+      )
+      if (url.hostname === 'releases.dinkster.org')
+        throw new Error('Official tools origin denied')
+      return original(input, options)
+    }
+  })
+  await assert.rejects(
+    app.evaluate(() => fetch('https://releases.dinkster.org/tools/denied')),
+    /Official tools origin denied/,
+  )
   assert.match(
     await app.evaluate(({ app }) => app.getVersion()),
     /^\d+\.\d+\.\d+$/,
@@ -362,6 +401,14 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
       (path) => path.startsWith('/base/') && path.includes('base.tar.zst.'),
     ),
     'native Base must pass through the configured mirror',
+  )
+  assert(
+    mirrorRequests.includes(`${toolsPath}/tools-manifest.json`),
+    'tools manifest must pass through the configured mirror with its origin denied',
+  )
+  assert(
+    mirrorRequests.includes(`${toolsPath}/${toolsName}`),
+    'native tools must pass through the configured mirror with their origin denied',
   )
   mirrorOnline = false
   const offlineRequests = mirrorRequests.length

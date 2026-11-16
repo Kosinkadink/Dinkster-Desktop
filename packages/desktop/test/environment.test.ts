@@ -516,10 +516,60 @@ describe('Desktop dinkster-env command client', () => {
     }))
 
     const input = await channelTools({ root, operation: 'setup', channel: 'nightly', mirrors: [root] }, '0.2.0')
-    expect(input).toEqual({ label, manifest: join(release, 'tools-manifest.json'), sha256, release })
+    expect(input).toEqual({ label, manifest: join(release, 'tools-manifest.json'), sha256, release, mirrorReleases: [release] })
     const tools = await acquireEnvironmentTools(input!)
     roots.push(tools.directory)
     expect(await readFile(tools.python, 'utf8')).toBe('fixture')
+
+    // A complete mirror serves unchanged signed bytes with the origin denied.
+    const origin = `https://releases.dinkster.org/tools/${label}`
+    const envelope = channelFixture({
+      format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0',
+      tools: { label, manifest: `${origin}/tools-manifest.json`, sha256, release: origin },
+    })
+    await writeFile(join(root, 'channels', 'nightly.json'), envelope)
+    vi.stubGlobal('fetch', async () => { throw new Error('official tools origin denied') })
+    const mirrored = await channelTools({ root, operation: 'setup', channel: 'nightly', mirrors: [root] }, '0.2.0')
+    const mirroredTools = await acquireEnvironmentTools(mirrored!)
+    roots.push(mirroredTools.directory)
+    expect(await readFile(mirroredTools.python, 'utf8')).toBe('fixture')
+    expect(await readFile(join(root, 'channels', 'nightly.json'), 'utf8')).toBe(envelope)
+
+    const mirror = 'http://127.0.0.1:43001/snapshot'
+    const requests: string[] = []
+    let corruption = 'manifest'
+    let originOnline = false
+    vi.stubGlobal('fetch', async (location: URL) => {
+      const url = String(location)
+      requests.push(url)
+      if (url.startsWith(origin) && !originOnline) throw new Error('official tools origin denied')
+      if (url.endsWith('/channels/nightly.json')) return new Response(envelope)
+      if (url.endsWith('/tools-manifest.json')) return new Response(url.startsWith(mirror) && corruption === 'manifest' ? '{}' : manifest)
+      if (url.endsWith(`/${row.name}`)) {
+        const bytes = Buffer.from(archive)
+        if (url.startsWith(mirror) && corruption === 'archive') bytes[10] = 1
+        return new Response(bytes)
+      }
+      throw new Error(`unexpected tools request: ${url}`)
+    })
+    for (corruption of ['manifest', 'archive']) {
+      requests.length = 0
+      const ordered = await channelTools({ root, operation: 'setup', channel: 'nightly', mirrors: ['http://not-loopback.example', mirror, root] }, '0.2.0')
+      const verified = await acquireEnvironmentTools(ordered!)
+      roots.push(verified.directory)
+      expect(await readFile(verified.python, 'utf8')).toBe('fixture')
+      expect(requests).toContain(`${mirror}/tools/${label}/tools-manifest.json`)
+      if (corruption === 'archive') expect(requests).toContain(`${mirror}/tools/${label}/${row.name}`)
+      expect(requests.some((url) => url.startsWith(origin))).toBe(false)
+      const corruptOnly = await channelTools({ root, operation: 'setup', channel: 'nightly', mirrors: [mirror] }, '0.2.0')
+      await expect(acquireEnvironmentTools(corruptOnly!)).rejects.toThrow('official tools origin denied')
+    }
+    originOnline = true
+    const fallback = await channelTools({ root, operation: 'setup', channel: 'nightly', mirrors: [mirror] }, '0.2.0')
+    const originTools = await acquireEnvironmentTools(fallback!)
+    roots.push(originTools.directory)
+    expect(await readFile(originTools.python, 'utf8')).toBe('fixture')
+    expect(requests).toContain(`${origin}/${row.name}`)
 
     await expect(acquireEnvironmentTools({ ...input!, sha256: 'b'.repeat(64) })).rejects.toThrow('checksum mismatch')
     const wrongSize = independentManifest([{ ...artifacts[0]!, size: row.size + 1 }, ...artifacts.slice(1)])

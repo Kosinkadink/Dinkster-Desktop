@@ -135,6 +135,7 @@ export interface DesktopBridge {
   fileCapabilities(backendUrl: string): Promise<DesktopFileCapabilities>
   chooseDirectory(backendUrl: string): Promise<string | undefined>
   revealFile(backendUrl: string, asset: DesktopAssetIdentity): Promise<{ mode: 'selected' | 'folder' }>
+  revealModelLocation(backendUrl: string, location: string): Promise<void>
   resolveDroppedFile(backendUrl: string, file: File): Promise<DesktopDroppedFileResult>
   exportSnapshot(): Promise<string | undefined>
   importSnapshot(): Promise<unknown | undefined>

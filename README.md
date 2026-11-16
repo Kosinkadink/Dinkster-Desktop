@@ -9,7 +9,7 @@ project install-root bindings, and supervisor-per-generation swap contract.
 The desktop shell and its external inputs are pinned independently:
 
 - `scripts/frontend-release.json` pins the permanent `dinkster-frontend` PyPI wheel by version, URL, size and SHA256. `pnpm prepare:frontend` verifies that wheel and copies its application and native branding into the package inputs. The engine selects the same published frontend release; Desktop does not build frontend source.
-- The checkout-development backend selection is pinned in `packages/desktop/src/backend-release.json`. Shell packaging does not download or embed that source archive or native wheels. Project generations are acquired by the environment tools, not by the shell's package builder.
+- `packages/desktop/src/backend-release.json` records backend identity in shell release metadata. Shell packaging does not download or embed that source archive or native wheels. Project generations are acquired by the environment tools, not by the shell's package builder; Desktop has no separate single-engine launcher.
 
 A local build uses the same verified release as CI, without a frontend checkout:
 

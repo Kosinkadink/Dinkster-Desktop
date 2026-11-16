@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { revealModelLocation } from '../src/local-files.js'
 import { WslHost, wslLinuxPath, wslLocation, wslWindowsPath } from '../src/wsl.js'
 import { EnvironmentClient } from '../src/environment.js'
 import type { EnvironmentToolsInput } from '../src/environment-tools.js'
@@ -15,6 +20,12 @@ vi.mock('node:path', async (original) => {
   return { ...module, isAbsolute: module.win32.isAbsolute }
 })
 
+const filesystemPaths = vi.hoisted(() => new Map<string, string>())
+vi.mock('node:fs/promises', async (original) => {
+  const actual = await original<typeof import('node:fs/promises')>()
+  return { ...actual, realpath: (path: string) => actual.realpath(filesystemPaths.get(path) ?? path) }
+})
+
 const execute = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', async (original) => {
   const module = await original<typeof import('node:child_process')>()
@@ -28,6 +39,7 @@ afterEach(() => {
   Object.defineProperty(process, 'platform', platform)
   Object.defineProperty(process, 'arch', architecture)
   execute.mockReset()
+  filesystemPaths.clear()
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
 })
@@ -86,6 +98,32 @@ describe('private WSL readiness', () => {
     } finally {
       await client.dispose()
       delete trustedChannelKeys[keyId]
+    }
+  })
+
+  it('opens the registered WSL model folder through its private disk and rechecks revocation', async () => {
+    const service = host()
+    const root = await mkdtemp(join(tmpdir(), 'dinkster-wsl-model-location-'))
+    const folder = join(root, 'copied models')
+    await mkdir(folder)
+    // Map only the expected Windows UNC lookup onto a real test directory.
+    filesystemPaths.set(`\\\\wsl.localhost\\${service.distribution}\\home\\dinkster\\models\\copied`, folder)
+    let revoke = false
+    let requests = 0
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({
+      locations: revoke && ++requests === 2 ? [] : [{ id: 'copied', path: '/home/dinkster/models/copied' }],
+    })))
+    const opened: string[] = []
+    const shell = { openExternal: async (url: string) => { opened.push(url) } }
+    try {
+      await revealModelLocation('http://127.0.0.1:5011', 'copied', 'studio', shell, async () => {}, service.distribution)
+      expect(opened).toEqual([pathToFileURL(await realpath(folder)).href])
+      opened.length = 0
+      revoke = true
+      await expect(revealModelLocation('http://127.0.0.1:5011', 'copied', 'studio', shell, async () => {}, service.distribution)).rejects.toThrow('copy the server path')
+      expect(opened).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 

@@ -88,6 +88,7 @@ export async function revealModelLocation(
   project: string,
   shell: { openExternal(url: string): Promise<void> },
   authorize: () => Promise<void>,
+  distribution?: string,
 ): Promise<void> {
   if (typeof location !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(location) || !validProjectId(project)) throw new Error('Invalid model location identity')
   const lookup = async (): Promise<string> => {
@@ -100,9 +101,11 @@ export async function revealModelLocation(
     if (!Array.isArray(body?.locations)) throw new Error('Model location verification failed')
     const matches = body.locations.filter((row) => row?.id === location)
     const path = matches.length === 1 ? matches[0]?.path : undefined
-    if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) throw new Error('Model location is no longer registered')
+    if (typeof path !== 'string' || path.includes('\0')) throw new Error('Model location is no longer registered')
+    const hostPath = distribution ? wslWindowsPath(distribution, path) : path
+    if (!isAbsolute(hostPath)) throw new Error('Model location is no longer registered')
     await authorize()
-    return path
+    return hostPath
   }
   try {
     const path = await lookup()

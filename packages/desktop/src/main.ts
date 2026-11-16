@@ -1114,7 +1114,7 @@ ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) =>
 })
 ipcMain.handle('desktop:reveal-model-location', async (event, backendUrl: unknown, location: unknown) => {
   const context = await managedFiles(event, backendUrl)
-  await revealModelLocation(context.url, location, context.project, shell, context.revalidate)
+  await revealModelLocation(context.url, location, context.project, shell, context.revalidate, context.distribution)
 })
 ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown, path: unknown) => {
   const context = await managedFiles(event, backendUrl)

@@ -38,11 +38,154 @@ jobs:
     uses: ./.github/workflows/release-desktop.yml
     with:
       source: ${{ needs.validate.outputs.source }}
-      signed: true
-    secrets: inherit
+
+  sign:
+    needs: [validate, build]
+    if: github.repository == 'Kosinkadink/Dinkster-Desktop'
+    environment: desktop-signing
+    runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
+    timeout-minutes: 90
+    env:
+      DESKTOP_SOURCE_COMMIT: ${{ needs.validate.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ env.DESKTOP_SOURCE_COMMIT }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+        env:
+          NODE_OPTIONS: --max-semi-space-size=64
+          npm_config_workspace_concurrency: '1'
+      - name: Package and sign with Artifact Signing
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: pnpm --filter @dinkster/desktop package:win:signed
+      - run: pnpm --filter @dinkster/desktop verify:update-feed
+      - name: Verify publisher signatures
+        run: |
+          $expected = (node --input-type=module -e "import('./packages/desktop/electron-builder.signed.mjs').then((m) => process.stdout.write(m.currentPublisher))")
+          if ($LASTEXITCODE -ne 0 -or !$expected) { throw 'Could not read the expected publisher' }
+          $files = @(
+            Get-ChildItem packages/desktop/release -Filter '*-Setup.exe'
+            Get-Item 'packages/desktop/release/win-unpacked/Dinkster Desktop.exe'
+          )
+          if ($files.Count -ne 2) { throw 'Expected one installer and one application executable' }
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            $subject = $signature.SignerCertificate.Subject
+            if ($signature.Status -ne 'Valid') { throw "$($file.Name): signature status $($signature.Status)" }
+            if (!$signature.TimeStamperCertificate) { throw "$($file.Name): signature is not timestamped" }
+            if ($subject -notlike "CN=$expected,*") { throw "$($file.Name): unexpected publisher $subject" }
+            $line = "$($file.Name): valid signature from $subject, timestamped by $($signature.TimeStamperCertificate.Subject)"
+            Write-Host $line
+            "- $line" >> $env:GITHUB_STEP_SUMMARY
+          }
+      - name: Install into an isolated directory
+        run: |
+          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $destination = Join-Path $env:RUNNER_TEMP dinkster-installed
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          "DINKSTER_DESKTOP_EXECUTABLE=$(Join-Path $destination 'Dinkster Desktop.exe')" >> $env:GITHUB_ENV
+          "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
+          node packages/desktop/scripts/verify-installed-tools.mjs (Join-Path $destination resources)
+          if ($LASTEXITCODE -ne 0) { throw 'Installed tools verification failed' }
+      - run: pnpm --filter @dinkster/desktop verify:installed
+      - name: Preserve verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-install-verification
+          path: |
+            ${{ runner.temp }}/dinkster-first-run/*.png
+            ${{ runner.temp }}/dinkster-first-run/*.json
+          if-no-files-found: ignore
+      - name: Record source and artifact checksums
+        run: |
+          $package = Get-Content packages/desktop/package.json -Raw | ConvertFrom-Json
+          $pin = Get-Content packages/desktop/src/backend-release.json -Raw | ConvertFrom-Json
+          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          @{ repository = 'Kosinkadink/Dinkster-Desktop'; commit = $env:DESKTOP_SOURCE_COMMIT; version = $package.version; backend = $pin; archive = $installer.Name; sha256 = $hash; size = $installer.Length } | ConvertTo-Json -Depth 8 | Set-Content packages/desktop/release/desktop-release.json
+          "$hash  $($installer.Name)" | Set-Content packages/desktop/release/SHA256SUMS
+      - name: Keep the signed installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-signed-installer
+          path: |
+            packages/desktop/release/*-Setup.exe
+            packages/desktop/release/desktop-release.json
+            packages/desktop/release/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error
+      - name: Acquire the verified unsigned Mac installer
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-unsigned-macos-arm64
+          path: packages/desktop/macos-release
+      - name: Acquire the verified Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux-installer
+          path: packages/desktop/linux-release
+      - name: Verify the Mac installer belongs to this release
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('packages/desktop/package.json', 'utf8'));
+          const metadata = JSON.parse(readFileSync('packages/desktop/macos-release/desktop-macos-release.json', 'utf8'));
+          assert.equal(metadata.repository, 'Kosinkadink/Dinkster-Desktop');
+          assert.equal(metadata.commit, process.env.DESKTOP_SOURCE_COMMIT);
+          assert.equal(metadata.version, pkg.version);
+          assert.deepEqual(metadata.frontend, JSON.parse(readFileSync('scripts/frontend-release.json', 'utf8')));
+          const name = `Dinkster-Desktop-${pkg.version}-macos-arm64.zip`;
+          assert.equal(metadata.archive, name);
+          assert.deepEqual(metadata.platform, { os: 'macos', arch: 'arm64' });
+          assert.equal(metadata.signed, false);
+          assert.equal(metadata.notarized, false);
+          const bytes = readFileSync(`packages/desktop/macos-release/${name}`);
+          const sha256 = createHash('sha256').update(bytes).digest('hex');
+          assert.equal(metadata.size, bytes.length);
+          assert.equal(metadata.sha256, sha256);
+          appendFileSync('packages/desktop/release/SHA256SUMS', `${sha256}  ${name}\n`);
+          JS
+      - name: Keep the complete verified release asset set
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-assets
+          path: |
+            packages/desktop/release/*-Setup.exe
+            packages/desktop/release/desktop-release.json
+            packages/desktop/release/SHA256SUMS
+            packages/desktop/release/latest.yml
+            packages/desktop/release/rc.yml
+            packages/desktop/release/*-Setup.exe.blockmap
+            packages/desktop/macos-release/*-macos-arm64.zip
+            packages/desktop/macos-release/desktop-macos-release.json
+            packages/desktop/linux-release/*.AppImage
+            packages/desktop/linux-release/*-linux.yml
+            packages/desktop/linux-release/desktop-linux-release.json
+          retention-days: 14
+          if-no-files-found: error
 
   publish:
-    needs: [validate, build]
+    needs: [validate, sign]
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 15
     permissions:

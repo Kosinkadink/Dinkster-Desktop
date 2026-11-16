@@ -6,13 +6,22 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
-      - '.github/workflows/full-validation.yml'
-      - 'packages/desktop/src/release.ts'
-      - 'packages/desktop/src/backend-release.json'
-      - 'packages/desktop/src/engine.ts'
+      - '.github/workflows/**'
+      - 'packages/desktop/src/**'
+      - 'packages/desktop/resources/**'
+      - 'packages/desktop/scripts/**'
+      - 'packages/desktop/electron-builder*.mjs'
+      - 'packages/desktop/package.json'
+      - 'packages/e2e/scripts/verify-environment-client.mjs'
       - 'packages/e2e/scripts/verify-desktop-install.mjs'
-  schedule:
-    - cron: '31 11 * * *'
+      - 'packages/e2e/scripts/verify-development-project.mjs'
+      - 'packages/e2e/scripts/verify-stable-project.mjs'
+      - 'packages/e2e/scripts/verify-shell-update.mjs'
+      - 'packages/e2e/scripts/advance-update-installer.ps1'
+      - 'scripts/**'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+      - 'pnpm-workspace.yaml'
   workflow_dispatch:
   workflow_call:
 
@@ -24,34 +33,85 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  linux:
-    name: format, types, unit tests and Linux build
+  changes:
+    name: Select Desktop acceptance checks
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
-    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      installers: ${{ steps.paths.outputs.installers }}
+      smoke: ${{ steps.paths.outputs.smoke }}
+      development: ${{ steps.paths.outputs.development }}
+      stable: ${{ steps.paths.outputs.stable }}
+      updater: ${{ steps.paths.outputs.updater }}
+      windows: ${{ steps.paths.outputs.windows }}
     steps:
       - uses: actions/checkout@v4
         with:
-          clean: true
+          fetch-depth: 0
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.28.8
-          dest: ${{ runner.tool_cache }}/setup-pnpm
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26.12.0
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
+      - name: Select checks from changed paths
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          installers=false smoke=false development=false stable=false updater=false
+          if [ "$EVENT" != pull_request ]; then
+            installers=true smoke=true development=true
+          fi
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}"; then
+            git diff --name-only "$BASE" "$HEAD" > "$RUNNER_TEMP/desktop-changed-paths"
+          else
+            git ls-files > "$RUNNER_TEMP/desktop-changed-paths"
+          fi
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/*|pnpm-lock.yaml|package.json|pnpm-workspace.yaml)
+                installers=true smoke=true development=true stable=true ;;
+              packages/desktop/src/*|packages/desktop/resources/*)
+                stable=true ;;
+            esac
+            case "$path" in
+              packages/desktop/scripts/*|packages/desktop/electron-builder*.mjs|packages/desktop/src/environment-tools-release.json|scripts/*)
+                installers=true ;;
+            esac
+            case "$path" in
+              packages/desktop/src/release.ts|packages/desktop/src/backend-release.json|packages/desktop/src/engine.ts|packages/e2e/scripts/verify-desktop-install.mjs|packages/e2e/scripts/verify-environment-client.mjs)
+                smoke=true ;;
+            esac
+            case "$path" in
+              packages/desktop/src/environment.ts|packages/desktop/src/environment-tools-release.json|packages/desktop/src/main.ts|packages/desktop/src/project-dialog.ts|packages/desktop/src/projects.ts|packages/desktop/src/window-chrome.ts|packages/desktop/resources/projects.html|packages/e2e/scripts/verify-development-project.mjs)
+                development=true ;;
+            esac
+            case "$path" in
+              packages/e2e/scripts/verify-stable-project.mjs)
+                stable=true ;;
+            esac
+            case "$path" in
+              .github/workflows/windows-update.yml|.github/workflows/full-validation.yml|packages/desktop/src/shell-updater.ts|packages/desktop/src/update-feed.ts|packages/desktop/package.json|packages/desktop/electron-builder*.mjs|packages/desktop/scripts/verify-update-feed.mjs|packages/e2e/scripts/verify-shell-update.mjs|packages/e2e/scripts/advance-update-installer.ps1)
+                updater=true ;;
+            esac
+          done < "$RUNNER_TEMP/desktop-changed-paths"
+          if [ "$EVENT" != pull_request ]; then stable=false; fi
+          windows=false
+          if $installers || $smoke || $development || $stable; then windows=true; fi
+          for key in installers smoke development stable updater windows; do
+            printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_OUTPUT"
+          done
+
+  installers:
+    needs: changes
+    if: needs.changes.outputs.installers == 'true'
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      source: ${{ github.sha }}
 
   desktop-smoke:
     name: packaged Linux Desktop startup
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: needs.changes.outputs.smoke == 'true'
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
     timeout-minutes: 30
     steps:
@@ -91,7 +151,8 @@ jobs:
 
   windows-package:
     name: Windows package and update feed
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: ${{ fromJSON(vars.CI_RUNNERS).windows }}
     timeout-minutes: 20
     defaults:
@@ -112,8 +173,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm --filter @dinkster/desktop package:win
       - run: pnpm --filter @dinkster/desktop verify:update-feed
@@ -160,6 +219,10 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
           "DINKSTER_DESKTOP_EXECUTABLE=$(Join-Path $destination 'Dinkster Desktop.exe')" >> $env:GITHUB_ENV
           "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
+      - name: Verify installed tools
+        run: |
+          node packages/desktop/scripts/verify-installed-tools.mjs (Join-Path $env:RUNNER_TEMP 'dinkster-installed/resources')
+          if ($LASTEXITCODE -ne 0) { throw 'Installed tools verification failed' }
       - run: pnpm --filter @dinkster/desktop verify:installed
         env:
           DINKSTER_ACCELERATOR: cpu
@@ -183,38 +246,19 @@ jobs:
             if ($process.ExitCode -ne 0) { throw "Uninstaller exited $($process.ExitCode)" }
           }
 
-  main-status:
-    name: main validation status
-    if: ${{ always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    needs: [linux, desktop-smoke, windows-package, windows-installed]
-    runs-on: ${{ fromJSON(vars.CI_RUNNERS).linux }}
-    timeout-minutes: 2
-    steps:
-      - name: Record every lane result
-        env:
-          LINUX_RESULT: ${{ needs.linux.result }}
-          SMOKE_RESULT: ${{ needs.desktop-smoke.result }}
-          WINDOWS_RESULT: ${{ needs.windows-package.result }}
-          INSTALLED_RESULT: ${{ needs.windows-installed.result }}
-        run: |
-          printf '{"commit":"%s","lanes":{"linux":"%s","desktop-smoke":"%s","windows-package":"%s","windows-installed":"%s"}}\n' \
-            "$GITHUB_SHA" "$LINUX_RESULT" "$SMOKE_RESULT" "$WINDOWS_RESULT" "$INSTALLED_RESULT" > main-validation-status.json
-          cat main-validation-status.json >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: main-validation-status
-          path: main-validation-status.json
-          retention-days: 30
-          if-no-files-found: error
-      - name: Require every lane to pass
-        env:
-          LINUX_RESULT: ${{ needs.linux.result }}
-          SMOKE_RESULT: ${{ needs.desktop-smoke.result }}
-          WINDOWS_RESULT: ${{ needs.windows-package.result }}
-          INSTALLED_RESULT: ${{ needs.windows-installed.result }}
-        run: |
-          test "$LINUX_RESULT" = success
-          test "$SMOKE_RESULT" = success
-          test "$WINDOWS_RESULT" = success
-          test "$INSTALLED_RESULT" = success
+  development:
+    needs: [changes, windows-package]
+    if: needs.changes.outputs.development == 'true'
+    uses: ./.github/workflows/development-project.yml
+
+  stable-project:
+    needs: [changes, windows-package]
+    if: needs.changes.outputs.stable == 'true'
+    uses: ./.github/workflows/verify-stable-project.yml
+    with:
+      shared_installer: true
+
+  updater:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.updater == 'true'
+    uses: ./.github/workflows/windows-update.yml

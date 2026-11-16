@@ -15,6 +15,7 @@ on:
       - 'packages/e2e/scripts/verify-environment-client.mjs'
       - 'packages/e2e/scripts/verify-desktop-install.mjs'
       - 'packages/e2e/scripts/verify-development-project.mjs'
+      - 'packages/e2e/scripts/verify-services.mjs'
       - 'packages/e2e/scripts/verify-stable-project.mjs'
       - 'packages/e2e/scripts/forward-mirror.mjs'
       - 'packages/e2e/scripts/verify-shell-update.mjs'
@@ -46,6 +47,7 @@ jobs:
       stable: ${{ steps.paths.outputs.stable }}
       updater: ${{ steps.paths.outputs.updater }}
       windows: ${{ steps.paths.outputs.windows }}
+      services: ${{ steps.paths.outputs.services }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,7 +61,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          installers=false smoke=false development=false stable=false updater=false
+          installers=false smoke=false development=false stable=false updater=false services=false
           if [ "$EVENT" != pull_request ]; then
             installers=true smoke=true development=true
           fi
@@ -95,11 +97,15 @@ jobs:
               .github/workflows/windows-update.yml|.github/workflows/full-validation.yml|pnpm-lock.yaml|package.json|pnpm-workspace.yaml|packages/desktop/src/shell-updater.ts|packages/desktop/src/update-feed.ts|packages/desktop/package.json|packages/desktop/electron-builder*.mjs|packages/desktop/scripts/verify-update-feed.mjs|packages/e2e/scripts/verify-shell-update.mjs|packages/e2e/scripts/advance-update-installer.ps1)
                 updater=true ;;
             esac
+            case "$path" in
+              .github/workflows/verify-services.yml|packages/desktop/src/*|packages/e2e/scripts/verify-services.mjs|scripts/frontend-release.json)
+                if [ "$EVENT" = pull_request ]; then services=true; fi ;;
+            esac
           done < "$RUNNER_TEMP/desktop-changed-paths"
           if [ "$EVENT" != pull_request ]; then stable=false; fi
           windows=false
-          if $installers || $smoke || $development || $stable; then windows=true; fi
-          for key in installers smoke development stable updater windows; do
+          if $installers || $smoke || $development || $stable || $services; then windows=true; fi
+          for key in installers smoke development stable updater windows services; do
             printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_OUTPUT"
           done
 
@@ -262,6 +268,11 @@ jobs:
     needs: [changes, windows-package]
     if: needs.changes.outputs.development == 'true'
     uses: ./.github/workflows/development-project.yml
+
+  services:
+    needs: [changes, windows-package]
+    if: needs.changes.outputs.services == 'true'
+    uses: ./.github/workflows/verify-services.yml
 
   stable-project:
     needs: [changes, windows-package]

@@ -163,17 +163,13 @@ console.log(JSON.stringify(row));
   )
   env.DINKSTER_DESKTOP_DATA = join(scratch, 'desktop')
   env.DINKSTER_ENV = command
-  // The command stub does not write project settings. Supply its channel input
-  // so packaged builds exercise the same version-floor preflight as production.
+  // The command stub does not write project settings. Replay the exact public
+  // Stable envelope, authenticated by the app's production root without a test key.
   const mirror = join(scratch, 'mirror')
   await mkdir(join(mirror, 'channels'), { recursive: true })
   await writeFile(
     join(mirror, 'channels/stable.json'),
-    JSON.stringify({
-      format: 'dinkster.channel/1',
-      minimumDesktopVersion: '0.2.0',
-      signature: null,
-    }),
+    await readFile(new URL('./stable-channel.txt', import.meta.url)),
   )
   await mkdir(join(scratch, 'installation'))
   await writeFile(

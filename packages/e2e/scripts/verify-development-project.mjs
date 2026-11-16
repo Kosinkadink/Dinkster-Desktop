@@ -217,6 +217,10 @@ try {
   receipt.health = await health.json()
   assert.equal(receipt.health.ok, true)
   assert.equal(receipt.health.compositionState.failed, 0)
+  const nodes = await fetch(`http://127.0.0.1:${port}/api/nodes?wire=1`)
+  assert(nodes.ok)
+  receipt.services = (await nodes.json()).dinkster?.services
+  assert.equal(receipt.services?.name, 'production')
   const python =
     process.platform === 'win32'
       ? join(generation, 'python/python.exe')

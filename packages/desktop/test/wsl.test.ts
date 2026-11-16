@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { crc32 } from 'node:zlib'
 import { revealModelLocation } from '../src/local-files.js'
 import { WslHost, wslLinuxPath, wslLocation, wslWindowsPath } from '../src/wsl.js'
 import { EnvironmentClient } from '../src/environment.js'
@@ -17,13 +18,34 @@ vi.mock('../src/channel-signatures.js', async (original) => {
 
 vi.mock('node:path', async (original) => {
   const module = await original<typeof import('node:path')>()
-  return { ...module, isAbsolute: module.win32.isAbsolute }
+  return { ...module, isAbsolute: (path: string) => module.win32.isAbsolute(path) || module.posix.isAbsolute(path),
+    join: (...parts: string[]) => parts[0]?.startsWith('\\\\') ? module.win32.join(...parts) : module.join(...parts) }
 })
 
 const filesystemPaths = vi.hoisted(() => new Map<string, string>())
+const guestDisk = vi.hoisted(() => ({ prefix: '', root: '', map(path: unknown): unknown {
+  return typeof path === 'string' && this.prefix && path.startsWith(this.prefix)
+    ? this.root + path.slice(this.prefix.length).replaceAll('\\', '/') : path
+} }))
 vi.mock('node:fs/promises', async (original) => {
   const actual = await original<typeof import('node:fs/promises')>()
-  return { ...actual, realpath: (path: string) => actual.realpath(filesystemPaths.get(path) ?? path) }
+  const mapped = Object.fromEntries(['copyFile', 'lstat', 'mkdir', 'mkdtemp', 'readFile', 'readdir', 'rename', 'rm', 'stat', 'writeFile']
+    .map((name) => [name, (...args: unknown[]) => Reflect.apply(actual[name as keyof typeof actual] as Function, actual, args.map((arg) => guestDisk.map(arg)))]))
+  return { ...actual, ...mapped,
+    mkdtemp: async (path: string) => {
+      const local = await actual.mkdtemp(guestDisk.map(path) as string)
+      return path.startsWith('\\\\') ? guestDisk.prefix + local.slice(guestDisk.root.length).replaceAll('/', '\\') : local
+    },
+    realpath: (path: string) => actual.realpath(filesystemPaths.get(path) ?? path) }
+})
+vi.mock('node:fs', async (original) => {
+  const actual = await original<typeof import('node:fs')>()
+  return { ...actual, createReadStream: (path: string) => actual.createReadStream(guestDisk.map(path) as string) }
+})
+vi.mock('extract-zip', async (original) => {
+  const actual = await original<{ default: typeof import('extract-zip') }>()
+  return { default: (path: string, options: Parameters<typeof actual.default>[1]) => actual.default(guestDisk.map(path) as string,
+    { ...options, dir: guestDisk.map(options.dir) as string }) }
 })
 
 const execute = vi.hoisted(() => vi.fn())
@@ -40,6 +62,8 @@ afterEach(() => {
   Object.defineProperty(process, 'arch', architecture)
   execute.mockReset()
   filesystemPaths.clear()
+  guestDisk.prefix = ''
+  guestDisk.root = ''
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
 })
@@ -54,6 +78,72 @@ describe('private WSL readiness', () => {
     Object.defineProperty(process, 'arch', { value: 'x64' })
     return new WslHost('C:\\Desktop data', tools)
   }
+
+  it('keeps fallback and selected tools interpreters usable across overlapping operations', async () => {
+    host()
+    const root = await mkdtemp(join(tmpdir(), 'dinkster-wsl-tools-'))
+    const archive = Buffer.from('UEsDBBQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAcHl0aG9uL2Jpbi9weXRob24zZml4dHVyZVBLAwQUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAHB5dGhvbi9weXRob24uZXhlZml4dHVyZVBLAQIUAxQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAAAAAAAAAAADtgQAAAABweXRob24vYmluL3B5dGhvbjNQSwECFAMUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAAAAAAAAAAAA7YE3AAAAcHl0aG9uL3B5dGhvbi5leGVQSwUGAAAAAAIAAgB/AAAAbQAAAAAA', 'base64')
+    const pins: EnvironmentToolsInput[] = []
+    for (const [index, version] of ['1.2.3', '1.2.4'].entries()) {
+      const release = join(root, version)
+      await mkdir(release)
+      const bytes = Buffer.from(archive)
+      const marker = Buffer.from(index === 0 ? 'fallbak' : 'selectd')
+      for (let offset = 0; offset < bytes.length - 4; offset++) {
+        if (bytes.readUInt32LE(offset) === 0x04034b50) bytes.writeUInt32LE(crc32(marker), offset + 14)
+        if (bytes.readUInt32LE(offset) === 0x02014b50) bytes.writeUInt32LE(crc32(marker), offset + 16)
+        if (bytes.subarray(offset, offset + 7).toString() === 'fixture') marker.copy(bytes, offset)
+      }
+      const artifacts = ['linux-x86_64', 'windows-x86_64', 'macos-arm64'].map((platform) => ({
+        name: `dinkster-tools-${platform}.zip`, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+      }))
+      await writeFile(join(release, artifacts[0]!.name), bytes)
+      const manifest = JSON.stringify({ format: 'dinkster.tools/1', repository: 'Kosinkadink/Dinkster', commit: 'a'.repeat(40),
+        version, builtAt: '2026-11-05T18:36:00Z', label: `2026-11-05-${version}`, artifacts })
+      await writeFile(join(release, 'tools-manifest.json'), manifest)
+      pins.push({ manifest: join(release, 'tools-manifest.json'), release, sha256: createHash('sha256').update(manifest).digest('hex') })
+    }
+    const service = new WslHost('C:\\Desktop data', pins[0]!)
+    guestDisk.prefix = `\\\\wsl.localhost\\${service.distribution}`
+    guestDisk.root = join(root, 'disk')
+    let resume!: () => void
+    let entered!: () => void
+    const paused = new Promise<void>((resolve) => { entered = resolve })
+    const released = new Promise<void>((resolve) => { resume = resolve })
+    execute.mockImplementation(async (file: string, args: string[]) => {
+      expect(file).toBe('wsl.exe')
+      const output = (text: string) => ({ stdout: Buffer.from(text) })
+      if (args[0] === '--version') return output('WSL version')
+      if (args[0] === '--help') return output('--name --location')
+      if (args[0] === '--list') return output(service.distribution)
+      if (args.includes('/etc/dinkster-desktop-owner')) return output(service.distribution)
+      if (args.includes('/etc/wsl.conf')) return output('[automount]\nenabled=false\n[interop]\nenabled=false\nappendWindowsPath=false\n[user]\ndefault=dinkster')
+      if (args.includes('uname')) return output('wsl2')
+      if (args.includes('/usr/bin/bwrap') || args.includes('! mountpoint -q /mnt/c') || args.includes('dinkster-tools')) return output('')
+      const python = args.find((arg) => arg.endsWith('/bin/python3'))
+      if (!python) throw new Error('unexpected guest command')
+      const interpreter = join(guestDisk.root, python)
+      expect(await readFile(interpreter, 'utf8')).toBe(args.at(-1) === 'selected' ? 'selectd' : 'fallbak')
+      if (args.at(-1) === 'hold') {
+        entered()
+        await released
+        // A supervisor can need its interpreter again after another pin installs.
+        expect(await readFile(interpreter, 'utf8')).toBe('fallbak')
+      }
+      return output('usable')
+    })
+    const active = service.run(['hold'])
+    try {
+      await Promise.race([paused, active])
+      expect(await service.run(['selected'], pins[1]!)).toBe('usable')
+      resume()
+      expect(await active).toBe('usable')
+      expect(await service.run(['fallback'])).toBe('usable')
+    } finally {
+      resume()
+      try { await active } finally { await rm(root, { recursive: true, force: true }) }
+    }
+  })
 
   it.each([false, true])('ignores host tools overrides for WSL with channel selection %s', async (channelSelected) => {
     host()

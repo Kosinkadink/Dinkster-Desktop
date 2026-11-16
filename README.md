@@ -43,8 +43,11 @@ Windows executable interop.
 **Use Linux project folder** selects a project under `/home/dinkster/projects`
 on that distribution's disk. Its environment tools, library and engines run
 through `wsl.exe` as a non-root Linux user, with verified Linux tools acquired
-from the pinned tools release or the selected channel's tools pin. Windows
-Python and development-executable overrides do not run WSL projects.
+from the pinned tools release or the selected channel's tools pin. Each immutable
+tools pin has a separate cache under `/home/dinkster/tools`, so switching pins
+does not remove an interpreter still used by another operation or supervisor.
+These WSL caches retain acquired pins; the native tools cache policy is unchanged.
+Windows Python and development-executable overrides do not run WSL projects.
 
 **Copy Windows model folder** makes a separate copy under
 `/home/dinkster/models`; originals stay in place. Links and existing destination

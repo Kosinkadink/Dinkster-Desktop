@@ -152,7 +152,7 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
   private async installTools(input: EnvironmentToolsInput): Promise<string> {
     const status = await this.status()
     if (!status.ready) throw new Error(status.detail)
-    const tools = await acquireEnvironmentTools({ ...input, platform: 'linux', cacheRoot: wslWindowsPath(this.distribution, `${home}/tools`) })
+    const tools = await acquireEnvironmentTools({ ...input, platform: 'linux', cacheRoot: wslWindowsPath(this.distribution, `${home}/tools/${input.sha256}`) })
     const python = wslLinuxPath(this.distribution, tools.python)
     const target = posix.dirname(posix.dirname(python))
     await this.command('dinkster', '/bin/sh', '-ec', 'chmod -R u+rwX "$1"; chmod u+x "$1"/bin/*', 'dinkster-tools', target)

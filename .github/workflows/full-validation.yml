@@ -50,6 +50,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Select checks from changed paths
         id: paths
         env:
@@ -90,7 +91,7 @@ jobs:
                 stable=true ;;
             esac
             case "$path" in
-              .github/workflows/windows-update.yml|.github/workflows/full-validation.yml|packages/desktop/src/shell-updater.ts|packages/desktop/src/update-feed.ts|packages/desktop/package.json|packages/desktop/electron-builder*.mjs|packages/desktop/scripts/verify-update-feed.mjs|packages/e2e/scripts/verify-shell-update.mjs|packages/e2e/scripts/advance-update-installer.ps1)
+              .github/workflows/windows-update.yml|.github/workflows/full-validation.yml|pnpm-lock.yaml|package.json|pnpm-workspace.yaml|packages/desktop/src/shell-updater.ts|packages/desktop/src/update-feed.ts|packages/desktop/package.json|packages/desktop/electron-builder*.mjs|packages/desktop/scripts/verify-update-feed.mjs|packages/e2e/scripts/verify-shell-update.mjs|packages/e2e/scripts/advance-update-installer.ps1)
                 updater=true ;;
             esac
           done < "$RUNNER_TEMP/desktop-changed-paths"
@@ -106,7 +107,7 @@ jobs:
     if: needs.changes.outputs.installers == 'true'
     uses: ./.github/workflows/release-desktop.yml
     with:
-      source: ${{ github.sha }}
+      source: ${{ github.event.pull_request.head.sha || github.sha }}
 
   desktop-smoke:
     name: packaged Linux Desktop startup
@@ -119,6 +120,7 @@ jobs:
         with:
           clean: true
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -163,6 +165,7 @@ jobs:
         with:
           clean: true
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8
@@ -196,6 +199,7 @@ jobs:
         with:
           clean: true
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: pnpm/action-setup@v4
         with:
           version: 11.28.8

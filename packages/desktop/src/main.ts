@@ -28,6 +28,7 @@ import {
 import { ShellUpdater } from './shell-updater.js'
 import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
 import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } from './environment.js'
+import { WslHost, wslLinuxPath, wslLocation } from './wsl.js'
 import toolsRelease from './environment-tools-release.json' with { type: 'json' }
 import { detectNvidiaGpus, planVariant } from './hardware.js'
 import { createWebHost, type WebHost } from './web-host.js'
@@ -64,6 +65,13 @@ let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
 const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
+const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirectory()
+const wslHost = new WslHost(dataDirectory, {
+  label: toolsRelease.label,
+  manifest: `https://releases.dinkster.org/tools/${toolsRelease.label}/tools-manifest.json`,
+  sha256: toolsRelease.manifest.sha256,
+  release: `https://releases.dinkster.org/tools/${toolsRelease.label}`,
+})
 if (app.isPackaged && process.platform === 'win32') {
   process.env['DINKSTER_MXC_EXECUTABLE'] = join(process.resourcesPath, 'sandbox', 'wxc-exec.exe')
 }
@@ -72,7 +80,7 @@ const environmentClient = new EnvironmentClient(undefined, undefined, undefined,
   sha256: toolsRelease.manifest.sha256,
   release: join(process.resourcesPath, 'tools'),
   cacheRoot: join(app.getPath('userData'), 'environment-tools'),
-} : undefined, app.isPackaged ? app.getVersion() : undefined)
+} : undefined, app.isPackaged ? app.getVersion() : undefined, wslHost)
 let pendingProjectPlan: { token: string; project: DesktopProject; request: EnvironmentRequest } | undefined
 const windows = new Map<string, BrowserWindow>()
 const redockingWindows = new Set<string>()
@@ -85,7 +93,6 @@ const pendingDeepLinks = new Map<string, DesktopDeepLink[]>()
 const remoteWorkerFileGrants = new RemoteWorkerFileGrants()
 let lifecycleLease: LifecycleLease | undefined
 let quitting = false
-const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirectory()
 const updateFeed = process.env['DINKSTER_UPDATE_FEED_URL']
 const shellUpdater = new ShellUpdater({ target: autoUpdater, dataDirectory, currentVersion: app.getVersion(), updateFeed, packaged: app.isPackaged,
   diagnostic: (message) => { void shellLog.append(message) },
@@ -212,7 +219,7 @@ function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
 }
 
 async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unknown): Promise<{
-  url: string; project: string; revalidate(): Promise<void>
+  url: string; project: string; distribution?: string; revalidate(): Promise<void>
 }> {
   if (quitting) throw new Error('Desktop is shutting down')
   const parent = BrowserWindow.fromWebContents(event.sender)
@@ -255,7 +262,8 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
       await checkBinding()
     }
     await revalidate()
-    return { url, project: folderProject, revalidate }
+    const location = wslLocation(root)
+    return { url, project: folderProject, revalidate, ...(location ? { distribution: location.distribution } : {}) }
   }
   trustedIpc(event)
   throw new Error('Native file access requires a bound project-managed local engine')
@@ -289,6 +297,29 @@ async function createProjectManager(): Promise<void> {
   await projectWindow.loadFile(projectDialogPath)
 }
 
+ipcMain.handle('desktop:wsl-status', async (event) => {
+  trustedProjectIpc(event)
+  return wslHost.status()
+})
+ipcMain.handle('desktop:wsl-prepare', (event) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  return wslHost.prepare()
+}))
+ipcMain.handle('desktop:wsl-project-root', async (event, id: unknown) => {
+  trustedProjectIpc(event)
+  if (!validProjectId(id)) throw new Error('Invalid WSL project id')
+  const status = await wslHost.status()
+  if (!status.ready) throw new Error(status.detail)
+  return wslHost.projectRoot(id)
+})
+ipcMain.handle('desktop:wsl-copy-models', (event) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  const result = await dialog.showOpenDialog(projectWindow!, { title: 'Copy a Windows model folder to the private WSL disk', properties: ['openDirectory'] })
+  trustedProjectIpc(event)
+  const path = result.filePaths[0]
+  return result.canceled || !path ? undefined : wslHost.copyModels(path)
+}))
+
 ipcMain.handle('desktop:projects-list', async (event) => {
   trustedProjectIpc(event)
   const projects = await readProjects(dataDirectory)
@@ -318,8 +349,9 @@ ipcMain.handle('desktop:projects-inspect', (event, input: EnvironmentRequest) =>
     ...(input.channel === undefined ? {} : { channel: input.channel }),
     ...(input.mirrors === undefined ? {} : { mirrors: input.mirrors }) }
   const result = await environmentClient.run(request)
-  const hardware = await detectNvidiaGpus()
-  const plan = planVariant((result.variants ?? []).map((entry) => entry.manifest), hardware, input.gpus ?? [], process.platform)
+  const wsl = wslLocation(request.root)
+  const hardware = wsl ? await wslHost.hardware() : await detectNvidiaGpus()
+  const plan = planVariant((result.variants ?? []).map((entry) => entry.manifest), hardware, input.gpus ?? [], wsl ? 'linux' : process.platform)
   return { result, hardware, plan }
 }))
 
@@ -1061,11 +1093,11 @@ ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) =
   let context: Awaited<ReturnType<typeof managedFiles>>
   try { context = await managedFiles(event, backendUrl) }
   catch { return { nativeFolderChoice: false, reveal: false, resolvePath: false } }
-  const { url, project, revalidate } = context
+  const { url, project, revalidate, distribution } = context
   const resolvePath = await dropResolutionSupported(url)
   let exact = false
   try {
-    await assetLocations(url, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project)
+    await assetLocations(url, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project, distribution)
     exact = true
   } catch { /* Folder choice does not depend on exact-file lookup support. */ }
   await revalidate()
@@ -1077,24 +1109,25 @@ ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) =>
   if (!parent) throw new Error('The requesting window is no longer available')
   const result = await chooseDirectory(app.isPackaged, () => dialog.showOpenDialog(parent, { title: 'Choose an existing asset folder', properties: ['openDirectory'] }))
   await context.revalidate()
-  return result.canceled ? undefined : result.filePaths[0]
+  const path = result.filePaths[0]
+  return result.canceled || !path ? undefined : context.distribution ? wslLinuxPath(context.distribution, path) : path
 })
 ipcMain.handle('desktop:reveal-model-location', async (event, backendUrl: unknown, location: unknown) => {
   const context = await managedFiles(event, backendUrl)
-  await revealModelLocation(context.url, location, context.project, shell, context.revalidate)
+  await revealModelLocation(context.url, location, context.project, shell, context.revalidate, context.distribution)
 })
 ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown, path: unknown) => {
   const context = await managedFiles(event, backendUrl)
-  return resolveDroppedPath(context.url, path, context.project, context.revalidate)
+  return resolveDroppedPath(context.url, path, context.project, context.revalidate, context.distribution)
 })
 ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: unknown) => {
   const context = await managedFiles(event, backendUrl)
-  const locations = await assetLocations(context.url, asset, context.project)
+  const locations = await assetLocations(context.url, asset, context.project, context.distribution)
   const location = locations[0]
   if (!location) throw new Error('No verified local copy exists in this project; copy the server path instead')
   return revealGrantedFile(location.path, [location.root], shell, async () => {
     await context.revalidate()
-    const active = await assetLocations(context.url, asset, context.project)
+    const active = await assetLocations(context.url, asset, context.project, context.distribution)
     if (!active.some((item) => item.path === location.path && item.root === location.root)) {
       throw new Error('The local asset location is no longer authorized')
     }

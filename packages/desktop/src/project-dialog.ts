@@ -1,10 +1,16 @@
 import type { DesktopProject, DesktopProjects } from './projects.js'
-import type { EnvironmentRequest, EnvironmentResult } from './environment.js'
+import type { EnvironmentRequest, EnvironmentResult, SandboxReadiness } from './environment.js'
 import type { HardwareDetection, VariantPlan } from './hardware.js'
+import type { WslStatus } from './wsl.js'
 
 export interface ProjectDialogBridge {
+  wslStatus(): Promise<WslStatus>
+  prepareWsl(): Promise<WslStatus>
+  wslProjectRoot(id: string): Promise<string>
+  copyWslModels(): Promise<string | undefined>
   list(): Promise<DesktopProjects>
   save(project: DesktopProject): Promise<void>
+  sandbox(root: string): Promise<SandboxReadiness | undefined>
   remove(projectId: string): Promise<void>
   open(projectId: string, engineId: string): Promise<void>
   inspect(request: EnvironmentRequest): Promise<{ result: EnvironmentResult; hardware: HardwareDetection; plan: VariantPlan }>
@@ -28,7 +34,15 @@ function field(id: string): string {
   return document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`#${id}`)!.value.trim()
 }
 
+function isWslRoot(root: string): boolean {
+  const path = root.replaceAll('\\', '/').toLowerCase()
+  return path.startsWith('//wsl.localhost/dinkster-desktop-') || path.startsWith('//wsl$/dinkster-desktop-')
+}
+
 function localProject(): DesktopProject {
+  if ((field('local-host') === 'wsl2') !== isWslRoot(field('local-root'))) {
+    throw new Error('Choose a project folder on the selected engine host. For WSL2, use the Linux project folder button.')
+  }
   const channel = field('local-channel')
   if (channel !== 'stable' && channel !== 'nightly') throw new Error('unsupported channel')
   const existing = savedProjects.find((project) => project.id === field('local-project'))
@@ -38,6 +52,7 @@ function localProject(): DesktopProject {
   return {
     id: existing?.id ?? newProjectId, name: field('local-name'), channel, root: field('local-root'),
     engines: [...(existing?.engines.filter((entry) => entry.id !== engineId) ?? []), engine],
+    sandboxPacks: document.querySelector<HTMLInputElement>('#local-sandbox')!.checked,
     ...(field('local-kind') === 'development' ? { development: {
       engine: field('development-engine'),
       packs: field('development-packs').split('\n').map((path) => path.trim()).filter(Boolean),
@@ -195,6 +210,47 @@ document.querySelector<HTMLFormElement>('#create')!.addEventListener('submit', (
   })
 })
 
+let sandboxCheck = 0
+let sandboxAvailable = false
+
+function resetSandbox(): void {
+  sandboxCheck++
+  sandboxAvailable = false
+  const toggle = document.querySelector<HTMLInputElement>('#local-sandbox')!
+  toggle.disabled = !toggle.checked
+  document.querySelector<HTMLElement>('#sandbox-detail')!.textContent = 'Install or select an engine, then check sandbox availability.'
+}
+
+async function checkSandbox(): Promise<void> {
+  const check = ++sandboxCheck
+  sandboxAvailable = false
+  const root = field('local-root')
+  const toggle = document.querySelector<HTMLInputElement>('#local-sandbox')!
+  const detail = document.querySelector<HTMLElement>('#sandbox-detail')!
+  // Keep a saved request checked when unavailable; only the user may turn it off.
+  toggle.disabled = !toggle.checked
+  detail.textContent = 'Checking the selected engine sandbox prerequisites...'
+  try {
+    const readiness = await bridge.sandbox(root)
+    if (check !== sandboxCheck || root !== field('local-root')) return
+    sandboxAvailable = readiness?.available === true
+    toggle.disabled = !sandboxAvailable && !toggle.checked
+    detail.textContent = readiness?.detail ?? 'The selected engine does not report pack sandbox readiness. Update the engine and environment tools first.'
+  } catch (error) {
+    if (check !== sandboxCheck || root !== field('local-root')) return
+    toggle.disabled = !toggle.checked
+    detail.textContent = `Pack sandboxing is not available: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+document.querySelector<HTMLInputElement>('#local-sandbox')!.addEventListener('change', (event) => {
+  const toggle = event.currentTarget as HTMLInputElement
+  if (!sandboxAvailable) { toggle.checked = false; toggle.disabled = true }
+})
+
+document.querySelector<HTMLButtonElement>('#check-sandbox')!.addEventListener('click', () => { void checkSandbox() })
+document.querySelector<HTMLInputElement>('#local-root')!.addEventListener('input', resetSandbox)
+
 function populateLocal(project: DesktopProject | undefined, engineId?: string): void {
   planToken = undefined
   document.querySelector<HTMLElement>('#plan-panel')!.hidden = true
@@ -214,10 +270,48 @@ function populateLocal(project: DesktopProject | undefined, engineId?: string): 
     'development-frontend-dev': project?.development?.frontendDev ?? '',
   })) document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`)!.value = value
   document.querySelector<HTMLInputElement>('#development-frontend-remote')!.checked = project?.development?.allowFrontendDevRemote === true
+  document.querySelector<HTMLSelectElement>('#local-host')!.value = isWslRoot(project?.root ?? '') ? 'wsl2' : 'native'
+  document.querySelector<HTMLElement>('#wsl-settings')!.hidden = field('local-host') !== 'wsl2'
+  document.querySelector<HTMLInputElement>('#local-sandbox')!.checked = project?.sandboxPacks === true
+  resetSandbox()
+  if (project?.root) void checkSandbox()
   showDevelopment()
   document.querySelector<HTMLElement>('#source-settings')!.hidden = field('local-operation') !== 'source'
   clearHardware()
 }
+
+document.querySelector<HTMLSelectElement>('#local-host')!.addEventListener('change', () => {
+  document.querySelector<HTMLElement>('#wsl-settings')!.hidden = field('local-host') !== 'wsl2'
+  document.querySelector<HTMLInputElement>('#local-root')!.value = ''
+  resetSandbox()
+  clearHardware()
+})
+
+async function checkWsl(prepare = false): Promise<void> {
+  const status = prepare ? await bridge.prepareWsl() : await bridge.wslStatus()
+  document.querySelector<HTMLElement>('#wsl-status')!.textContent = status.detail
+}
+
+for (const [id, prepare] of [['wsl-check', false], ['wsl-prepare', true]] as const) {
+  document.querySelector<HTMLButtonElement>(`#${id}`)!.addEventListener('click', () => {
+    void perform(() => checkWsl(prepare))
+  })
+}
+document.querySelector<HTMLButtonElement>('#wsl-root')!.addEventListener('click', () => {
+  void perform(async () => {
+    const id = field('local-project') || newProjectId
+    document.querySelector<HTMLInputElement>('#local-root')!.value = await bridge.wslProjectRoot(id)
+    resetSandbox()
+    void checkSandbox()
+    clearHardware()
+  })
+})
+document.querySelector<HTMLButtonElement>('#wsl-copy')!.addEventListener('click', () => {
+  void perform(async () => {
+    const path = await bridge.copyWslModels()
+    if (path) message.textContent = `Models copied to ${path}. Add this Linux folder in the engine's model folder settings.`
+  })
+})
 
 function showDevelopment(): void {
   const development = field('local-kind') === 'development'
@@ -302,6 +396,7 @@ document.querySelector<HTMLFormElement>('#local')!.addEventListener('submit', (e
       root: project.root!, operation,
       ...(['setup', 'update', 'develop'].includes(operation) ? { channel: project.channel, ...(field('local-variant') ? { variant: field('local-variant') } : {}) } : {}),
       ...(['setup', 'develop'].includes(operation) ? { mirrors: field('local-mirrors').split('\n').map((mirror) => mirror.trim()).filter(Boolean), port: Number(field('local-port')), engine: field('local-engine') } : {}),
+      ...(operation === 'stop' ? { engine: field('local-engine') } : {}),
       ...(operation === 'develop' ? { development: project.development! } : {}),
       ...(['setup', 'move', 'develop'].includes(operation) && field('local-data') ? { data: field('local-data') } : {}),
       ...(operation === 'move' ? { destination: field('local-destination') } : {}),

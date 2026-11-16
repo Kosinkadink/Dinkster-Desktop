@@ -13,6 +13,7 @@ export interface DesktopProject {
   readonly name: string
   readonly channel: EnvironmentChannel
   readonly development?: DevelopmentSources
+  readonly sandboxPacks?: boolean
   readonly sourceStatus?: 'published' | 'unpublished' | 'unavailable'
   readonly root?: string
   readonly engines: readonly ProjectEngine[]
@@ -64,10 +65,12 @@ export function parseProject(value: unknown): DesktopProject {
   if (hasLocal && (typeof row['root'] !== 'string' || !isAbsolute(row['root']))) throw new Error('a local project needs an absolute install root')
   if (!hasLocal && row['root'] !== undefined) throw new Error('a remote-only project has no local install root')
   if (!hasLocal && row['development'] !== undefined) throw new Error('development sources require a local project')
+  if (row['sandboxPacks'] !== undefined && (!hasLocal || typeof row['sandboxPacks'] !== 'boolean')) throw new Error('pack sandbox preference requires a local project and a boolean')
   const development = row['development'] === undefined ? undefined : parseDevelopmentSources(row['development'])
   return {
     id: row['id'], name: row['name'].trim(), channel: row['channel'], engines,
     ...(development === undefined ? {} : { development }),
+    ...(row['sandboxPacks'] === undefined ? {} : { sandboxPacks: row['sandboxPacks'] as boolean }),
     ...(hasLocal ? { root: resolve(row['root'] as string) } : {}),
   }
 }

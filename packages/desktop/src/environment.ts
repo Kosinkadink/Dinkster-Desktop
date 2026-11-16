@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process'
 import { realpath, rm } from 'node:fs/promises'
-import { dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
 import { isIP } from 'node:net'
 import { setTimeout } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import type { VariantHardware } from './hardware.js'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
 import { channelTools } from './environment-channel.js'
+import { wslLinuxPath, wslLocation, wslWindowsPath, type WslHost } from './wsl.js'
 
 const execute = promisify(execFile)
 
@@ -35,6 +36,8 @@ export interface EnvironmentRequest {
   readonly port?: number
   readonly destination?: string
   readonly repair?: boolean
+  readonly sandbox?: boolean
+  readonly sandboxPacks?: boolean
   readonly engine?: string
   readonly gpus?: readonly string[]
   readonly packs?: readonly { readonly pack: string; readonly version: string }[]
@@ -57,6 +60,7 @@ export interface EnvironmentRequest {
 }
 
 export interface EnvironmentEngine {
+  readonly sandboxPacks?: boolean
   readonly name: string
   readonly generation: number
   readonly state: 'starting' | 'ready' | 'failed' | 'stopped'
@@ -102,8 +106,15 @@ export interface EnvironmentSpace {
   readonly reclaimabilityWarnings: readonly string[]
 }
 
-/** The command owner's dinkster.environment-result/1 response, unchanged. */
+export interface SandboxReadiness {
+  readonly format: 'dinkster.sandbox-readiness/1'
+  readonly available: boolean
+  readonly detail: string
+}
+
+/** Validated command response; WSL filesystem paths use the native host spelling. */
 export interface EnvironmentResult {
+  readonly sandbox?: SandboxReadiness
   readonly format: 'dinkster.environment-result/1'
   readonly operation: EnvironmentOperation
   readonly sourceDescription?: string
@@ -337,6 +348,14 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     if (!Number.isInteger(request.port) || request.port < 1 || request.port > 65535) throw new Error('invalid supervisor port')
     args.push('--port', String(request.port))
   }
+  if (request.sandbox !== undefined) {
+    if (request.operation !== 'doctor' || typeof request.sandbox !== 'boolean' || request.repair) throw new Error('sandbox readiness requires a read-only doctor query')
+    if (request.sandbox) args.push('--sandbox')
+  }
+  if (request.sandboxPacks !== undefined) {
+    if (request.operation !== 'start' || typeof request.sandboxPacks !== 'boolean') throw new Error('pack sandbox selection requires start and a boolean')
+    if (request.sandboxPacks) args.push('--sandbox-packs')
+  }
   if (request.repair) args.push('--repair')
   if (request.engine !== undefined) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(request.engine)) throw new Error('invalid engine name')
@@ -411,10 +430,25 @@ function validSpace(value: unknown, root: string): boolean {
     })
 }
 
-function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentResult {
+function resultFrom(text: string, operation: EnvironmentOperation, distribution?: string): EnvironmentResult {
   const value: unknown = JSON.parse(text)
   if (!value || typeof value !== 'object') throw new Error('invalid dinkster-env response')
   const row = value as Record<string, unknown>
+  if (distribution) {
+    const hostPath = (path: unknown): unknown => typeof path === 'string' ? wslWindowsPath(distribution, path) : path
+    row['root'] = hostPath(row['root'])
+    const packPlan = row['packPlan']
+    if (packPlan && typeof packPlan === 'object') {
+      const plan = packPlan as Record<string, unknown>
+      plan['root'] = hostPath(plan['root'])
+    }
+    const space = row['space']
+    if (space && typeof space === 'object') {
+      const measurement = space as Record<string, unknown>
+      measurement['project'] = hostPath(measurement['project'])
+      measurement['store'] = hostPath(measurement['store'])
+    }
+  }
   if (row['format'] !== 'dinkster.environment-result/1' || row['operation'] !== operation
     || !['planned', 'applied', 'clean', 'drift', 'error', ...(operation === 'cleanup' ? ['complete', 'deferred', 'disabled', 'coalesced'] : [])].includes(String(row['status']))
     || typeof row['root'] !== 'string' || !isAbsolute(row['root'])
@@ -443,6 +477,7 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
       return typeof entry['name'] === 'string' && Number.isInteger(entry['generation']) && Number(entry['generation']) > 0
         && ['starting', 'ready', 'failed', 'stopped'].includes(String(entry['state']))
         && (entry['url'] === undefined || typeof entry['url'] === 'string')
+        && (entry['sandboxPacks'] === undefined || typeof entry['sandboxPacks'] === 'boolean')
     })))
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
@@ -516,6 +551,11 @@ function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentR
     && (row['status'] !== 'applied' || row['current'] === null || !Array.isArray(row['engines']))) {
     throw new Error('unsupported dinkster-env pack activation response')
   }
+  if (row['sandbox'] !== undefined) {
+    const sandbox = row['sandbox'] as Record<string, unknown> | null
+    if (!sandbox || sandbox['format'] !== 'dinkster.sandbox-readiness/1'
+      || typeof sandbox['available'] !== 'boolean' || typeof sandbox['detail'] !== 'string' || !sandbox['detail'].trim()) throw new Error('invalid pack sandbox readiness response')
+  }
   return value as EnvironmentResult
 }
 
@@ -535,6 +575,7 @@ export class EnvironmentClient {
     } : undefined,
     private readonly bundledTools: EnvironmentToolsInput | undefined = undefined,
     private readonly desktopVersion: string | undefined = undefined,
+    private readonly wsl: WslHost | undefined = undefined,
   ) {}
 
   async dispose(): Promise<void> {
@@ -562,6 +603,29 @@ export class EnvironmentClient {
     let prefix = this.prefix
     const selectedTools = this.desktopVersion ? await channelTools(request, this.desktopVersion) : undefined
     const toolsInput = this.toolsInput ?? (this.executable === 'dinkster-env' && !process.env['DINKSTER_ENV'] && !process.env['DINKSTER_TOOLS_PYTHON'] ? selectedTools ?? this.bundledTools : undefined)
+    const location = wslLocation(request.root)
+    if (location) {
+      if (!this.wsl || process.platform !== 'win32' || location.distribution.toLowerCase() !== this.wsl.distribution.toLowerCase()) {
+        throw new Error('This WSL project belongs to another Desktop installation')
+      }
+      const args = commandArgs.map((arg) => isAbsolute(arg) ? wslLinuxPath(this.wsl!.distribution, arg) : arg)
+      let stdout: string
+      try { stdout = await this.wsl.run(args, selectedTools) }
+      catch (error) {
+        const output = (error as { stdout?: string }).stdout
+        if (output) {
+          const result = resultFrom(output, request.operation, this.wsl.distribution)
+          throw new Error(result.error ?? result.plan.join('\n'))
+        }
+        throw error
+      }
+      const result = resultFrom(stdout, request.operation, this.wsl.distribution)
+      if (wslLinuxPath(this.wsl.distribution, result.root) !== location.path) throw new Error('dinkster-env returned a different project root')
+      if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))
+      return { ...result, root: request.root,
+        ...(result.packPlan ? { packPlan: { ...result.packPlan, root: request.root } } : {}),
+        ...(result.space ? { space: { ...result.space, project: request.root } } : {}) }
+    }
     if (toolsInput) {
       const key = JSON.stringify(toolsInput)
       let pending = this.tools.get(key)
@@ -576,9 +640,11 @@ export class EnvironmentClient {
     const environment = { ...process.env }
     if (prefix[0] === '-I') {
       if (!isAbsolute(executable)) throw new Error('the tools interpreter must be absolute')
-      // Engine descendants must not inherit host Python configuration either.
+      // Keep system tools such as bubblewrap discoverable, but prefer bundled Python.
+      const hostPath = Object.entries(environment).find(([key]) => key.toLowerCase() === 'path')?.[1]
       for (const key of Object.keys(environment)) if (key.toLowerCase() === 'path' || /^PYTHON/i.test(key)) delete environment[key]
-      environment['PATH'] = process.platform === 'win32' ? join(dirname(executable), 'Scripts') : dirname(executable)
+      const toolsPath = [dirname(executable), ...(process.platform === 'win32' ? [join(dirname(executable), 'Scripts')] : [])].join(delimiter)
+      environment['PATH'] = hostPath ? `${toolsPath}${delimiter}${hostPath}` : toolsPath
       // Python retains this prefix when loading native extensions from deep caches.
       executable = toNamespacedPath(executable)
     }
@@ -601,7 +667,9 @@ export class EnvironmentClient {
           // Start rechecks the current generation and exact assignment on each
           // attempt. Never replay an approved generation-changing operation.
           if (confirmed && request.operation === 'start' && result.status === 'error'
-            && result.error === `another environment writer holds ${request.root}` && Date.now() < writerDeadline) {
+            && (result.error === `another environment writer holds ${request.root}`
+              || result.error?.startsWith(`another environment writer holds ${request.root} (operation=`))
+            && Date.now() < writerDeadline) {
             await setTimeout(250)
             continue
           }

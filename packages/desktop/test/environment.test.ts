@@ -76,6 +76,27 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('uses engine sandbox readiness and forwards only an explicit start request', async () => {
+    const { root, client } = await commandFixture()
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    const sandbox = { format: 'dinkster.sandbox-readiness/1', available: false, detail: 'bwrap not found; install bubblewrap' }
+    await writeFile(script, original.replace('root, current: 2,', `root, current: 2, sandbox: ${JSON.stringify(sandbox)},`))
+    expect((await client.run({ root, operation: 'doctor', sandbox: true })).sandbox).toEqual(sandbox)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'doctor', '--sandbox', '--json'])
+    for (const sandboxPacks of [true, false]) {
+      await client.run({ root, operation: 'start', sandboxPacks }, true)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'start', ...(sandboxPacks ? ['--sandbox-packs'] : []), '--json', '--yes'])
+    }
+    await expect(client.run({ root, operation: 'update', sandboxPacks: true })).rejects.toThrow('requires start')
+    await expect(client.run({ root, operation: 'doctor', sandbox: true, repair: true })).rejects.toThrow('read-only')
+    await writeFile(script, original.replace('root, current: 2,', 'root, current: 2, sandbox: {format:"dinkster.sandbox-readiness/1",available:"true",detail:"bad"},'))
+    await expect(client.run({ root, operation: 'doctor', sandbox: true })).rejects.toThrow('invalid pack sandbox')
+    await writeFile(script, original.replace("name:'main',generation:2,", "name:'main',generation:2,sandboxPacks:'true',"))
+    await expect(client.run({ root, operation: 'status' })).rejects.toThrow('unsupported dinkster-env response')
+    await client.dispose()
+  })
+
   it('preserves the trusted native sandbox executor for doctor and start', async () => {
     const { root, client } = await commandFixture()
     const executor = join(root, 'resources', 'sandbox', 'wxc-exec.exe')
@@ -537,14 +558,24 @@ describe('Desktop dinkster-env command client', () => {
     await expect(stat(join(root, 'escape'))).rejects.toThrow()
   })
 
-  it.each(['linux', 'win32', 'darwin'])('checks tools ZIP duplicates using %s path identity', async (platform) => {
+  it.each([
+    { host: 'linux', platform: 'linux' },
+    { host: 'win32', platform: 'win32' },
+    { host: 'darwin', platform: 'darwin' },
+    { host: 'win32', platform: 'linux' },
+  ] as const)('checks $platform tools ZIP identity on $host', async ({ host, platform }) => {
     const root = await mkdtemp(join(tmpdir(), 'desktop-tools-'))
     roots.push(root)
+    await writeFile(join(root, 'CaseSensitiveCheck'), '')
+    const caseSensitive = await stat(join(root, 'casesensitivecheck')).then(() => false, (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+      return true
+    })
     // Stored ZIP: both interpreter paths and the published 2621A/2621a terminfo pair.
     const pair = Buffer.from('UEsDBBQAAAAAAAAAIQC3JjKwCwAAAAsAAAASAAAAcHl0aG9uL2Jpbi9weXRob24zaW50ZXJwcmV0ZXJQSwMEFAAAAAAAAAAhALcmMrALAAAACwAAABEAAABweXRob24vcHl0aG9uLmV4ZWludGVycHJldGVyUEsDBBQAAAAAAAAAIQCc319uBQAAAAUAAAAdAAAAcHl0aG9uL3NoYXJlL3Rlcm1pbmZvLzIvMjYyMUF1cHBlclBLAwQUAAAAAAAAACEAI3uaDgUAAAAFAAAAHQAAAHB5dGhvbi9zaGFyZS90ZXJtaW5mby8yLzI2MjFhbG93ZXJQSwECFAMUAAAAAAAAACEAtyYysAsAAAALAAAAEgAAAAAAAAAAAAAA7YEAAAAAcHl0aG9uL2Jpbi9weXRob24zUEsBAhQDFAAAAAAAAAAhALcmMrALAAAACwAAABEAAAAAAAAAAAAAAO2BOwAAAHB5dGhvbi9weXRob24uZXhlUEsBAhQDFAAAAAAAAAAhAJzfX24FAAAABQAAAB0AAAAAAAAAAAAAAO2BdQAAAHB5dGhvbi9zaGFyZS90ZXJtaW5mby8yLzI2MjFBUEsBAhQDFAAAAAAAAAAhACN7mg4FAAAABQAAAB0AAAAAAAAAAAAAAO2BtQAAAHB5dGhvbi9zaGFyZS90ZXJtaW5mby8yLzI2MjFhUEsFBgAAAAAEAAQAFQEAAPUAAAAAAA==', 'base64')
     const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!
     const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch')!
-    Object.defineProperty(process, 'platform', { value: platform })
+    Object.defineProperty(process, 'platform', { value: host })
     Object.defineProperty(process, 'arch', { value: platform === 'darwin' ? 'arm64' : 'x64' })
     try {
       const os = { linux: 'linux', win32: 'windows', darwin: 'macos' }[platform]
@@ -556,8 +587,11 @@ describe('Desktop dinkster-env command client', () => {
         const bytes = independentManifest(toolsArtifacts({ name, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }))
         const manifest = join(root, 'tools-manifest.json')
         await writeFile(manifest, bytes)
-        const pending = acquireEnvironmentTools({ manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root })
-        if (platform === 'linux' && !exactDuplicate) {
+        const pending = acquireEnvironmentTools({ manifest, sha256: createHash('sha256').update(bytes).digest('hex'), release: root,
+          ...(host !== platform ? { platform: 'linux' as const } : {}) })
+        if (platform === 'linux' && !caseSensitive) {
+          await expect(pending).rejects.toThrow('case-sensitive filesystem')
+        } else if (platform === 'linux' && !exactDuplicate) {
           const tools = await pending
           roots.push(tools.directory)
           expect(await readFile(tools.python, 'utf8')).toBe('interpreter')
@@ -683,6 +717,11 @@ describe('Desktop dinkster-env command client', () => {
     const original = await readFile(script, 'utf8')
     for (const [operation, confirmed, error, succeeds] of [
       ['start', true, `another environment writer holds ${root}`, true],
+      ['start', true, `another environment writer holds ${root} (operation=unknown, pid=unknown, acquiredAt=unknown)`, true],
+      ['start', true, `another environment writer holds ${root} (operation=update, pid=1234, acquiredAt=1794831050350215400)`, true],
+      ['start', false, `another environment writer holds ${root} (operation=update, pid=1234, acquiredAt=1794831050350215400)`, false],
+      ['update', true, `another environment writer holds ${root} (operation=update, pid=1234, acquiredAt=1794831050350215400)`, false],
+      ['start', true, `another environment writer holds ${join(root, 'runtime')} (operation=update, pid=1234, acquiredAt=1794831050350215400)`, false],
       ['start', false, `another environment writer holds ${root}`, false],
       ['update', true, `another environment writer holds ${root}`, false],
       ['start', true, `another environment writer holds ${join(root, 'runtime')}`, false],

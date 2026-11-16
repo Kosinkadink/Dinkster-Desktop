@@ -13,14 +13,21 @@ permissions:
 
 jobs:
   services:
-    name: Packaged launch services - ${{ matrix.os }}
+    name: Packaged launch services - ${{ matrix.os }} - ${{ matrix.host }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            host: native
+          - os: windows-latest
+            host: native
+          - os: windows-2025
+            host: wsl2
     env:
+      DINKSTER_SERVICES_HOST: ${{ matrix.host }}
       CUDA_VISIBLE_DEVICES: ''
       DINKSTER_ACCELERATOR: cpu
     steps:
@@ -39,6 +46,16 @@ jobs:
         with:
           toolchain: 1.93
       - run: pnpm install --frozen-lockfile
+      - name: Prepare hosted WSL2 runtime
+        if: matrix.host == 'wsl2'
+        shell: pwsh
+        run: |
+          wsl --update --web-download
+          if ($LASTEXITCODE -ne 0) { throw 'WSL update failed' }
+          wsl --set-default-version 2
+          if ($LASTEXITCODE -ne 0) { throw 'WSL2 selection failed' }
+          wsl --version
+          if ($LASTEXITCODE -ne 0) { throw 'WSL2 unavailable' }
       - name: Package Linux AppImage
         if: runner.os == 'Linux'
         run: pnpm --filter @dinkster/desktop package:linux
@@ -70,7 +87,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: desktop-services-${{ matrix.os }}
+          name: desktop-services-${{ matrix.os }}-${{ matrix.host }}
           path: |
             ${{ runner.temp }}/desktop-services-proof/*.png
             ${{ runner.temp }}/desktop-services-proof/*.json

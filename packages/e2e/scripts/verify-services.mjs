@@ -12,6 +12,8 @@ import { _electron as electron, chromium, expect } from '@playwright/test'
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const sourceOnly = process.env.DINKSTER_SERVICES_SOURCE_ONLY === '1'
+const wsl = process.env.DINKSTER_SERVICES_HOST === 'wsl2'
+if (wsl) assert.equal(process.platform, 'win32')
 if (!sourceOnly)
   assert.equal(
     process.env.RUNNER_ENVIRONMENT,
@@ -63,6 +65,7 @@ const fixtureUrl = `http://127.0.0.1:${fixture.address().port}`
 const receipt = {
   sourceOnly,
   platform: process.platform,
+  host: wsl ? 'wsl2' : 'native',
   launches: [],
   installations: [],
   engines: [],
@@ -413,11 +416,34 @@ try {
       const port = portProbe.address().port
       await new Promise((done) => portProbe.close(done))
       const manager = await launch('production')
+      let guest
+      if (wsl) {
+        await manager.evaluate(async () => {
+          const status = await window.dinksterProjects.prepareWsl()
+          if (!status.ready) throw new Error(status.detail)
+        })
+        const { WslHost } = await import('../../desktop/dist/wsl.js')
+        const pin = JSON.parse(
+          await readFile(
+            join(
+              repository,
+              'packages/desktop/src/environment-tools-release.json',
+            ),
+            'utf8',
+          ),
+        )
+        guest = new WslHost(env.DINKSTER_DESKTOP_DATA, {
+          manifest: `https://releases.dinkster.org/tools/${pin.label}/tools-manifest.json`,
+          release: `https://releases.dinkster.org/tools/${pin.label}`,
+          sha256: pin.manifest.sha256,
+        })
+        receipt.distribution = guest.distribution
+      }
       const project = {
         id: channel,
         name: `${channel} services check`,
         channel,
-        root: join(root, channel),
+        root: guest ? guest.projectRoot(channel) : join(root, channel),
         engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [], port }],
       }
       const request = {
@@ -426,8 +452,8 @@ try {
         channel,
         mirrors: ['https://releases.dinkster.org'],
         port,
-        variant: process.platform === 'win32' ? 'win-cpu' : 'linux-cpu',
-        data: join(root, 'store'),
+        variant: process.platform === 'win32' && !wsl ? 'win-cpu' : 'linux-cpu',
+        data: guest ? guest.projectRoot('store') : join(root, 'store'),
         engine: 'main',
         gpus: [],
       }
@@ -461,24 +487,46 @@ try {
         ).version,
       )
       assert(toolsInput)
-      const tools = await acquireEnvironmentTools({
-        ...toolsInput,
-        cacheRoot: join(root, 'foreign-tools'),
-      })
-      const status = await promisify(execFile)(
-        tools.python,
-        [
-          '-I',
-          '-m',
-          'dinkster_supervisor.environment',
-          '--root',
-          project.root,
-          'status',
-          '--json',
-        ],
-        { env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
-      )
-      const installed = JSON.parse(status.stdout)
+      const tools = guest
+        ? undefined
+        : await acquireEnvironmentTools({
+            ...toolsInput,
+            cacheRoot: join(root, 'foreign-tools'),
+          })
+      async function runTools(args, services = 'production') {
+        if (guest) {
+          const { wslLinuxPath } = await import('../../desktop/dist/wsl.js')
+          return JSON.parse(
+            await guest.run(
+              [
+                '--root',
+                wslLinuxPath(guest.distribution, project.root),
+                ...args,
+              ],
+              toolsInput,
+              services,
+            ),
+          )
+        }
+        const result = await promisify(execFile)(
+          tools.python,
+          [
+            '-I',
+            '-m',
+            'dinkster_supervisor.environment',
+            '--root',
+            project.root,
+            ...args,
+          ],
+          {
+            env: { ...env, DINKSTER_SERVICES: services },
+            timeout: 120_000,
+            maxBuffer: 4 * 1024 * 1024,
+          },
+        )
+        return JSON.parse(result.stdout)
+      }
+      const installed = await runTools(['status', '--json'])
       assert.equal(installed.status, 'clean')
       assert.equal(typeof installed.engine?.version, 'string')
       assert.match(installed.engine.release, /^sha256:[a-f0-9]{64}$/)
@@ -490,14 +538,8 @@ try {
           `\nStarting ${channel} ${selection}; previous: ${previous ?? 'none'}\n`,
         )
         if (previous) {
-          const result = await promisify(execFile)(
-            tools.python,
+          const result = await runTools(
             [
-              '-I',
-              '-m',
-              'dinkster_supervisor.environment',
-              '--root',
-              project.root,
               'start',
               '--engine',
               'main',
@@ -506,13 +548,9 @@ try {
               '--json',
               '--yes',
             ],
-            {
-              env: { ...env, DINKSTER_SERVICES: previous },
-              timeout: 120_000,
-              maxBuffer: 4 * 1024 * 1024,
-            },
+            previous,
           )
-          assert.equal(JSON.parse(result.stdout).status, 'applied')
+          assert.equal(result.status, 'applied')
           const foreign = await fetch(
             `http://127.0.0.1:${port}/api/nodes?wire=1`,
           ).then((response) => response.json())

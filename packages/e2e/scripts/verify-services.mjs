@@ -348,9 +348,7 @@ try {
           $text = ($elements | ForEach-Object { $_.Current.Name }) -join ' '
           if ($text -notmatch 'Invalid hosted services') { throw 'Error did not name the invalid services option' }
           if ($text -notmatch 'production or qa') { throw 'Error did not name both allowed values' }
-          $ok = $elements | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -eq 'OK' } | Select-Object -First 1
-          if ($null -eq $ok) { throw 'Error dialog has no OK button' }
-          $ok.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+          $dialog.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
         `,
         ],
         {

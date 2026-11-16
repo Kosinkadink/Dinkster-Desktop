@@ -101,7 +101,9 @@ const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirecto
 let backendPort = 3639
 let selection: EngineSelection | undefined
 const updateFeed = process.env['DINKSTER_UPDATE_FEED_URL']
-const shellUpdater = new ShellUpdater({ target: autoUpdater, dataDirectory, currentVersion: app.getVersion(), updateFeed, packaged: app.isPackaged })
+const shellUpdater = new ShellUpdater({ target: autoUpdater, dataDirectory, currentVersion: app.getVersion(), updateFeed, packaged: app.isPackaged,
+  diagnostic: (message) => { void shellLog.append(message) },
+})
 const lifecycleQueue = new LifecycleQueue()
 const windowQueue = new LifecycleQueue()
 const layoutPersistenceQueue = new LifecycleQueue()
@@ -1333,6 +1335,7 @@ app.on('open-url', (event, url) => {
 
 if (primaryInstance) app.whenReady().then(async () => {
   lifecycleLease = await acquireLifecycleLease(dataDirectory)
+  await shellLog.append(JSON.stringify({ event: 'desktop-startup', version: app.getVersion(), pid: process.pid }))
   // Unsigned macOS releases cannot replace an installed app.
   const shellUpdate = process.platform === 'darwin' ? undefined : await shellUpdater.start()
   if (shellUpdate?.state === 'installing') return

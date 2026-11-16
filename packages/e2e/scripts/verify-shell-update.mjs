@@ -42,7 +42,16 @@ const server = createServer(async (request, response) => {
   const name = decodeURIComponent(
     new URL(request.url, 'http://localhost').pathname.slice(1),
   )
-  requests.push({ name, range: request.headers.range ?? null })
+  const outcome = {
+    name,
+    url: `http://127.0.0.1:${server.address().port}/${encodeURIComponent(name)}`,
+    range: request.headers.range ?? null,
+    status: null,
+  }
+  requests.push(outcome)
+  response.on('finish', () => {
+    outcome.status = response.statusCode
+  })
   if (basename(name) !== name) {
     response.writeHead(404).end()
     return
@@ -134,9 +143,10 @@ await mkdir(env.DINKSTER_DESKTOP_DATA, { recursive: true })
 await writeFile(sentinel, 'retained user data\n')
 let app
 let installerDriver
+let before
 try {
   app = await launch(executable, publicFeed)
-  const before = await app.evaluate(({ app }) => ({
+  before = await app.evaluate(({ app }) => ({
     packaged: app.isPackaged,
     version: app.getVersion(),
     pid: process.pid,
@@ -379,6 +389,17 @@ try {
           installedArtifact: artifact,
           sha256,
           requests,
+          desktopLog: await readFile(
+            join(env.DINKSTER_DESKTOP_DATA, 'logs', 'desktop.log'),
+            'utf8',
+          ),
+          installerProcesses:
+            process.platform === 'win32'
+              ? await readFile(
+                  join(root, 'installer-processes.json'),
+                  'utf8',
+                ).catch(String)
+              : undefined,
         },
         null,
         2,
@@ -389,11 +410,17 @@ try {
     )
   }
 } catch (error) {
-  const diagnostics = { error: String(error), requests }
+  const diagnostics = {
+    error: String(error),
+    before,
+    expectedVersion: expected,
+    requests,
+  }
   for (const [name, path] of Object.entries({
     marker: join(env.DINKSTER_DESKTOP_DATA, 'updates', 'shell-attempts.json'),
     lifecycle: join(env.DINKSTER_DESKTOP_DATA, 'engine', 'lifecycle.lock'),
     desktopLog: join(env.DINKSTER_DESKTOP_DATA, 'logs', 'desktop.log'),
+    installerProcesses: join(root, 'installer-processes.json'),
   })) {
     diagnostics[name] = await readFile(path, 'utf8').catch(String)
   }

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -99,6 +99,34 @@ describe('shell updater', () => {
     const installNewerTarget = target('3.0.0')
     await expect(updater(installNewerTarget, directory).start()).resolves.toMatchObject({ state: 'installing' })
     expect(installNewerTarget.quitAndInstall).toHaveBeenCalledWith(false, true)
+  })
+
+  it('clears only an already-installed pending RC even when its public feed refuses the request', async () => {
+    const directory = await dataDirectory()
+    const marker = join(directory, 'updates', 'shell-attempts.json')
+    await mkdir(join(directory, 'updates'))
+    vi.stubGlobal('fetch', async () => new Response('', { status: 403 }))
+    try {
+      for (const version of ['2.0.0-rc.10', '3.0.0-rc.1']) {
+        const pending = { version, attempts: 1 }
+        await writeFile(marker, JSON.stringify({ version: 1, pending }))
+        const diagnostics: string[] = []
+        const installed = new ShellUpdater({
+          target: target(), dataDirectory: directory, currentVersion: '2.0.0-rc.10',
+          updateFeed: undefined, packaged: true, diagnostic: (message) => diagnostics.push(message),
+        })
+        await expect(installed.start()).resolves.toMatchObject({ state: 'failed' })
+        expect(diagnostics.map((line) => JSON.parse(line))).toEqual([{
+          event: 'desktop-update-feed',
+          url: 'https://api.github.com/repos/Kosinkadink/Dinkster-Desktop/releases?per_page=100&page=1',
+          status: 403,
+        }])
+        expect(JSON.parse(await readFile(marker, 'utf8'))).toEqual(version === '2.0.0-rc.10'
+          ? { version: 1 } : { version: 1, pending })
+      }
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('fails closed when the durable retry state is corrupt', async () => {

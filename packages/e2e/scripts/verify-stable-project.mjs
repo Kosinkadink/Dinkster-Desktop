@@ -578,57 +578,6 @@ with writer_lock(Path(sys.argv[1])):
   )
   await engine.close()
 } catch (error) {
-  // Retain the controller response when Desktop's schema check hides the cause.
-  const diagnostic = await app
-    .evaluate(async ({ app }, projectRoot) => {
-      const path = process.getBuiltinModule('node:path')
-      const fs = process.getBuiltinModule('node:fs/promises')
-      const require = process
-        .getBuiltinModule('node:module')
-        .createRequire(path.join(app.getAppPath(), 'package.json'))
-      const { acquireEnvironmentTools } = require(
-        path.join(app.getAppPath(), 'dist/environment-tools.js'),
-      )
-      const pin = require(
-        path.join(app.getAppPath(), 'dist/environment-tools-release.json'),
-      )
-      const tools = await acquireEnvironmentTools({
-        manifest: path.join(process.resourcesPath, 'tools', pin.manifest.name),
-        sha256: pin.manifest.sha256,
-        release: path.join(process.resourcesPath, 'tools'),
-      })
-      try {
-        const result = process
-          .getBuiltinModule('node:child_process')
-          .spawnSync(
-            tools.python,
-            [
-              '-I',
-              '-m',
-              'dinkster_supervisor.environment',
-              '--root',
-              projectRoot,
-              'rollback',
-              '--plan',
-              '--json',
-            ],
-            { encoding: 'utf8', timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
-          )
-        return {
-          status: result.status,
-          stdout: result.stdout,
-          stderr: result.stderr,
-        }
-      } finally {
-        await fs.rm(tools.directory, { recursive: true, force: true })
-      }
-    }, projectRoot)
-    .catch((failure) => ({ error: String(failure) }))
-  await writeFile(
-    join(root, 'rollback-diagnostic.json'),
-    JSON.stringify(diagnostic, null, 2),
-  )
-  console.error('Rollback diagnostic:', diagnostic)
   await manager
     ?.screenshot({ path: join(root, 'failed.png'), fullPage: true })
     .catch(() => undefined)

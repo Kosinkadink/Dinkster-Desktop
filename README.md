@@ -30,6 +30,25 @@ approval gate later, the owner adds themselves as a required reviewer under
 Settings -> Environments -> desktop-signing; no workflow change is needed.
 The desk controls release timing through the `Release` label; the tag job creates the version ref and the publisher creates its release without moving that ref.
 
+## Windows native pack sandbox
+
+Windows packages build the MXC executor from source at commit
+`c66201839d63cae2239db5e92f1f1d6076cf5181` using Rust 1.93 and the MSVC
+x86-64 toolchain. `MXC_TELEMETRY_COMPONENT_PATH` is explicitly empty during
+the release build, so diagnostics are not routed to Microsoft. Packaging
+requires Rust and the Windows C++ build tools, in addition to Node and pnpm.
+The signed package signs the executor through the same Artifact Signing hook
+as Desktop, then records the signed bytes' SHA-256 in `mxc-build.json`.
+
+The executor, build manifest, source provenance and MIT license ship together
+under `resources/sandbox`. Packaged Windows Desktop sets the host-owned
+`DINKSTER_MXC_EXECUTABLE` to that absolute executor path before running the
+environment tools. The selected engine's readiness report and launcher use
+that same input; neither searches PATH. Missing or unsupported native
+isolation refuses a requested sandbox rather than launching it unjailed.
+The selected engine must include native Windows launcher support. Windows 10
+and Windows 11 without process isolation can use the explicit WSL2 option.
+
 ## Apple Silicon macOS
 
 Apple Silicon on macOS 14 or newer is the supported Mac target. Intel Macs

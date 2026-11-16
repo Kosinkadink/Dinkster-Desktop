@@ -8,7 +8,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { _electron as electron, expect } from '@playwright/test'
+import { _electron as electron, chromium, expect } from '@playwright/test'
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const sourceOnly = process.env.DINKSTER_SERVICES_SOURCE_ONLY === '1'
@@ -532,6 +532,114 @@ try {
         )
         await configuration(env.DINKSTER_DESKTOP_DATA)
       }
+    }
+  }
+  if (process.platform === 'win32' && !sourceOnly) {
+    receipt.primaryShortcuts = []
+    for (const selection of ['production', 'qa', 'production']) {
+      const probe = createServer()
+      await new Promise((done) => probe.listen(0, '127.0.0.1', done))
+      const port = probe.address().port
+      await new Promise((done) => probe.close(done))
+      const argumentsForLaunch = [
+        ...baseArgs,
+        `--remote-debugging-port=${port}`,
+        ...(selection === 'qa' ? ['--services=qa'] : []),
+      ]
+      const shortcutRun = promisify(execFile)(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `
+          $ErrorActionPreference = 'Stop'
+          $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($env:DINKSTER_SHORTCUT)
+          $shortcut.TargetPath = $env:DINKSTER_SHORTCUT_EXECUTABLE
+          $shortcut.Arguments = $env:DINKSTER_SHORTCUT_ARGUMENTS
+          $shortcut.Save()
+          $process = Start-Process -FilePath $env:DINKSTER_SHORTCUT -PassThru
+          $deadline = [DateTime]::UtcNow.AddSeconds(60)
+          do {
+            $process.Refresh()
+            if ($process.HasExited) { throw 'Shortcut launch exited before opening a window' }
+            $title = $process.MainWindowTitle
+            if ($title) { break }
+            Start-Sleep -Milliseconds 100
+          } while ([DateTime]::UtcNow -lt $deadline)
+          if (-not $title) { throw 'Shortcut launch did not open a titled window' }
+          if (-not $process.WaitForExit(120000)) { throw 'Shortcut launch did not shut down' }
+          @{ title = $title; exitCode = $process.ExitCode } | ConvertTo-Json -Compress
+        `,
+        ],
+        {
+          env: {
+            ...env,
+            DINKSTER_SERVICES: selection === 'qa' ? 'production' : 'qa',
+            DINKSTER_SHORTCUT: join(root, `${selection}-primary.lnk`),
+            DINKSTER_SHORTCUT_EXECUTABLE: executablePath,
+            DINKSTER_SHORTCUT_ARGUMENTS: argumentsForLaunch
+              .map((argument) => `"${argument}"`)
+              .join(' '),
+          },
+          timeout: 180_000,
+        },
+      ).then(
+        (result) => ({ result }),
+        (error) => ({ error }),
+      )
+      let browser
+      try {
+        await expect
+          .poll(
+            async () => {
+              try {
+                return (await fetch(`http://127.0.0.1:${port}/json/version`)).ok
+              } catch {
+                return false
+              }
+            },
+            { timeout: 60_000 },
+          )
+          .toBe(true)
+        browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
+        await expect
+          .poll(() => browser.contexts()[0]?.pages().length ?? 0)
+          .toBeGreaterThan(0)
+        const manager = browser.contexts()[0].pages()[0]
+        await manager
+          .getByRole('heading', { name: 'Projects', exact: true })
+          .waitFor()
+        await expect
+          .poll(() =>
+            manager.evaluate(() =>
+              getComputedStyle(
+                document.querySelector('body > header'),
+                '::after',
+              ).content.includes('[QA]'),
+            ),
+          )
+          .toBe(selection === 'qa')
+        await manager.screenshot({
+          path: join(root, `${selection}-shortcut-manager.png`),
+          fullPage: true,
+        })
+      } finally {
+        if (browser) {
+          for (const page of browser.contexts()[0].pages()) await page.close()
+          await browser.close()
+        }
+      }
+      const completed = await shortcutRun
+      if (completed.error) throw completed.error
+      const observed = JSON.parse(completed.result.stdout)
+      assert.equal(observed.exitCode, 0)
+      assert.equal(
+        observed.title,
+        selection === 'qa' ? 'Dinkster Desktop [QA]' : 'Dinkster Desktop',
+      )
+      receipt.primaryShortcuts.push({ selection, ...observed })
+      await configuration(env.DINKSTER_DESKTOP_DATA)
     }
   }
   await writeFile(join(root, 'services.json'), JSON.stringify(receipt, null, 2))

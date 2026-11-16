@@ -72,6 +72,9 @@ const wslHost = new WslHost(dataDirectory, {
   sha256: toolsRelease.manifest.sha256,
   release: `https://releases.dinkster.org/tools/${toolsRelease.label}`,
 })
+if (app.isPackaged && process.platform === 'win32') {
+  process.env['DINKSTER_MXC_EXECUTABLE'] = join(process.resourcesPath, 'sandbox', 'wxc-exec.exe')
+}
 const environmentClient = new EnvironmentClient(undefined, undefined, undefined, app.isPackaged ? {
   manifest: join(process.resourcesPath, 'tools', toolsRelease.manifest.name),
   sha256: toolsRelease.manifest.sha256,

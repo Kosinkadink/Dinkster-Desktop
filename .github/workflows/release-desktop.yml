@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/release-desktop.yml'
       - '.github/workflows/publish-desktop.yml'
@@ -38,6 +39,7 @@ concurrency:
 jobs:
   macos:
     name: Unsigned Apple Silicon installer
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -99,6 +101,7 @@ jobs:
 
   installers:
     name: ${{ matrix.os }} installer resources
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     strategy:
       fail-fast: false
       matrix:

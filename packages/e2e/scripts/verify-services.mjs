@@ -304,6 +304,74 @@ try {
     await app.close()
     app = undefined
   }
+  let invalidStderr = ''
+  const invalid = spawn(executablePath, [...baseArgs, '--services=invalid'], {
+    env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
+  })
+  invalid.stderr.on('data', (bytes) => {
+    invalidStderr += bytes.toString()
+  })
+  const invalidExited = new Promise((done, reject) => {
+    invalid.once('error', reject)
+    invalid.once('exit', done)
+  })
+  try {
+    if (process.platform === 'win32') {
+      await promisify(execFile)(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `
+          Add-Type -AssemblyName UIAutomationClient
+          $condition = New-Object System.Windows.Automation.AndCondition(
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Invalid hosted services')),
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$env:DINKSTER_INVALID_PID))
+          )
+          $deadline = (Get-Date).AddSeconds(20)
+          do {
+            $dialog = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
+            if ($null -eq $dialog) { Start-Sleep -Milliseconds 100 }
+          } while ($null -eq $dialog -and (Get-Date) -lt $deadline)
+          if ($null -eq $dialog) { throw 'Invalid services error dialog did not appear' }
+          $elements = $dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+          $text = ($elements | ForEach-Object { $_.Current.Name }) -join ' '
+          if ($text -notmatch 'production or qa') { throw 'Error did not name both allowed values' }
+          $ok = $elements | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -eq 'OK' } | Select-Object -First 1
+          if ($null -eq $ok) { throw 'Error dialog has no OK button' }
+          $ok.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        `,
+        ],
+        {
+          env: { ...env, DINKSTER_INVALID_PID: String(invalid.pid) },
+          timeout: 30_000,
+        },
+      )
+    }
+    assert.equal(
+      await Promise.race([
+        invalidExited,
+        new Promise((_, reject) => {
+          const timeout = setTimeout(
+            () => reject(new Error('Invalid services launch did not exit')),
+            30_000,
+          )
+          timeout.unref()
+        }),
+      ]),
+      1,
+    )
+    if (process.platform !== 'win32') {
+      assert.match(invalidStderr, /Invalid hosted services/)
+      assert.match(invalidStderr, /production or qa/)
+    }
+    receipt.invalidServicesRefused = true
+  } finally {
+    if (invalid.exitCode === null) invalid.kill()
+  }
   // The checkout path creates the managed workspace/window family even when
   // provisioning fails. This checks chrome, not a real checkout engine.
   for (const selection of ['production', 'qa']) {

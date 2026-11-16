@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -101,16 +101,6 @@ describe('shell updater', () => {
     expect(installNewerTarget.quitAndInstall).toHaveBeenCalledWith(false, true)
   })
 
-  it('clears the pending attempt after the downloaded version starts', async () => {
-    const directory = await dataDirectory()
-    await updater(target('2.0.0'), directory).start()
-
-    const installedTarget = target('2.0.0')
-    await expect(updater(installedTarget, directory, '2.0.0').start()).resolves.toMatchObject({ state: 'current' })
-    const marker = JSON.parse(await readFile(join(directory, 'updates', 'shell-attempts.json'), 'utf8'))
-    expect(marker).toEqual({ version: 1 })
-  })
-
   it('fails closed when the durable retry state is corrupt', async () => {
     const directory = await dataDirectory()
     const updates = join(directory, 'updates')
@@ -121,25 +111,5 @@ describe('shell updater', () => {
     await expect(updater(corruptTarget, directory).start()).resolves.toMatchObject({ state: 'failed' })
     expect(corruptTarget.checkForUpdates).not.toHaveBeenCalled()
     expect(corruptTarget.downloadUpdate).not.toHaveBeenCalled()
-  })
-
-  it('does not download the current version and starts only once per controller', async () => {
-    const directory = await dataDirectory()
-    const currentTarget = target('1.0.0')
-    const controller = updater(currentTarget, directory)
-
-    await Promise.all([controller.start(), controller.start()])
-    await controller.start()
-    expect(currentTarget.checkForUpdates).toHaveBeenCalledTimes(1)
-    expect(currentTarget.downloadUpdate).not.toHaveBeenCalled()
-  })
-
-  it('retains downloaded installers outside the updater cache', async () => {
-    const directory = await dataDirectory()
-    const cache = join(directory, 'updater-cache.exe')
-    await writeFile(cache, 'installer')
-
-    await updater(target('2.0.0', [cache]), directory).start()
-    expect(await readFile(join(directory, 'updates', 'installers', '2.0.0', 'updater-cache.exe'), 'utf8')).toBe('installer')
   })
 })

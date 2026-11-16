@@ -2,6 +2,7 @@ name: Desktop launch services acceptance
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/verify-services.yml'
       - 'packages/desktop/src/**'
@@ -13,6 +14,7 @@ permissions:
 
 jobs:
   services:
+    if: ${{ !github.event.pull_request.draft }}
     name: Packaged launch services - ${{ matrix.os }} - ${{ matrix.host }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60

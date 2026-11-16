@@ -55,6 +55,7 @@ const env = Object.fromEntries(
       ),
   ),
 )
+if (process.env.GITHUB_TOKEN) env.GITHUB_TOKEN = process.env.GITHUB_TOKEN
 env.CUDA_VISIBLE_DEVICES = ''
 env.DINKSTER_ACCELERATOR = 'cpu'
 env.DINKSTER_DESKTOP_DATA = join(scratch, 'desktop')

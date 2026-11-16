@@ -535,12 +535,46 @@ try {
         )
         assert(header.ok())
         assert.equal((await header.json()).dinkster.services.name, selection)
+        let composition
+        await expect
+          .poll(
+            async () => {
+              const response = await engine.request.get(
+                new URL('/api/composition', engine.url()).href,
+              )
+              assert(response.ok())
+              composition = await response.json()
+              return (
+                composition.composing === undefined &&
+                Object.keys(composition.packs).length > 0 &&
+                Object.values(composition.packs).every(
+                  (pack) => pack.state === 'announced',
+                )
+              )
+            },
+            { timeout: 120_000 },
+          )
+          .toBe(true)
+        await expect(engine.getByText(/loading schemas/i)).toHaveCount(0, {
+          timeout: 120_000,
+        })
+        const badge = engine.getByText('QA services', { exact: true })
+        if (channel === 'nightly' && selection === 'qa') {
+          await expect(badge).toBeVisible()
+        } else if (selection === 'production') {
+          await expect(badge).toHaveCount(0)
+          await expect(
+            engine.getByText('Custom services', { exact: true }),
+          ).toHaveCount(0)
+        }
         await mark(engine, selection, `${channel}-engine`)
         receipt.engines.push({
           channel,
           selection,
           reported: selection,
           restartedFrom: previous ?? null,
+          announcedPacks: Object.keys(composition.packs).length,
+          qaServicesBadge: await badge.isVisible(),
         })
         previous = selection
         await app.close()

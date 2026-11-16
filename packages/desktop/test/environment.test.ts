@@ -696,6 +696,11 @@ describe('Desktop dinkster-env command client', () => {
     const original = await readFile(script, 'utf8')
     for (const [operation, confirmed, error, succeeds] of [
       ['start', true, `another environment writer holds ${root}`, true],
+      ['start', true, `another environment writer holds ${root} (operation=unknown, pid=unknown, acquiredAt=unknown)`, true],
+      ['start', true, `another environment writer holds ${root} (operation=update, pid=1234, acquiredAt=1794831050350215400)`, true],
+      ['start', false, `another environment writer holds ${root} (operation=update, pid=1234, acquiredAt=1794831050350215400)`, false],
+      ['update', true, `another environment writer holds ${root} (operation=update, pid=1234, acquiredAt=1794831050350215400)`, false],
+      ['start', true, `another environment writer holds ${join(root, 'runtime')} (operation=update, pid=1234, acquiredAt=1794831050350215400)`, false],
       ['start', false, `another environment writer holds ${root}`, false],
       ['update', true, `another environment writer holds ${root}`, false],
       ['start', true, `another environment writer holds ${join(root, 'runtime')}`, false],

@@ -641,7 +641,9 @@ export class EnvironmentClient {
           // Start rechecks the current generation and exact assignment on each
           // attempt. Never replay an approved generation-changing operation.
           if (confirmed && request.operation === 'start' && result.status === 'error'
-            && result.error === `another environment writer holds ${request.root}` && Date.now() < writerDeadline) {
+            && (result.error === `another environment writer holds ${request.root}`
+              || result.error?.startsWith(`another environment writer holds ${request.root} (operation=`))
+            && Date.now() < writerDeadline) {
             await setTimeout(250)
             continue
           }

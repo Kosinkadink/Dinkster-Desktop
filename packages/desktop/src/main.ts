@@ -30,7 +30,7 @@ import { changeEngineTransaction } from './engine-transaction.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
-import { assetLocations, chooseDirectory, dropResolutionSupported, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from './local-files.js'
+import { assetLocations, chooseDirectory, dropResolutionSupported, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from './local-files.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
 import { RotatingLog } from './rotating-log.js'
@@ -1228,6 +1228,10 @@ ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) =>
   const result = await chooseDirectory(app.isPackaged, () => dialog.showOpenDialog(parent, { title: 'Choose an existing asset folder', properties: ['openDirectory'] }))
   await context.revalidate()
   return result.canceled ? undefined : result.filePaths[0]
+})
+ipcMain.handle('desktop:reveal-model-location', async (event, backendUrl: unknown, location: unknown) => {
+  const context = await managedFiles(event, backendUrl)
+  await revealModelLocation(context.url, location, context.project, shell, context.revalidate)
 })
 ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown, path: unknown) => {
   const context = await managedFiles(event, backendUrl)

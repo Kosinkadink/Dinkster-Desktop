@@ -266,7 +266,13 @@ try {
   )
   assert.deepEqual(
     await engine.evaluate(() => Object.keys(window.dinksterDesktop).sort()),
-    ['chooseDirectory', 'fileCapabilities', 'resolveDroppedFile', 'revealFile'],
+    [
+      'chooseDirectory',
+      'fileCapabilities',
+      'resolveDroppedFile',
+      'revealFile',
+      'revealModelLocation',
+    ],
   )
   const served = await fetch(`http://127.0.0.1:${port}/`)
   if (frontendDev) {

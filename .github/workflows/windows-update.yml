@@ -2,6 +2,7 @@ name: Windows installed updates
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/windows-update.yml'
       - 'packages/desktop/**'
@@ -19,6 +20,7 @@ env:
 jobs:
   fixtures:
     name: Build unsigned Windows update fixtures
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: windows-latest
     timeout-minutes: 20
     defaults:

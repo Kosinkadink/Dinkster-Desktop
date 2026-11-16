@@ -136,7 +136,7 @@ are separate from managed source selection.
 ## Native asset files
 
 Local engine windows receive only the file-capability, directory-choice,
-asset-reveal and native-drop methods, not project-manager, credential or shell
+asset-reveal, shared-model-folder reveal and native-drop methods, not project-manager, credential or shell
 lifecycle privileges. Each request checks the saved local binding and the
 environment tools' observed ready generation and URL. Requests from child
 frames, remote engines and unrelated connections have no native authority.
@@ -154,6 +154,15 @@ the file and grant are canonicalized; an escaping symlink is rejected. Windows
 and macOS select the file; Linux opens its containing folder. Native drops use
 Electron's File lookup and the backend's advertised mounted-path resolver,
 without treating transport failures as permission to upload instead.
+
+Model folder reveal supplies only a registered location id. Main reads the
+operator-only shared model settings for the trusted window project, verifies
+that the selected location is unique and an existing directory, then rereads
+registration and rechecks the managed generation before opening its file URL.
+Disabled project visibility does not prevent the operator from finding a shared
+folder in Model management. Removed locations, changed paths, denied lookups
+and remote or stale managed contexts never open the file manager. No model
+files are moved or deleted.
 
 Desktop bindings are not environment state. The environment tools own
 `project.json`, generation records, `current`, `store`, journals, dependency

@@ -17,6 +17,7 @@ on:
       - 'packages/desktop/src/backend-release.json'
       - 'packages/desktop/src/engine.ts'
       - 'packages/e2e/scripts/verify-desktop-install.mjs'
+      - 'packages/e2e/scripts/verify-environment-client.mjs'
   schedule:
     - cron: '31 11 * * *'
   workflow_dispatch:

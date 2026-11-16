@@ -180,7 +180,8 @@ it('rejects opted-out, untrusted origin, absent capability and bearer callers be
   expect((await off.plan()).status).toBe(404)
   expect(off.calls).toEqual([])
   const f = await fixture()
-  for (const headers of [{ origin: 'http://attacker.invalid' }, { [PROJECT_INSTALL_HEADER]: '' }, { authorization: 'Bearer agent' }, { [PROJECT_INSTALL_HEADER]: 'a'.repeat(64) }, { [PROJECT_INSTALL_HEADER]: '\u00e9'.repeat(64) }]) {
+  const rejectedHeaders: Record<string, string>[] = [{ origin: 'http://attacker.invalid' }, { [PROJECT_INSTALL_HEADER]: '' }, { authorization: 'Bearer agent' }, { [PROJECT_INSTALL_HEADER]: 'a'.repeat(64) }, { [PROJECT_INSTALL_HEADER]: '\u00e9'.repeat(64) }]
+  for (const headers of rejectedHeaders) {
     for (const action of ['plan', 'prepare', 'preparation/status', 'preparation/cancel']) {
       expect((await f.post(action, { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] }, headers)).status).toBe(403)
     }

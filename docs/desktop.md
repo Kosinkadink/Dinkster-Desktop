@@ -291,11 +291,10 @@ in [README](../README.md#environment-client-development) enable extraction-only
 bootstrap without a host interpreter. Desktop does not install missing tools
 by resolving packages at runtime.
 
-The separate checkout-development launcher (`DINKSTER_ENGINE_SOURCE` or
-`start:web`) requires a provisioned checkout with its `.venv` executables.
-It does not download tools, sync dependencies, install native overlays, or
-prepare catalogs. Prepare that checkout using Dinkster's development setup
-before launching it. This path is not used to install project generations.
+Desktop starts in the project manager in both development and installed builds.
+Engine selection, updates and rollback belong to project generations managed by
+the environment tools. Desktop has no separate single-engine launcher,
+selection journal, follow-packaged update or install snapshot restore path.
 
 The retained backend metadata pins the Git-free `main-<commit>` source release
 and `dinkster-source-<version>.zip` checksum for checkout release identity.

@@ -13,15 +13,11 @@ import type {
   DesktopSystemCheck,
   DesktopWindowContext,
   DesktopWindowLayout,
-  LifecycleStatus,
 } from './types.js'
 
 const bridge: DesktopBridge = {
   locale: () => ipcRenderer.invoke('desktop:locale') as Promise<string>,
-  status: () => ipcRenderer.invoke('desktop:status') as Promise<LifecycleStatus>,
-  retry: () => ipcRenderer.invoke('desktop:retry') as Promise<void>,
   info: () => ipcRenderer.invoke('desktop:info') as Promise<DesktopInfo>,
-  selectEngine: (commit, variant) => ipcRenderer.invoke('desktop:select-engine', commit, variant) as Promise<void>,
   checkForUpdates: () => ipcRenderer.invoke('desktop:check-for-updates') as Promise<void>,
   installUpdate: () => ipcRenderer.invoke('desktop:install-update') as Promise<void>,
   fileCapabilities: (backendUrl) => ipcRenderer.invoke('desktop:file-capabilities', backendUrl) as Promise<DesktopFileCapabilities>,
@@ -35,8 +31,6 @@ const bridge: DesktopBridge = {
     if (!path) return { status: 'refused', reason: 'not-native-file' }
     return ipcRenderer.invoke('desktop:resolve-dropped-file', backendUrl, path) as Promise<DesktopDroppedFileResult>
   },
-  exportSnapshot: () => ipcRenderer.invoke('desktop:export-snapshot') as Promise<string | undefined>,
-  importSnapshot: () => ipcRenderer.invoke('desktop:import-snapshot') as Promise<unknown | undefined>,
   systemCheck: () => ipcRenderer.invoke('desktop:system-check') as Promise<DesktopSystemCheck>,
   clearCache: () => ipcRenderer.invoke('desktop:clear-cache') as Promise<void>,
   exportSupportReport: () => ipcRenderer.invoke('desktop:export-support-report') as Promise<string | undefined>,
@@ -55,16 +49,6 @@ const bridge: DesktopBridge = {
   removeRemoteWorker: (name) => ipcRenderer.invoke('desktop:remove-remote-worker', name) as Promise<void>,
   chooseRemoteWorkerFile: (kind) => ipcRenderer.invoke('desktop:choose-remote-worker-file', kind) as Promise<DesktopRemoteWorkerFileChoice | undefined>,
   takeDeepLinks: () => ipcRenderer.invoke('desktop:take-deep-links') as Promise<readonly DesktopDeepLink[]>,
-  onStatus: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, status: LifecycleStatus) => listener(status)
-    ipcRenderer.on('desktop:status-changed', receive)
-    return () => ipcRenderer.removeListener('desktop:status-changed', receive)
-  },
-  onLog: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, line: string) => listener(line)
-    ipcRenderer.on('desktop:log', receive)
-    return () => ipcRenderer.removeListener('desktop:log', receive)
-  },
   onInfo: (listener) => {
     const receive = (_event: Electron.IpcRendererEvent, info: DesktopInfo) => listener(info)
     ipcRenderer.on('desktop:info-changed', receive)

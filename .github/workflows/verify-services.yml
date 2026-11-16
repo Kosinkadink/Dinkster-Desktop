@@ -1,0 +1,96 @@
+name: Desktop launch services acceptance
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/verify-services.yml'
+      - 'packages/desktop/src/**'
+      - 'packages/e2e/scripts/verify-services.mjs'
+      - 'scripts/frontend-release.json'
+
+permissions:
+  contents: read
+
+jobs:
+  services:
+    name: Packaged launch services - ${{ matrix.os }} - ${{ matrix.host }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            host: native
+          - os: windows-latest
+            host: native
+          - os: windows-2025
+            host: wsl2
+    env:
+      DINKSTER_SERVICES_HOST: ${{ matrix.host }}
+      CUDA_VISIBLE_DEVICES: ''
+      DINKSTER_ACCELERATOR: cpu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - if: runner.os == 'Windows'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare hosted WSL2 runtime
+        if: matrix.host == 'wsl2'
+        shell: pwsh
+        run: |
+          wsl --update --web-download
+          if ($LASTEXITCODE -ne 0) { throw 'WSL update failed' }
+          wsl --set-default-version 2
+          if ($LASTEXITCODE -ne 0) { throw 'WSL2 selection failed' }
+          wsl --version
+          if ($LASTEXITCODE -ne 0) { throw 'WSL2 unavailable' }
+      - name: Package Linux AppImage
+        if: runner.os == 'Linux'
+        run: pnpm --filter @dinkster/desktop package:linux
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        run: pnpm --filter @dinkster/desktop package:win
+      - name: Install and verify Windows launch services
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $destination = Join-Path $env:RUNNER_TEMP desktop-services-installed
+          if (Test-Path $destination) { throw 'Installation directory must be fresh' }
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          $env:DINKSTER_DESKTOP_EXECUTABLE = Join-Path $destination 'Dinkster Desktop.exe'
+          $env:DINKSTER_DESKTOP_VERIFY_ROOT = Join-Path $env:RUNNER_TEMP desktop-services-proof
+          node packages/e2e/scripts/verify-services.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed launch-services verification failed' }
+      - name: Verify Linux AppImage launch services
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb libasound2t64 libatk-bridge2.0-0 libgbm1
+          export DINKSTER_DESKTOP_EXECUTABLE="$(realpath packages/desktop/release/*.AppImage)"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          xvfb-run --auto-servernum node packages/e2e/scripts/verify-services.mjs
+        env:
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ runner.temp }}/desktop-services-proof
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-services-${{ matrix.os }}-${{ matrix.host }}
+          path: |
+            ${{ runner.temp }}/desktop-services-proof/*.png
+            ${{ runner.temp }}/desktop-services-proof/*.json
+            ${{ runner.temp }}/desktop-services-proof/*.log
+          retention-days: 7
+          if-no-files-found: ignore

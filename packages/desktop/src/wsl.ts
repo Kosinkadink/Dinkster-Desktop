@@ -5,6 +5,7 @@ import { dirname, join, posix, win32 } from 'node:path'
 import { promisify } from 'node:util'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
 import { detectNvidiaGpus, type HardwareDetection } from './hardware.js'
+import type { DesktopServices } from './services.js'
 
 const execute = promisify(execFile)
 const home = '/home/dinkster'
@@ -159,11 +160,12 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
     return python
   }
 
-  async run(args: readonly string[], input = this.bundledTools): Promise<string> {
+  async run(args: readonly string[], input = this.bundledTools, services: DesktopServices = 'production'): Promise<string> {
     const python = await this.tools(input)
     // Resolve bundled subprocess tools before the private distro's system utilities.
     return this.command('dinkster', '/usr/bin/env',
       `PATH=${posix.dirname(python)}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      `DINKSTER_SERVICES=${services}`,
       python, '-I', '-m', 'dinkster_supervisor.environment', ...args)
   }
 

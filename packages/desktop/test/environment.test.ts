@@ -63,6 +63,7 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
     const args = process.argv.slice(2);
     const root = args[args.indexOf('--root') + 1]; const operation = args[args.indexOf('--root') + 2];
     fs.writeFileSync(path.join(root, 'arguments.json'), JSON.stringify(args));
+    fs.writeFileSync(path.join(root, 'services.txt'), process.env.DINKSTER_SERVICES);
     const error = args.includes('--repair') ? 'generation drift needs offline repair' : undefined;
     console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,
       status:error ? 'error' : args.includes('--plan') ? 'planned' : operation === 'doctor' ? 'clean' : 'applied',
@@ -76,6 +77,16 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it.each(['production', 'qa'] as const)('keeps the validated %s selection for tools descendants', async (services) => {
+    vi.stubEnv('DINKSTER_SERVICES', services)
+    const { root, client } = await commandFixture()
+    vi.stubEnv('DINKSTER_SERVICES', services === 'qa' ? 'production' : 'qa')
+    await client.run({ root, operation: 'start', engine: 'main' }, true)
+    expect(await readFile(join(root, 'services.txt'), 'utf8')).toBe(services)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).not.toContain('--services')
+    await client.dispose()
+  })
+
   it('uses engine sandbox readiness and forwards only an explicit start request', async () => {
     const { root, client } = await commandFixture()
     const script = join(root, 'command.cjs')

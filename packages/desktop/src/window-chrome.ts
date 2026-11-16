@@ -1,4 +1,5 @@
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron'
+import { desktopTitle, type DesktopServices } from './services.js'
 
 export function windowChromeOptions(platform: NodeJS.Platform = process.platform): BrowserWindowConstructorOptions {
   return {
@@ -10,7 +11,7 @@ export function windowChromeOptions(platform: NodeJS.Platform = process.platform
 }
 
 /** Reserve native controls in the existing bar, including server-served frontends. */
-export function installWindowChrome(window: BrowserWindow, development: () => boolean = () => false): void {
+export function installWindowChrome(window: BrowserWindow, development: () => boolean = () => false, services: DesktopServices = 'production'): void {
   const left = process.platform === 'darwin' ? '80px' : 'env(titlebar-area-x, 0px)'
   const css = `
     .topbar, body > header {
@@ -22,7 +23,7 @@ export function installWindowChrome(window: BrowserWindow, development: () => bo
     .topbar > *, body > header > * { -webkit-app-region: no-drag; }
     body:not(:has(.topbar, > header)) { padding-top: 54px; }
     body:not(:has(.topbar, > header))::before {
-      content: 'Dinkster Desktop';
+      content: '${desktopTitle(services)}';
       position: fixed; top: 0; left: 0; right: 0; height: 54px; z-index: 2147483647;
       display: flex; align-items: center;
       padding-left: calc(${left} + 12px);
@@ -33,7 +34,7 @@ export function installWindowChrome(window: BrowserWindow, development: () => bo
   window.webContents.on('did-finish-load', () => {
     if (window.isDestroyed()) return
     const unpublished = development()
-    window.setTitle(unpublished ? 'Dinkster Desktop - Development - unpublished sources' : 'Dinkster Desktop')
+    window.setTitle(desktopTitle(services, unpublished))
     const marking = unpublished ? `
       body::after {
         content: 'Development project - unpublished sources';
@@ -43,7 +44,14 @@ export function installWindowChrome(window: BrowserWindow, development: () => bo
         pointer-events: none; -webkit-app-region: no-drag;
       }
     ` : ''
-    void window.webContents.insertCSS(css + marking).catch(() => {
+    const servicesMark = services === 'qa' ? `
+      .topbar > .topbar-group-left::after, body > header::after {
+        content: '[QA]'; flex-shrink: 0; margin-left: 8px;
+        color: #ededed; font: bold 12px system-ui, sans-serif;
+        pointer-events: none; -webkit-app-region: no-drag;
+      }
+    ` : ''
+    void window.webContents.insertCSS(css + marking + servicesMark).catch(() => {
       if (!window.isDestroyed()) console.warn('Desktop window chrome could not be applied.')
     })
   })

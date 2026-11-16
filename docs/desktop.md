@@ -1,5 +1,22 @@
 # Desktop environment boundaries
 
+## QA hosted services
+
+Launch with `--services=qa` to use QA hosted services for this process only.
+Omitting the argument selects production, even if `DINKSTER_SERVICES` was set
+in the launching environment. `--services=production` is also accepted;
+other values refuse startup. On Windows append the argument to the shortcut
+target after the executable path. On Linux append it to the AppImage command.
+There is no saved project field or UI switch. A different-service second
+launch cannot change the running instance.
+
+QA windows and the tray identify the process as `Dinkster Desktop [QA]`.
+The project manager, About content and engine window chrome also draw `[QA]`
+inside the window. Engines started by Desktop receive the selected value;
+a ready managed engine using different services is stopped and restarted
+before its window opens. The Frontend independently names services from its
+engine header, so a remotely connected engine can show its own service badge.
+
 ## Publishing installers
 
 The owner opens a version PR changing `packages/desktop/package.json`.

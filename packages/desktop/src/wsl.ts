@@ -161,7 +161,10 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
 
   async run(args: readonly string[], input = this.bundledTools): Promise<string> {
     const python = await this.tools(input)
-    return this.command('dinkster', python, '-I', '-m', 'dinkster_supervisor.environment', ...args)
+    // Resolve bundled subprocess tools before the private distro's system utilities.
+    return this.command('dinkster', '/usr/bin/env',
+      `PATH=${posix.dirname(python)}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      python, '-I', '-m', 'dinkster_supervisor.environment', ...args)
   }
 
   async hardware(): Promise<HardwareDetection> {

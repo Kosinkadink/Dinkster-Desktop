@@ -413,6 +413,9 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
   mirrorOnline = false
   const offlineRequests = mirrorRequests.length
   await manager.reload()
+  await expect(
+    manager.getByRole('button', { name: 'Open main', exact: true }),
+  ).toBeVisible({ timeout: 120_000 })
   const writer = spawn(
     toolsPython,
     [

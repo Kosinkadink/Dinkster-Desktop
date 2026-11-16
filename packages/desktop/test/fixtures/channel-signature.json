@@ -1,0 +1,19 @@
+{
+  "keys": {
+    "sha256:7ef10610db59942a055c35e154fce86d00d0bc85b8c969168879a98630e1ca5e": "YmRzvwPjiwij9c5ePX0ZBRhkGUm+hpiAismC6ThtCRc="
+  },
+  "envelope": "{\"signatures\":[{\"keyId\":\"sha256:7ef10610db59942a055c35e154fce86d00d0bc85b8c969168879a98630e1ca5e\",\"signature\":\"Upwn+4NpDQyZtUiQwQi7kAYsngC1bpLgG+F0bWdaSIQp1JK1V1CMmCeCEh/7xPj3xtVerFDz74UT3tdFhSBcAA==\"}],\"signed\":{\"channel\":\"nightly\",\"engine\":{\"release\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"version\":\"0.0.8.dev17\"},\"extensions\":{\"\\ue000\":9007199254740991,\"\\ud800\\udc00\":\"\\u00e9\\n\"},\"format\":\"dinkster.channel/1\",\"minimumDesktopVersion\":\"0.2.5\"}}",
+  "payload": {
+    "format": "dinkster.channel/1",
+    "channel": "nightly",
+    "engine": {
+      "version": "0.0.8.dev17",
+      "release": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "minimumDesktopVersion": "0.2.5",
+    "extensions": {
+      "\ud800\udc00": "\u00e9\n",
+      "\ue000": 9007199254740991
+    }
+  }
+}

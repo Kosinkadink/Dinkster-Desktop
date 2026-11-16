@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { realpath, rm } from 'node:fs/promises'
-import { dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
 import { isIP } from 'node:net'
 import { setTimeout } from 'node:timers/promises'
 import { promisify } from 'node:util'
@@ -36,6 +36,8 @@ export interface EnvironmentRequest {
   readonly port?: number
   readonly destination?: string
   readonly repair?: boolean
+  readonly sandbox?: boolean
+  readonly sandboxPacks?: boolean
   readonly engine?: string
   readonly gpus?: readonly string[]
   readonly packs?: readonly { readonly pack: string; readonly version: string }[]
@@ -58,6 +60,7 @@ export interface EnvironmentRequest {
 }
 
 export interface EnvironmentEngine {
+  readonly sandboxPacks?: boolean
   readonly name: string
   readonly generation: number
   readonly state: 'starting' | 'ready' | 'failed' | 'stopped'
@@ -103,8 +106,15 @@ export interface EnvironmentSpace {
   readonly reclaimabilityWarnings: readonly string[]
 }
 
+export interface SandboxReadiness {
+  readonly format: 'dinkster.sandbox-readiness/1'
+  readonly available: boolean
+  readonly detail: string
+}
+
 /** Validated command response; WSL filesystem paths use the native host spelling. */
 export interface EnvironmentResult {
+  readonly sandbox?: SandboxReadiness
   readonly format: 'dinkster.environment-result/1'
   readonly operation: EnvironmentOperation
   readonly sourceDescription?: string
@@ -338,6 +348,14 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     if (!Number.isInteger(request.port) || request.port < 1 || request.port > 65535) throw new Error('invalid supervisor port')
     args.push('--port', String(request.port))
   }
+  if (request.sandbox !== undefined) {
+    if (request.operation !== 'doctor' || typeof request.sandbox !== 'boolean' || request.repair) throw new Error('sandbox readiness requires a read-only doctor query')
+    if (request.sandbox) args.push('--sandbox')
+  }
+  if (request.sandboxPacks !== undefined) {
+    if (request.operation !== 'start' || typeof request.sandboxPacks !== 'boolean') throw new Error('pack sandbox selection requires start and a boolean')
+    if (request.sandboxPacks) args.push('--sandbox-packs')
+  }
   if (request.repair) args.push('--repair')
   if (request.engine !== undefined) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(request.engine)) throw new Error('invalid engine name')
@@ -459,6 +477,7 @@ function resultFrom(text: string, operation: EnvironmentOperation, distribution?
       return typeof entry['name'] === 'string' && Number.isInteger(entry['generation']) && Number(entry['generation']) > 0
         && ['starting', 'ready', 'failed', 'stopped'].includes(String(entry['state']))
         && (entry['url'] === undefined || typeof entry['url'] === 'string')
+        && (entry['sandboxPacks'] === undefined || typeof entry['sandboxPacks'] === 'boolean')
     })))
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
@@ -531,6 +550,11 @@ function resultFrom(text: string, operation: EnvironmentOperation, distribution?
   if (operation === 'packs-apply' && row['status'] !== 'error'
     && (row['status'] !== 'applied' || row['current'] === null || !Array.isArray(row['engines']))) {
     throw new Error('unsupported dinkster-env pack activation response')
+  }
+  if (row['sandbox'] !== undefined) {
+    const sandbox = row['sandbox'] as Record<string, unknown> | null
+    if (!sandbox || sandbox['format'] !== 'dinkster.sandbox-readiness/1'
+      || typeof sandbox['available'] !== 'boolean' || typeof sandbox['detail'] !== 'string' || !sandbox['detail'].trim()) throw new Error('invalid pack sandbox readiness response')
   }
   return value as EnvironmentResult
 }
@@ -616,9 +640,11 @@ export class EnvironmentClient {
     const environment = { ...process.env }
     if (prefix[0] === '-I') {
       if (!isAbsolute(executable)) throw new Error('the tools interpreter must be absolute')
-      // Engine descendants must not inherit host Python configuration either.
+      // Keep system tools such as bubblewrap discoverable, but prefer bundled Python.
+      const hostPath = Object.entries(environment).find(([key]) => key.toLowerCase() === 'path')?.[1]
       for (const key of Object.keys(environment)) if (key.toLowerCase() === 'path' || /^PYTHON/i.test(key)) delete environment[key]
-      environment['PATH'] = process.platform === 'win32' ? join(dirname(executable), 'Scripts') : dirname(executable)
+      const toolsPath = [dirname(executable), ...(process.platform === 'win32' ? [join(dirname(executable), 'Scripts')] : [])].join(delimiter)
+      environment['PATH'] = hostPath ? `${toolsPath}${delimiter}${hostPath}` : toolsPath
       // Python retains this prefix when loading native extensions from deep caches.
       executable = toNamespacedPath(executable)
     }

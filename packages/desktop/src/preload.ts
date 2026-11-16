@@ -82,6 +82,7 @@ const projects: ProjectDialogBridge = {
   copyWslModels: () => ipcRenderer.invoke('desktop:wsl-copy-models'),
   list: () => ipcRenderer.invoke('desktop:projects-list') as Promise<DesktopProjects>,
   save: (project) => ipcRenderer.invoke('desktop:projects-save', project) as Promise<void>,
+  sandbox: (root) => ipcRenderer.invoke('desktop:projects-sandbox', root),
   remove: (projectId) => ipcRenderer.invoke('desktop:projects-remove', projectId) as Promise<void>,
   open: (projectId, engineId) => ipcRenderer.invoke('desktop:projects-open', projectId, engineId) as Promise<void>,
   inspect: (request) => ipcRenderer.invoke('desktop:projects-inspect', request),

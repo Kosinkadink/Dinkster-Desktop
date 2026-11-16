@@ -50,6 +50,20 @@ describe('Desktop project bindings', () => {
     expect(await readdir(root)).toEqual(['projects.json'])
   })
 
+  it('keeps sandboxing opt-in and persists only boolean local-project selections', async () => {
+    const root = await directory()
+    const project = { id: 'studio', name: 'Studio', root: join(root, 'install'), channel: 'stable',
+      engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [] }] }
+    expect(parseProject(project).sandboxPacks).toBeUndefined()
+    for (const sandboxPacks of [true, false]) {
+      await writeProjects(root, saveProject(await readProjects(root), { ...project, sandboxPacks }))
+      expect((await readProjects(root)).projects[0]?.sandboxPacks).toBe(sandboxPacks)
+    }
+    expect(() => parseProject({ ...project, sandboxPacks: 'true' })).toThrow('boolean')
+    expect(() => parseProject({ ...project, root: undefined, sandboxPacks: true,
+      engines: [{ id: 'remote', name: 'remote', kind: 'remote', url: 'http://localhost:3639' }] })).toThrow('local project')
+  })
+
   it('retains explicit development selections only on local project bindings', async () => {
     const root = await directory()
     const development = { engine: join(root, 'engine'), inference: join(root, 'inference'), helper: join(root, 'helper'),

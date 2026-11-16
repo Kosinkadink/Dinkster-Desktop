@@ -24,8 +24,9 @@ vi.mock('node:path', async (original) => {
 
 const filesystemPaths = vi.hoisted(() => new Map<string, string>())
 const guestDisk = vi.hoisted(() => ({ prefix: '', root: '', map(path: unknown): unknown {
+  // The guest probe sees distinct names even when the fixture disk is on NTFS.
   return typeof path === 'string' && this.prefix && path.startsWith(this.prefix)
-    ? this.root + path.slice(this.prefix.length).replaceAll('\\', '/') : path
+    ? this.root + path.slice(this.prefix.length).replaceAll('\\', '/').replace(/\/case-check\/UPPER$/, '/case-check/upper-distinct') : path
 } }))
 vi.mock('node:fs/promises', async (original) => {
   const actual = await original<typeof import('node:fs/promises')>()
@@ -179,7 +180,12 @@ describe('private WSL readiness', () => {
     }
     const guest = new Guest('C:\\Desktop data', tools)
     const client = new EnvironmentClient(undefined, undefined, undefined, undefined, '0.2.0', guest)
+    const root = await mkdtemp(join(tmpdir(), 'dinkster-wsl-channel-'))
+    guestDisk.prefix = `\\\\wsl.localhost\\${guest.distribution}`
+    guestDisk.root = root
     try {
+      await mkdir(guest.projectRoot('studio'), { recursive: true })
+      await writeFile(join(guest.projectRoot('studio'), 'project.json'), '{}')
       const result = await client.run({ root: guest.projectRoot('studio'),
         operation: channelSelected ? 'update' : 'status',
         ...(channelSelected ? { channel: 'nightly' as const, mirrors: ['https://channel.invalid'] } : {}) })
@@ -187,6 +193,7 @@ describe('private WSL readiness', () => {
       expect(result.root).toBe(guest.projectRoot('studio'))
     } finally {
       await client.dispose()
+      await rm(root, { recursive: true, force: true })
       delete trustedChannelKeys[keyId]
     }
   })

@@ -79,6 +79,9 @@ let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
 const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
+if (app.isPackaged && process.platform === 'win32') {
+  process.env['DINKSTER_MXC_EXECUTABLE'] = join(process.resourcesPath, 'sandbox', 'wxc-exec.exe')
+}
 const environmentClient = new EnvironmentClient(undefined, undefined, undefined, app.isPackaged ? {
   manifest: join(process.resourcesPath, 'tools', toolsRelease.manifest.name),
   sha256: toolsRelease.manifest.sha256,

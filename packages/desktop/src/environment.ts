@@ -588,7 +588,7 @@ export class EnvironmentClient {
       }
       const args = commandArgs.map((arg) => isAbsolute(arg) ? wslLinuxPath(this.wsl!.distribution, arg) : arg)
       let stdout: string
-      try { stdout = await this.wsl.run(args, selectedTools) }
+      try { stdout = await this.wsl.run(args, selectedTools, this.services) }
       catch (error) {
         const output = (error as { stdout?: string }).stdout
         if (output) {

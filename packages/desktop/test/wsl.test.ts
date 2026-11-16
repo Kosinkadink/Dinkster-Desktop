@@ -79,8 +79,9 @@ describe('private WSL readiness', () => {
     return new WslHost('C:\\Desktop data', tools)
   }
 
-  it('keeps fallback and selected tools interpreters usable across overlapping operations', async () => {
+  it.each(['production', 'qa'] as const)('keeps fallback and selected tools usable with %s services across overlapping operations', async (services) => {
     host()
+    vi.stubEnv('DINKSTER_SERVICES', services === 'qa' ? 'production' : 'qa')
     const root = await mkdtemp(join(tmpdir(), 'dinkster-wsl-tools-'))
     const archive = Buffer.from('UEsDBBQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAcHl0aG9uL2Jpbi9weXRob24zZml4dHVyZVBLAwQUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAHB5dGhvbi9weXRob24uZXhlZml4dHVyZVBLAQIUAxQAAAAAAAAAIQDuQOUFBwAAAAcAAAASAAAAAAAAAAAAAADtgQAAAABweXRob24vYmluL3B5dGhvbjNQSwECFAMUAAAAAAAAACEA7kDlBQcAAAAHAAAAEQAAAAAAAAAAAAAA7YE3AAAAcHl0aG9uL3B5dGhvbi5leGVQSwUGAAAAAAIAAgB/AAAAbQAAAAAA', 'base64')
     const pins: EnvironmentToolsInput[] = []
@@ -122,6 +123,8 @@ describe('private WSL readiness', () => {
       if (args.includes('/usr/bin/bwrap') || args.includes('! mountpoint -q /mnt/c') || args.includes('dinkster-tools')) return output('')
       const python = args.find((arg) => arg.endsWith('/bin/python3'))
       if (!python) throw new Error('unexpected guest command')
+      expect(args).toContain('-i')
+      expect(args.filter((arg) => arg.startsWith('DINKSTER_SERVICES='))).toEqual([`DINKSTER_SERVICES=${args.at(-1) === 'fallback' ? 'production' : services}`])
       const interpreter = join(guestDisk.root, python)
       expect(await readFile(interpreter, 'utf8')).toBe(args.at(-1) === 'selected' ? 'selectd' : 'fallbak')
       if (args.at(-1) === 'hold') {
@@ -132,10 +135,10 @@ describe('private WSL readiness', () => {
       }
       return output('usable')
     })
-    const active = service.run(['hold'])
+    const active = service.run(['hold'], undefined, services)
     try {
       await Promise.race([paused, active])
-      expect(await service.run(['selected'], pins[1]!)).toBe('usable')
+      expect(await service.run(['selected'], pins[1]!, services)).toBe('usable')
       resume()
       expect(await active).toBe('usable')
       expect(await service.run(['fallback'])).toBe('usable')
@@ -145,8 +148,11 @@ describe('private WSL readiness', () => {
     }
   })
 
-  it.each([false, true])('ignores host tools overrides for WSL with channel selection %s', async (channelSelected) => {
+  it.each([
+    ['production', false], ['qa', false], ['production', true], ['qa', true],
+  ] as const)('ignores host tools overrides for WSL with %s services and channel selection %s', async (services, channelSelected) => {
     host()
+    vi.stubEnv('DINKSTER_SERVICES', services)
     const channelTools = { manifest: 'https://channel.invalid/tools.json', sha256: 'b'.repeat(64), release: 'https://channel.invalid/release' }
     const override = { manifest: 'https://host.invalid/tools.json', sha256: 'c'.repeat(64), release: 'https://host.invalid/release' }
     for (const [key, value] of Object.entries({
@@ -172,18 +178,19 @@ describe('private WSL readiness', () => {
     // Stand in for the guest process: its response identifies the complete tools
     // input it booted, while retaining the real client's selection and decoding.
     class Guest extends WslHost {
-      override async run(args: readonly string[], input: EnvironmentToolsInput = tools): Promise<string> {
+      override async run(args: readonly string[], input: EnvironmentToolsInput = tools, selectedServices = 'production'): Promise<string> {
         return JSON.stringify({ format: 'dinkster.environment-result/1', operation: args[2],
-          status: 'clean', root: args[1], current: null, plan: [], sourceDescription: JSON.stringify(input) })
+          status: 'clean', root: args[1], current: null, plan: [], sourceDescription: JSON.stringify({ input, services: selectedServices }) })
       }
     }
     const guest = new Guest('C:\\Desktop data', tools)
     const client = new EnvironmentClient(undefined, undefined, undefined, undefined, '0.2.0', guest)
+    vi.stubEnv('DINKSTER_SERVICES', services === 'qa' ? 'production' : 'qa')
     try {
       const result = await client.run({ root: guest.projectRoot('studio'),
         operation: channelSelected ? 'update' : 'status',
         ...(channelSelected ? { channel: 'nightly' as const, mirrors: ['https://channel.invalid'] } : {}) })
-      expect(JSON.parse(result.sourceDescription!)).toEqual(channelSelected ? channelTools : tools)
+      expect(JSON.parse(result.sourceDescription!)).toEqual({ input: channelSelected ? channelTools : tools, services })
       expect(result.root).toBe(guest.projectRoot('studio'))
     } finally {
       await client.dispose()

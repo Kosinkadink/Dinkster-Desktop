@@ -153,6 +153,7 @@ try {
       body: JSON.stringify({
         clientId: 'desktop-sandbox',
         jobId,
+        cacheEnabled: false,
         graph: {
           nodes: {
             shout: {
@@ -174,6 +175,8 @@ try {
         { timeout: 60_000 },
       )
       .toBe('completed')
+    assert.deepEqual(job.executed, ['shout'])
+    assert.deepEqual(job.cached, [])
     const value = await json(
       `${base}/api/values?clientId=desktop-sandbox&jobId=${jobId}&nodeId=shout&outputId=text`,
     )

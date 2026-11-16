@@ -555,7 +555,9 @@ try {
             { timeout: 120_000 },
           )
           .toBe(true)
-        await expect(engine.getByText(/loading schemas/i)).toHaveCount(0, {
+        await expect(
+          engine.getByText(/loading schemas|composing packs/i),
+        ).toHaveCount(0, {
           timeout: 120_000,
         })
         const badge = engine.getByText('QA services', { exact: true })

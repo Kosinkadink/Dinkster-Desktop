@@ -281,7 +281,13 @@ console.log(JSON.stringify(row));
   )
   assert.deepEqual(
     await engine.evaluate(() => Object.keys(window.dinksterDesktop).sort()),
-    ['chooseDirectory', 'fileCapabilities', 'resolveDroppedFile', 'revealFile'],
+    [
+      'chooseDirectory',
+      'fileCapabilities',
+      'resolveDroppedFile',
+      'revealFile',
+      'revealModelLocation',
+    ],
   )
   assert.deepEqual(
     await engine.evaluate(
@@ -751,7 +757,13 @@ console.log(JSON.stringify(row));
   )
   assert.deepEqual(
     await engine.evaluate(() => Object.keys(window.dinksterDesktop).sort()),
-    ['chooseDirectory', 'fileCapabilities', 'resolveDroppedFile', 'revealFile'],
+    [
+      'chooseDirectory',
+      'fileCapabilities',
+      'resolveDroppedFile',
+      'revealFile',
+      'revealModelLocation',
+    ],
   )
   developmentCalls = (await readFile(calls, 'utf8'))
     .trim()

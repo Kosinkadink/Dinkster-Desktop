@@ -27,6 +27,7 @@ const bridge: DesktopBridge = {
   fileCapabilities: (backendUrl) => ipcRenderer.invoke('desktop:file-capabilities', backendUrl) as Promise<DesktopFileCapabilities>,
   chooseDirectory: (backendUrl) => ipcRenderer.invoke('desktop:choose-directory', backendUrl) as Promise<string | undefined>,
   revealFile: (backendUrl, asset) => ipcRenderer.invoke('desktop:reveal-file', backendUrl, asset) as Promise<{ mode: 'selected' | 'folder' }>,
+  revealModelLocation: (backendUrl, location) => ipcRenderer.invoke('desktop:reveal-model-location', backendUrl, location) as Promise<void>,
   resolveDroppedFile: async (backendUrl, file) => {
     let path: string
     try { path = webUtils.getPathForFile(file) }
@@ -86,6 +87,7 @@ contextBridge.exposeInMainWorld('dinksterDesktop', localFilesOnly ? {
   fileCapabilities: bridge.fileCapabilities,
   chooseDirectory: bridge.chooseDirectory,
   revealFile: bridge.revealFile,
+  revealModelLocation: bridge.revealModelLocation,
   resolveDroppedFile: bridge.resolveDroppedFile,
 } : bridge)
 

@@ -9,6 +9,7 @@ on:
       - 'packages/desktop/package.json'
       - 'packages/desktop/resources/sandbox/**'
       - 'packages/desktop/scripts/prepare-mxc.mjs'
+      - 'packages/desktop/scripts/mxc-build.mjs'
       - 'packages/desktop/scripts/sign-mxc.mjs'
       - 'packages/desktop/scripts/verify-installed-mxc.mjs'
       - 'packages/desktop/src/release.ts'

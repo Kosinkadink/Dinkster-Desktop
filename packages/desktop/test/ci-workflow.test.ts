@@ -51,6 +51,14 @@ const signed = await load('signed-package.yml')
 const development = await load('development-project.yml')
 
 describe('desktop workflows', () => {
+  it('runs Windows packaging when shared MXC build metadata changes', () => {
+    for (const workflow of [development, full, release]) {
+      expect(workflow.on).toMatchObject({
+        pull_request: { paths: expect.arrayContaining(['packages/desktop/scripts/mxc-build.mjs']) },
+      })
+    }
+  })
+
   it('shares installer builds with tag publication and isolates manual signing', () => {
     expect(release.on).toMatchObject({
       push: { branches: ['main'] },

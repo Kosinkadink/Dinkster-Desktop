@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { execFileSync, spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { createServer as createMirror } from 'node:http'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
+import { Readable } from 'node:stream'
 import { _electron as electron, expect } from '@playwright/test'
+import { verifyChannel } from '../../desktop/src/channel-signatures.ts'
 
 assert.equal(
   process.env.RUNNER_ENVIRONMENT,
@@ -16,12 +20,13 @@ const root = resolve(process.env.DINKSTER_DESKTOP_VERIFY_ROOT)
 await mkdir(root)
 await mkdir(join(root, 'temporary'))
 const publicRoot = 'https://releases.dinkster.org'
-const channel = await fetch(`${publicRoot}/channels/stable.json`).then(
+const channelText = await fetch(`${publicRoot}/channels/stable.json`).then(
   (response) => {
     assert(response.ok)
-    return response.json()
+    return response.text()
   },
 )
+const channel = verifyChannel(channelText, 'stable')
 assert(channel.tools, 'Stable must select current environment tools')
 const location = channel.engine.locations.find(
   (location) => location.type === 'mirror',
@@ -48,6 +53,22 @@ assert.equal(
   channel.tools.sha256,
 )
 assert.equal(JSON.parse(toolsBytes).commit, manifest.commit)
+const toolsManifest = JSON.parse(toolsBytes)
+const toolsName = `dinkster-tools-${process.platform === 'win32' ? 'windows' : 'linux'}-x86_64.zip`
+const toolsRow = toolsManifest.artifacts.find((row) => row.name === toolsName)
+assert(toolsRow)
+const toolsArchive = Buffer.from(
+  await fetch(`${channel.tools.release}/${toolsName}`).then((response) => {
+    assert(response.ok)
+    return response.arrayBuffer()
+  }),
+)
+assert.equal(toolsArchive.length, toolsRow.size)
+assert.equal(
+  createHash('sha256').update(toolsArchive).digest('hex'),
+  toolsRow.sha256,
+)
+const toolsPath = `/tools/${channel.tools.label}`
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([name, value]) =>
@@ -79,6 +100,45 @@ await new Promise((done) => server.listen(0, '127.0.0.1', done))
 const port = server.address().port
 await new Promise((done) => server.close(done))
 const projectRoot = join(root, 'project')
+let mirrorChannel = channelText
+let mirrorOnline = true
+const mirrorRequests = []
+const mirror = createMirror(async (request, response) => {
+  mirrorRequests.push(request.url)
+  if (!mirrorOnline) {
+    response.writeHead(503).end('Mirror unavailable')
+    return
+  }
+  if (
+    request.url === '/channels/stable.json' ||
+    request.url === '/channels/nightly.json'
+  ) {
+    response.setHeader('Content-Type', 'application/json')
+    response.end(mirrorChannel)
+    return
+  }
+  if (request.url === `${toolsPath}/tools-manifest.json`) {
+    response.end(toolsBytes)
+    return
+  }
+  if (request.url === `${toolsPath}/${toolsName}`) {
+    response.end(toolsArchive)
+    return
+  }
+  try {
+    const upstream = await fetch(`${publicRoot}${request.url}`)
+    response.writeHead(upstream.status)
+    if (upstream.body)
+      Readable.fromWeb(upstream.body)
+        .on('error', () => response.destroy())
+        .pipe(response)
+    else response.end()
+  } catch {
+    response.writeHead(502).end()
+  }
+})
+await new Promise((done) => mirror.listen(0, '127.0.0.1', done))
+const mirrorUrl = `http://127.0.0.1:${mirror.address().port}`
 const app = await electron.launch({
   executablePath,
   args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`],
@@ -88,6 +148,21 @@ const app = await electron.launch({
 let manager
 try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
+  await app.evaluate(() => {
+    const original = globalThis.fetch
+    globalThis.fetch = (input, options) => {
+      const url = new URL(
+        typeof input === 'string' || input instanceof URL ? input : input.url,
+      )
+      if (url.hostname === 'releases.dinkster.org')
+        throw new Error('Official tools origin denied')
+      return original(input, options)
+    }
+  })
+  await assert.rejects(
+    app.evaluate(() => fetch('https://releases.dinkster.org/tools/denied')),
+    /Official tools origin denied/,
+  )
   assert.match(
     await app.evaluate(({ app }) => app.getVersion()),
     /^\d+\.\d+\.\d+$/,
@@ -109,12 +184,99 @@ try {
     operation: 'setup',
     channel: 'stable',
     variant: process.platform === 'win32' ? 'win-cpu' : 'linux-cpu',
-    mirrors: [publicRoot],
+    mirrors: [mirrorUrl],
     data: join(root, 'store'),
     engine: 'main',
     gpus: [],
     port,
   }
+  const envelope = JSON.parse(channelText)
+  const refusedChannels = {
+    unsigned: JSON.stringify(envelope.signed),
+    tampered: channelText.replace(channel.engine.version, '999.0.0'),
+    wrongKey: channelText.replace(
+      envelope.signatures[0].keyId,
+      `sha256:${'f'.repeat(64)}`,
+    ),
+    wrongChannel: await fetch(`${publicRoot}/channels/nightly.json`).then(
+      (response) => {
+        assert(response.ok)
+        return response.text()
+      },
+    ),
+  }
+  for (const [name, text] of Object.entries(refusedChannels)) {
+    assert.notEqual(text, channelText)
+    mirrorChannel = text
+    await assert.rejects(
+      manager.evaluate(
+        ({ project, request }) =>
+          window.dinksterProjects.plan(project, request),
+        { project, request },
+      ),
+      /no mirror supplied a valid trusted channel/,
+      name,
+    )
+    await assert.rejects(stat(projectRoot), { code: 'ENOENT' })
+  }
+  mirrorChannel = channelText
+  const integrity = await app.evaluate(
+    async ({ app }, { root, tools, manifest }) => {
+      const path = process.getBuiltinModule('node:path')
+      const fs = process.getBuiltinModule('node:fs/promises')
+      const require = process
+        .getBuiltinModule('node:module')
+        .createRequire(path.join(app.getAppPath(), 'package.json'))
+      const { acquireEnvironmentTools } = require(
+        path.join(app.getAppPath(), 'dist/environment-tools.js'),
+      )
+      const directory = path.join(root, 'corrupt-tools')
+      await fs.mkdir(directory)
+      const input = {
+        ...tools,
+        manifest: path.join(directory, 'tools-manifest.json'),
+        release: directory,
+      }
+      const results = {}
+      const refuse = async (name) => {
+        try {
+          const accepted = await acquireEnvironmentTools(input)
+          if (!accepted.persistent)
+            await fs.rm(accepted.directory, { recursive: true })
+          throw new Error(`Accepted corrupt tools: ${name}`)
+        } catch (error) {
+          if (error.message.startsWith('Accepted corrupt tools:')) throw error
+          results[name] = error.message
+        }
+      }
+      await fs.writeFile(input.manifest, '{}')
+      await refuse('manifest')
+      await fs.writeFile(input.manifest, manifest)
+      const native = JSON.parse(manifest).artifacts.find(
+        (row) =>
+          row.name ===
+          `dinkster-tools-${process.platform === 'win32' ? 'windows' : 'linux'}-x86_64.zip`,
+      )
+      const archive = path.join(directory, native.name)
+      await fs.writeFile(archive, 'x')
+      await refuse('size')
+      await fs.truncate(archive, native.size)
+      await refuse('digest')
+      return results
+    },
+    { root, tools: channel.tools, manifest: toolsBytes.toString('utf8') },
+  )
+  assert.match(integrity.manifest, /checksum mismatch/)
+  assert.match(integrity.size, /size mismatch/)
+  assert.match(integrity.digest, /checksum mismatch/)
+  await writeFile(
+    join(root, 'refusals.json'),
+    JSON.stringify(
+      { channels: Object.keys(refusedChannels), integrity },
+      null,
+      2,
+    ),
+  )
   const planned = await manager.evaluate(
     ({ project, request }) => window.dinksterProjects.plan(project, request),
     { project, request },
@@ -152,10 +314,12 @@ import importlib.metadata as metadata, json, subprocess, sys
 from pathlib import Path
 from packaging.version import Version
 from packaging.specifiers import SpecifierSet
+from dinkster import __version__
 from dinkster_workers import load_manifest
 from dinkster_workers.pack_wheel import pack_manifest_path
 root = Path(sys.argv[1])
 packages = {name: metadata.version(name) for name in ('dinkster', 'dinkster-engine', 'dinkster-inference', 'dinkster-frontend')}
+assert __version__ == packages['dinkster'] == packages['dinkster-engine']
 assert Version(packages['dinkster']) >= Version('0.0.4')
 assert Version(packages['dinkster-inference']) >= Version('0.1.2')
 assert Version(packages['dinkster-frontend']) >= Version('0.1.0')
@@ -228,10 +392,68 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
       { encoding: 'utf8', env },
     ),
   )
+  assert(
+    mirrorRequests.includes(`/${location}`),
+    'engine manifest must pass through the configured mirror',
+  )
+  assert(
+    mirrorRequests.some(
+      (path) => path.startsWith('/base/') && path.includes('base.tar.zst.'),
+    ),
+    'native Base must pass through the configured mirror',
+  )
+  assert(
+    mirrorRequests.includes(`${toolsPath}/tools-manifest.json`),
+    'tools manifest must pass through the configured mirror with its origin denied',
+  )
+  assert(
+    mirrorRequests.includes(`${toolsPath}/${toolsName}`),
+    'native tools must pass through the configured mirror with their origin denied',
+  )
+  mirrorOnline = false
+  const offlineRequests = mirrorRequests.length
   await manager.reload()
-  const opened = app.waitForEvent('window', { timeout: 120_000 })
-  await manager.getByRole('button', { name: 'Open main', exact: true }).click()
-  const engine = await opened
+  await expect(
+    manager.getByRole('button', { name: 'Open main', exact: true }),
+  ).toBeVisible({ timeout: 120_000 })
+  const writer = spawn(
+    toolsPython,
+    [
+      '-I',
+      '-c',
+      `
+import sys, time
+from pathlib import Path
+from dinkster_supervisor.environment_state import writer_lock
+with writer_lock(Path(sys.argv[1])):
+    print('writer acquired', flush=True)
+    time.sleep(10)
+`,
+      projectRoot,
+    ],
+    { env, stdio: ['ignore', 'pipe', 'inherit'] },
+  )
+  const released = once(writer, 'exit')
+  const [ready] = await Promise.race([
+    once(writer.stdout, 'data'),
+    released.then(() => {
+      throw new Error(
+        'competing writer exited before acquiring the project lock',
+      )
+    }),
+  ])
+  assert.equal(ready.toString().trim(), 'writer acquired')
+  let engine
+  try {
+    const opened = app.waitForEvent('window', { timeout: 120_000 })
+    await manager
+      .getByRole('button', { name: 'Open main', exact: true })
+      .click()
+    engine = await opened
+  } finally {
+    const [code] = await released
+    assert.equal(code, 0)
+  }
   await expect(engine.getByTestId('graph-canvas')).toBeVisible({
     timeout: 120_000,
   })
@@ -255,6 +477,9 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
       { timeout: 120_000 },
     )
     .toBe(true)
+  await expect(engine.getByText(/loading schemas/i)).toHaveCount(0, {
+    timeout: 120_000,
+  })
   await engine.screenshot({
     path: join(root, 'stable-project.png'),
     fullPage: true,
@@ -275,6 +500,132 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
       2,
     ),
   )
+  assert.equal(
+    mirrorRequests.length,
+    offlineRequests,
+    'installed start must not consult the unavailable mirror',
+  )
+  mirrorOnline = true
+  mirrorChannel = refusedChannels.wrongChannel
+  const nightly = verifyChannel(mirrorChannel, 'nightly')
+  const updatedPlan = await manager.evaluate(
+    ({ project, request }) => window.dinksterProjects.plan(project, request),
+    {
+      project,
+      request: {
+        root: projectRoot,
+        operation: 'update',
+        channel: 'nightly',
+        mirrors: [mirrorUrl],
+      },
+    },
+  )
+  assert.equal(updatedPlan.result.status, 'planned')
+  assert(updatedPlan.token)
+  const updated = await manager.evaluate(
+    (token) => window.dinksterProjects.apply(token),
+    updatedPlan.token,
+  )
+  assert.equal(updated.status, 'applied')
+  const nextNumber = (
+    await readFile(join(projectRoot, 'current'), 'utf8')
+  ).trim()
+  assert.notEqual(nextNumber, number)
+  const nextGeneration = join(projectRoot, 'generations', nextNumber)
+  const nextRecord = JSON.parse(
+    await readFile(join(nextGeneration, 'generation.json'), 'utf8'),
+  )
+  assert.equal(nextRecord.engine.release, nightly.engine.release)
+  const nextPython = join(
+    nextGeneration,
+    'python',
+    process.platform === 'win32' ? 'python.exe' : 'bin/python3',
+  )
+  assert.equal(
+    execFileSync(
+      nextPython,
+      [
+        '-I',
+        '-c',
+        'from dinkster import __version__; import importlib.metadata as m; assert __version__ == m.version("dinkster-engine"); print(__version__)',
+      ],
+      { encoding: 'utf8', env },
+    ).trim(),
+    nightly.engine.version,
+  )
+  await expect(engine.getByTestId('graph-canvas')).toBeVisible({
+    timeout: 120_000,
+  })
+  await engine.screenshot({
+    path: join(root, 'nightly-project.png'),
+    fullPage: true,
+  })
+  mirrorOnline = false
+  const recoveryRequests = mirrorRequests.length
+  const rollbackPlan = await manager.evaluate(
+    ({ project, request }) => window.dinksterProjects.plan(project, request),
+    {
+      project: { ...project, channel: 'nightly' },
+      request: { root: projectRoot, operation: 'rollback' },
+    },
+  )
+  assert.equal(rollbackPlan.result.status, 'planned')
+  assert(rollbackPlan.token)
+  const rolledBack = await manager.evaluate(
+    (token) => window.dinksterProjects.apply(token),
+    rollbackPlan.token,
+  )
+  assert.equal(rolledBack.status, 'applied')
+  const recoveredNumber = (
+    await readFile(join(projectRoot, 'current'), 'utf8')
+  ).trim()
+  assert.notEqual(recoveredNumber, nextNumber)
+  assert.notEqual(recoveredNumber, number)
+  const recovered = JSON.parse(
+    await readFile(
+      join(projectRoot, 'generations', recoveredNumber, 'generation.json'),
+      'utf8',
+    ),
+  )
+  assert.deepEqual(recovered.engine, record.engine)
+  assert.equal(recovered.base, record.base)
+  await writeFile(
+    join(root, 'recovered-generation.json'),
+    JSON.stringify(
+      { previous: number, updated: nextNumber, recovered },
+      null,
+      2,
+    ),
+  )
+  assert.equal(
+    mirrorRequests.length,
+    recoveryRequests,
+    'rollback must not consult the unavailable mirror',
+  )
+  await expect(engine.getByTestId('graph-canvas')).toBeVisible({
+    timeout: 120_000,
+  })
+  assert(
+    (await engine.request.get(new URL('/api/health', engine.url()).href)).ok(),
+  )
+  await engine.screenshot({
+    path: join(root, 'recovered-project.png'),
+    fullPage: true,
+  })
+  await writeFile(
+    join(root, 'mirror-recovery.json'),
+    JSON.stringify(
+      {
+        mirrorUrl,
+        requests: mirrorRequests,
+        updated,
+        generation: nextRecord,
+        rolledBack,
+      },
+      null,
+      2,
+    ),
+  )
   await engine.close()
 } catch (error) {
   await manager
@@ -282,5 +633,10 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
     .catch(() => undefined)
   throw error
 } finally {
-  await app.close()
+  try {
+    await app.close()
+  } finally {
+    mirror.closeAllConnections()
+    await new Promise((done) => mirror.close(done))
+  }
 }

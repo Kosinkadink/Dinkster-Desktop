@@ -4,9 +4,15 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/release-desktop.yml'
       - '.github/workflows/publish-desktop.yml'
+      - 'packages/desktop/resources/sandbox/**'
+      - 'packages/desktop/scripts/prepare-mxc.mjs'
+      - 'packages/desktop/scripts/mxc-build.mjs'
+      - 'packages/desktop/scripts/sign-mxc.mjs'
+      - 'packages/desktop/scripts/verify-installed-mxc.mjs'
       - 'packages/desktop/scripts/prepare-tools.mjs'
       - 'packages/desktop/scripts/verify-installed-tools.mjs'
       - 'packages/desktop/src/environment-tools-release.json'
@@ -33,6 +39,7 @@ concurrency:
 jobs:
   macos:
     name: Unsigned Apple Silicon installer
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -94,6 +101,7 @@ jobs:
 
   installers:
     name: ${{ matrix.os }} installer resources
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     strategy:
       fail-fast: false
       matrix:
@@ -115,6 +123,10 @@ jobs:
           node-version: 26.12.0
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
+      - if: matrix.os == 'windows'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
       - run: pnpm install --frozen-lockfile
       - if: matrix.os == 'linux'
         run: pnpm --filter @dinkster/desktop package:linux
@@ -155,6 +167,8 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
           node packages/desktop/scripts/verify-installed-tools.mjs (Join-Path $destination resources) > packages/desktop/release/installed-tools.json
           if ($LASTEXITCODE -ne 0) { throw 'Installed tools verification failed' }
+          node packages/desktop/scripts/verify-installed-mxc.mjs (Join-Path $destination resources) > packages/desktop/release/installed-mxc.json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed MXC verification failed' }
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($installer.Name)" > packages/desktop/release/installer-SHA256SUMS
       - uses: actions/upload-artifact@v4
@@ -166,6 +180,7 @@ jobs:
             packages/desktop/release/desktop-linux-release.json
             packages/desktop/release/*-Setup.exe
             packages/desktop/release/installed-tools.json
+            packages/desktop/release/installed-mxc.json
             packages/desktop/release/installer-SHA256SUMS
           retention-days: 14
           if-no-files-found: error
@@ -190,6 +205,9 @@ jobs:
         with:
           node-version: 26.12.0
           cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
@@ -210,8 +228,9 @@ jobs:
           $files = @(
             Get-ChildItem packages/desktop/release -Filter '*-Setup.exe'
             Get-Item 'packages/desktop/release/win-unpacked/Dinkster Desktop.exe'
+            Get-Item 'packages/desktop/release/win-unpacked/resources/sandbox/wxc-exec.exe'
           )
-          if ($files.Count -ne 2) { throw 'Expected one installer and one application executable' }
+          if ($files.Count -ne 3) { throw 'Expected the installer, application executable, and MXC executor' }
           foreach ($file in $files) {
             $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
             $subject = $signature.SignerCertificate.Subject
@@ -232,6 +251,8 @@ jobs:
           "DINKSTER_DESKTOP_VERIFY_ROOT=$(Join-Path $env:RUNNER_TEMP dinkster-first-run)" >> $env:GITHUB_ENV
           node packages/desktop/scripts/verify-installed-tools.mjs (Join-Path $destination resources)
           if ($LASTEXITCODE -ne 0) { throw 'Installed tools verification failed' }
+          node packages/desktop/scripts/verify-installed-mxc.mjs (Join-Path $destination resources)
+          if ($LASTEXITCODE -ne 0) { throw 'Installed MXC verification failed' }
       - run: pnpm --filter @dinkster/desktop verify:installed
       - name: Preserve verification evidence
         if: always()

@@ -1,10 +1,19 @@
 import { createServer, type Server } from 'node:http'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import * as paths from 'node:path'
+import * as files from 'node:fs/promises'
+import * as os from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createProjectGateway, PROJECT_INSTALL_HEADER, type ProjectGateway } from '../src/project-gateway.js'
 import type { EnvironmentRequest, EnvironmentResult } from '../src/environment.js'
 import { LifecycleQueue } from '../src/lifecycle-queue.js'
+import { EnvironmentClient } from '../src/environment.js'
+import { wslLinuxPath, wslWindowsPath, type WslHost } from '../src/wsl.js'
+
+vi.mock('node:os', async (original) => ({ ...await original<typeof import('node:os')>() }))
+vi.mock('node:path', async (original) => ({ ...await original<typeof import('node:path')>() }))
+vi.mock('node:fs/promises', async (original) => ({ ...await original<typeof import('node:fs/promises')>() }))
 
 const gateways: ProjectGateway[] = []
 const servers: Server[] = []
@@ -81,12 +90,98 @@ it('keeps one origin, consumes only the retained review and switches upstream wi
   await expect(stat(dirname(f.calls[0]!.inputs!))).rejects.toThrow()
 })
 
+it('reviews, observes, cancels and applies packs on the current private WSL disk without exposing review paths', async () => {
+  const distribution = 'Dinkster-Desktop-abcdef123456'
+  let root = '/native-project'
+  const disk = new Map<string, string>()
+  vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+  vi.spyOn(os, 'tmpdir').mockReturnValue('C:\\Users\\operator\\AppData\\Local\\Temp')
+  const nativeJoin = paths.join
+  vi.spyOn(paths, 'join').mockImplementation((...parts) => parts[0]?.startsWith('\\\\') ? paths.win32.join(...parts) : nativeJoin(...parts))
+  vi.spyOn(paths, 'isAbsolute').mockImplementation(paths.win32.isAbsolute)
+  let allocation = 0
+  vi.spyOn(files, 'mkdtemp').mockImplementation(async (prefix) => {
+    const path = wslLinuxPath(distribution, String(prefix)) + ++allocation
+    expect(path).toMatch(/^\/tmp\/dinkster-desktop-pack-review-/)
+    disk.set(path, '')
+    return wslWindowsPath(distribution, path)
+  })
+  vi.spyOn(files, 'readFile').mockImplementation((async (path: string) => {
+    const value = disk.get(wslLinuxPath(distribution, path))
+    if (value === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    return value
+  }) as typeof files.readFile)
+  vi.spyOn(files, 'writeFile').mockImplementation(async (path, value) => { disk.set(wslLinuxPath(distribution, String(path)), String(value)) })
+  vi.spyOn(files, 'rm').mockImplementation(async (path) => {
+    const directory = wslLinuxPath(distribution, String(path))
+    for (const key of disk.keys()) if (key === directory || key.startsWith(`${directory}/`)) disk.delete(key)
+  })
+  let release: (() => void) | undefined
+  let progress = ''
+  let inputs = ''
+  const host = { distribution, run: async (args: readonly string[]) => {
+    const planning = args.includes('packs-plan')
+    inputs = args[args.indexOf(planning ? '--output' : '--input') + 1]!
+    expect(inputs).toMatch(/^\/tmp\/dinkster-desktop-pack-review-[^/]+\/inputs$/)
+    expect(disk.has(paths.posix.dirname(inputs))).toBe(true)
+    if (planning) {
+      progress = args.includes('--progress') ? args[args.indexOf('--progress') + 1]! : ''
+      disk.set(inputs, 'verified inputs')
+      if (progress) {
+        disk.set(progress, JSON.stringify({ sequence: 1, stage: 'checking-software', completed: 3, total: 7 }))
+        await new Promise<void>((resolve) => { release = resolve })
+      }
+    } else expect(disk.get(inputs)).toBe('verified inputs')
+    return JSON.stringify({ format: 'dinkster.environment-result/1', operation: planning ? 'packs-plan' : 'packs-apply',
+      root: '/home/dinkster/projects/test', current: planning ? 1 : 2, status: planning ? 'planned' : 'applied', engines: [],
+      plan: [`review ${inputs}`, `host ${wslWindowsPath(distribution, inputs)}`],
+      ...(planning ? { packPlan: { format: 'dinkster.project-pack-plan/1', root: '/home/dinkster/projects/test', current: 1,
+        inputs, hostInputs: wslWindowsPath(distribution, inputs) }, approval: `sha256:${'a'.repeat(64)}`, expiresInSeconds: 900 } : {}) })
+  } } as unknown as WslHost
+  const client = new EnvironmentClient('unused', [], undefined, undefined, undefined, host)
+  const queue = new LifecycleQueue()
+  const gateway = await createProjectGateway({ get root() { return root }, target: await backend('wsl'), allowPackInstall: true,
+    owner: async () => 'document', serialize: (action) => queue.run(action), run: (request, confirmed) => client.run(request, confirmed),
+    activate: async (result) => ({ generation: result.current }) })
+  gateways.push(gateway)
+  root = wslWindowsPath(distribution, '/home/dinkster/projects/test')
+  const post = (action: string, body: unknown) => fetch(`${gateway.url}/api/packs/install/${action}`, {
+    method: 'POST', headers: { origin: gateway.url, [PROJECT_INSTALL_HEADER]: gateway.capability }, body: JSON.stringify(body),
+  })
+  const packs = { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] }
+  try {
+    const planned = await post('plan', packs)
+    expect(planned.status).toBe(200)
+    const review = await planned.json() as { confirmation: string }
+    expect(JSON.stringify(review)).not.toMatch(/\/tmp\/|wsl\.localhost|AppData/)
+    expect((await post('apply', { confirmation: review.confirmation })).status).toBe(200)
+    expect(disk.size).toBe(0)
+    const prepared = await post('prepare', packs)
+    expect(prepared.status).toBe(202)
+    const identity = { preparation: (await prepared.json() as { preparation: string }).preparation }
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    const status = await (await post('preparation/status', identity)).json()
+    expect(status).toMatchObject({ state: 'preparing', progress: { sequence: 1, completed: 3, total: 7 } })
+    expect((await (await post('preparation/cancel', identity)).json() as { state: string }).state).toBe('cancelled')
+    expect(disk.get(`${progress}.cancel`)).toBe('')
+    release!()
+    await queue.run(async () => {})
+    expect(disk.size).toBe(0)
+    expect(await (await post('preparation/status', identity)).json()).toMatchObject({ state: 'cancelled' })
+  } finally {
+    release?.()
+    await gateway.close()
+    await client.dispose()
+  }
+})
+
 it('rejects opted-out, untrusted origin, absent capability and bearer callers before command execution', async () => {
   const off = await fixture(false)
   expect((await off.plan()).status).toBe(404)
   expect(off.calls).toEqual([])
   const f = await fixture()
-  for (const headers of [{ origin: 'http://attacker.invalid' }, { [PROJECT_INSTALL_HEADER]: '' }, { authorization: 'Bearer agent' }, { [PROJECT_INSTALL_HEADER]: 'a'.repeat(64) }, { [PROJECT_INSTALL_HEADER]: '\u00e9'.repeat(64) }]) {
+  const rejectedHeaders: Record<string, string>[] = [{ origin: 'http://attacker.invalid' }, { [PROJECT_INSTALL_HEADER]: '' }, { authorization: 'Bearer agent' }, { [PROJECT_INSTALL_HEADER]: 'a'.repeat(64) }, { [PROJECT_INSTALL_HEADER]: '\u00e9'.repeat(64) }]
+  for (const headers of rejectedHeaders) {
     for (const action of ['plan', 'prepare', 'preparation/status', 'preparation/cancel']) {
       expect((await f.post(action, { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] }, headers)).status).toBe(403)
     }

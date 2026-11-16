@@ -1,10 +1,13 @@
-name: Published Stable project acceptance
+name: Signed Stable project acceptance
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/verify-stable-project.yml'
-      - '.github/workflows/verify-published-desktop.yml'
+      - 'packages/desktop/src/channel-signatures.ts'
+      - 'packages/desktop/src/environment-channel.ts'
+      - 'packages/desktop/src/environment-tools.ts'
       - 'packages/e2e/scripts/verify-stable-project.mjs'
 
 permissions:
@@ -12,9 +15,69 @@ permissions:
 
 jobs:
   stable-project:
-    uses: ./.github/workflows/verify-published-desktop.yml
-    with:
-      source: 88f9e0bf4b9dd5a0281cf972ec261fa412620342
-      release_tag: desktop-v0.2.5
-      verification_source: ${{ github.event.pull_request.head.sha }}
-      stable_project_only: true
+    if: ${{ !github.event.pull_request.draft }}
+    name: Packaged signed Stable - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      CUDA_VISIBLE_DEVICES: ''
+      DINKSTER_ACCELERATOR: cpu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+      - if: runner.os == 'Windows'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Package Linux Desktop
+        if: runner.os == 'Linux'
+        run: |
+          pnpm --filter @dinkster/desktop prepare:tools
+          pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        run: pnpm --filter @dinkster/desktop package:win
+      - name: Install and verify Windows Stable project
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-Item packages/desktop/release/*-Setup.exe
+          $destination = Join-Path $env:RUNNER_TEMP desktop-signed-stable-installed
+          if (Test-Path $destination) { throw 'Installation directory must be fresh' }
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/currentuser', '/NODESKTOPSHORTCUT', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)" }
+          $env:DINKSTER_DESKTOP_EXECUTABLE = Join-Path $destination 'Dinkster Desktop.exe'
+          $env:DINKSTER_DESKTOP_VERIFY_ROOT = Join-Path $env:RUNNER_TEMP signed-stable-project
+          node packages/e2e/scripts/verify-stable-project.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed signed Stable verification failed' }
+      - name: Verify packaged Linux Stable project
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb libasound2t64 libatk-bridge2.0-0 libgbm1
+          xvfb-run --auto-servernum node packages/e2e/scripts/verify-stable-project.mjs
+        env:
+          DINKSTER_DESKTOP_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ runner.temp }}/signed-stable-project
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signed-stable-project-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/signed-stable-project/*.png
+            ${{ runner.temp }}/signed-stable-project/*.json
+          retention-days: 7
+          if-no-files-found: ignore

@@ -9,7 +9,7 @@ project install-root bindings, and supervisor-per-generation swap contract.
 The desktop shell and its external inputs are pinned independently:
 
 - `scripts/frontend-release.json` pins the permanent `dinkster-frontend` PyPI wheel by version, URL, size and SHA256. `pnpm prepare:frontend` verifies that wheel and copies its application and native branding into the package inputs. The engine selects the same published frontend release; Desktop does not build frontend source.
-- The checkout-development backend selection is pinned in `packages/desktop/src/backend-release.json`. Shell packaging does not download or embed that source archive or native wheels. Project generations are acquired by the environment tools, not by the shell's package builder.
+- `packages/desktop/src/backend-release.json` records backend identity in shell release metadata. Shell packaging does not download or embed that source archive or native wheels. Project generations are acquired by the environment tools, not by the shell's package builder; Desktop has no separate single-engine launcher.
 
 A local build uses the same verified release as CI, without a frontend checkout:
 
@@ -29,6 +29,53 @@ existing repository-level `AZURE_*` secrets without moving them. To enable the
 approval gate later, the owner adds themselves as a required reviewer under
 Settings -> Environments -> desktop-signing; no workflow change is needed.
 The desk controls release timing through the `Release` label; the tag job creates the version ref and the publisher creates its release without moving that ref.
+
+## WSL2 engine on Windows x64
+
+In **Manage a local installation**, select **WSL2 - private Linux disk**.
+**Check WSL2** reports availability and installation guidance; Desktop never
+changes the Windows version. After WSL2 is enabled, **Prepare private
+distribution** downloads Ubuntu 24.04, installs Bubblewrap, and creates a
+Desktop-owned distribution. It does not adopt or reconfigure existing user
+distributions. The private distribution disables Windows drive automount and
+Windows executable interop.
+
+**Use Linux project folder** selects a project under `/home/dinkster/projects`
+on that distribution's disk. Its environment tools, library and engines run
+through `wsl.exe` as a non-root Linux user, with verified Linux tools acquired
+from the pinned tools release or the selected channel's tools pin. Each immutable
+tools pin has a separate cache under `/home/dinkster/tools`, so switching pins
+does not remove an interpreter still used by another operation or supervisor.
+These WSL caches retain acquired pins; the native tools cache policy is unchanged.
+Windows Python and development-executable overrides do not run WSL projects.
+
+**Copy Windows model folder** makes a separate copy under
+`/home/dinkster/models`; originals stay in place. Links and existing destination
+names are refused. Add the copied Linux folder in the engine's model settings.
+Native folder choice, dropped paths and exact-file reveal translate only paths
+on the project's private WSL disk. A Windows-drive folder must be copied first;
+it is not passed into the pack jail. The project manager stores the native
+`\\wsl.localhost\Dinkster-Desktop-...` path while environment commands receive
+its Linux spelling.
+
+## Windows native pack sandbox
+
+Windows packages build the MXC executor from source at commit
+`c66201839d63cae2239db5e92f1f1d6076cf5181` using Rust 1.93 and the MSVC
+x86-64 toolchain. `MXC_TELEMETRY_COMPONENT_PATH` is explicitly empty during
+the release build, so diagnostics are not routed to Microsoft. Packaging
+requires Rust and the Windows C++ build tools, in addition to Node and pnpm.
+The signed package signs the executor through the same Artifact Signing hook
+as Desktop, then records the signed bytes' SHA-256 in `mxc-build.json`.
+
+The executor, build manifest, source provenance and MIT license ship together
+under `resources/sandbox`. Packaged Windows Desktop sets the host-owned
+`DINKSTER_MXC_EXECUTABLE` to that absolute executor path before running the
+environment tools. The selected engine's readiness report and launcher use
+that same input; neither searches PATH. Missing or unsupported native
+isolation refuses a requested sandbox rather than launching it unjailed.
+The selected engine must include native Windows launcher support. Windows 10
+and Windows 11 without process isolation can use the explicit WSL2 option.
 
 ## Apple Silicon macOS
 
@@ -94,12 +141,20 @@ downgrades and stop at the artifact's declared size; tools metadata is bounded
 to 8 MiB. Explicit development interpreter/command overrides take precedence.
 
 Before setup, update or catalog invokes an environment command, packaged Desktop
-reads the selected channel and enforces `minimumDesktopVersion`, reporting
+authenticates the selected Stable or Nightly channel with an independently
+pinned Ed25519 public key, then enforces `minimumDesktopVersion`, reporting
 `DesktopVersionTooOld` when the shell must update first. Status, doctor, start,
 stop and other installed-generation operations do not fetch channel metadata.
 A trusted channel may explicitly supply a `tools` object with `label`, `manifest`,
 `sha256` and `release` to select newer tools through the same verified acquisition
-path. A newer engine alone does not force a tools download.
+path. Desktop first tries each configured mirror's `tools/<label>` directory,
+then the signed origin URLs, without rewriting signed metadata. Each candidate
+must match the signed manifest digest and its native archive's size and digest.
+A complete mirror does not need the official tools host to be reachable.
+A newer engine alone does not force a tools download. Third-party HTTPS
+mirrors use the same signature check as official hosts and local copies; unsigned
+or unknown-key channels refuse. The pinned root has key ID
+`sha256:4b5b2c78b32db1ebedc4702a92d6e4e252c17531f0e102ab82dd910be6dec7b9`.
 
 Local operations review the command's plan before confirmation. A saved engine
 binding starts the existing generation through `dinkster-env start`; updates
@@ -128,24 +183,6 @@ confirmation, changed-port handoff, rollback, remote-only routing and shutdown
 delegation. It is not a substitute for real CLI/generation file comparisons.
 `DINKSTER_ELECTRON_EXECUTABLE` optionally selects the installed Electron binary;
 `DINKSTER_SMOKE_ARTIFACTS` optionally retains screenshots.
-
-The Linux cleanup integration check uses the real Electron IPC and backend
-command on a newly generated disposable CPU installation. After preparing the
-pinned frontend/branding and installing dependencies, set `DINKSTER_BACKEND_ROOT` to a
-backend checkout with its development `.venv` and run
-`node packages/e2e/scripts/verify-cleanup-integration.mjs`. It checks read-only
-status, disabled retry, preference persistence, lock deferral with persistent
-warnings, and confirmed collection while the current engine stays responsive.
-History, user-data sentinels, bindings and a shared-cache sentinel must remain
-byte-identical. It requires a display (or `xvfb-run`), accepts no existing
-installation root, and stops only its generated fixture during teardown. The printed fixture path
-is retained for inspection; `DINKSTER_SMOKE_ARTIFACTS` retains screenshots and
-the result report. The faster `verify-cleanup-dialog.mjs` uses protocol fixtures
-instead; `DINKSTER_CHROMIUM_PATH` can select an installed Chromium binary.
-The real integration requires clean source checkouts before and after the run,
-rebuilds Desktop before launch, and verifies that the backend interpreter imports
-the specified source tree. Its report identifies source commits, not a verified
-packaged release; installed dependencies and prepared branding are not attested.
 
 Pull requests run formatting, types, unit tests, and the Linux build with a
 10-minute budget. Main adds the pinned frontend browser suite and Windows

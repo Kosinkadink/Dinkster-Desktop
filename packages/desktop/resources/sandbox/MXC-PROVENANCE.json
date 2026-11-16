@@ -1,0 +1,12 @@
+{
+  "name": "wxc-exec.exe",
+  "source": "https://github.com/microsoft/mxc",
+  "commit": "c66201839d63cae2239db5e92f1f1d6076cf5181",
+  "license": "MIT",
+  "toolchain": "Rust 1.93",
+  "build": [
+    "MXC_TELEMETRY_COMPONENT_PATH=",
+    "cargo build --locked --release -p wxc --target x86_64-pc-windows-msvc"
+  ],
+  "telemetry": "The explicitly empty MXC_TELEMETRY_COMPONENT_PATH disables the bundled routed telemetry component."
+}

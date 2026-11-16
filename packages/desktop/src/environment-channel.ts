@@ -2,6 +2,7 @@ import { isAbsolute, join, normalize } from 'node:path'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { download } from './io.js'
+import { verifyChannel } from './channel-signatures.js'
 import type { EnvironmentRequest } from './environment.js'
 import type { EnvironmentToolsInput } from './environment-tools.js'
 
@@ -10,6 +11,14 @@ function toolsLocation(location: string): URL | string {
   const url = new URL(location)
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('channel tools locations require an absolute path or credential-free HTTPS')
   return url
+}
+
+function mirrorLocation(mirror: string, path: string): string {
+  if (isAbsolute(mirror)) return join(mirror, path)
+  const url = new URL(mirror)
+  const loopback = url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname)
+  if ((!loopback && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash) throw new Error('channel mirrors require credential-free HTTPS or loopback HTTP')
+  return new URL(path, `${url.href.replace(/\/$/, '')}/`).href
 }
 
 function validToolsPin(tools: Record<string, unknown>): tools is Record<string, unknown> & EnvironmentToolsInput {
@@ -48,17 +57,16 @@ export async function channelTools(request: EnvironmentRequest, desktopVersion: 
     const directory = await mkdtemp(join(tmpdir(), 'dinkster-channel-'))
     try {
       let text: string
-      if (isAbsolute(mirror)) text = await readFile(join(mirror, 'channels', `${channel}.json`), 'utf8')
+      const location = mirrorLocation(mirror, `channels/${channel}.json`)
+      if (isAbsolute(location)) text = await readFile(location, 'utf8')
       else {
-        const url = new URL(mirror)
-        if (!['releases.dinkster.org', 'localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash) throw new Error('untrusted channel mirror')
         const path = join(directory, 'channel.json')
-        await download(new URL(`channels/${channel}.json`, `${url.href.replace(/\/$/, '')}/`).href, path, undefined, 8 * 1024 * 1024)
+        await download(location, path, undefined, 8 * 1024 * 1024)
         text = await readFile(path, 'utf8')
       }
       if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw new Error('channel metadata exceeds size limit')
-      const value = JSON.parse(text) as Record<string, unknown>
-      if (value['format'] !== 'dinkster.channel/1' || typeof value['minimumDesktopVersion'] !== 'string' || !/^\d+\.\d+\.\d+$/.test(value['minimumDesktopVersion']) || (value['signature'] !== null && value['signature'] !== undefined)) throw new Error('unsupported channel metadata')
+      const value = verifyChannel(text, channel)
+      if (typeof value['minimumDesktopVersion'] !== 'string' || !/^\d+\.\d+\.\d+$/.test(value['minimumDesktopVersion'])) throw new Error('unsupported channel metadata')
       document = value
       break
     } catch {
@@ -75,5 +83,9 @@ export async function channelTools(request: EnvironmentRequest, desktopVersion: 
   const tools = document['tools'] as Record<string, unknown> | undefined
   if (!tools) return undefined
   if (!validToolsPin(tools)) throw new Error('invalid channel tools pin')
-  return { ...(tools.label === undefined ? {} : { label: tools.label }), manifest: tools.manifest, sha256: tools.sha256, release: tools.release }
+  const mirrorReleases = tools.label === undefined ? [] : mirrors.flatMap((mirror) => {
+    try { return [mirrorLocation(mirror, `tools/${tools.label}`)] }
+    catch { return [] }
+  })
+  return { ...(tools.label === undefined ? {} : { label: tools.label, mirrorReleases }), manifest: tools.manifest, sha256: tools.sha256, release: tools.release }
 }

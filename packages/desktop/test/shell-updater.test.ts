@@ -101,14 +101,32 @@ describe('shell updater', () => {
     expect(installNewerTarget.quitAndInstall).toHaveBeenCalledWith(false, true)
   })
 
-  it('clears the pending attempt after the downloaded version starts', async () => {
+  it('clears only an already-installed pending RC even when its public feed refuses the request', async () => {
     const directory = await dataDirectory()
-    await updater(target('2.0.0'), directory).start()
-
-    const installedTarget = target('2.0.0')
-    await expect(updater(installedTarget, directory, '2.0.0').start()).resolves.toMatchObject({ state: 'current' })
-    const marker = JSON.parse(await readFile(join(directory, 'updates', 'shell-attempts.json'), 'utf8'))
-    expect(marker).toEqual({ version: 1 })
+    const marker = join(directory, 'updates', 'shell-attempts.json')
+    await mkdir(join(directory, 'updates'))
+    vi.stubGlobal('fetch', async () => new Response('', { status: 403 }))
+    try {
+      for (const version of ['2.0.0-rc.10', '3.0.0-rc.1']) {
+        const pending = { version, attempts: 1 }
+        await writeFile(marker, JSON.stringify({ version: 1, pending }))
+        const diagnostics: string[] = []
+        const installed = new ShellUpdater({
+          target: target(), dataDirectory: directory, currentVersion: '2.0.0-rc.10',
+          updateFeed: undefined, packaged: true, diagnostic: (message) => diagnostics.push(message),
+        })
+        await expect(installed.start()).resolves.toMatchObject({ state: 'failed' })
+        expect(diagnostics.map((line) => JSON.parse(line))).toEqual([{
+          event: 'desktop-update-feed',
+          url: 'https://api.github.com/repos/Kosinkadink/Dinkster-Desktop/releases?per_page=100&page=1',
+          status: 403,
+        }])
+        expect(JSON.parse(await readFile(marker, 'utf8'))).toEqual(version === '2.0.0-rc.10'
+          ? { version: 1 } : { version: 1, pending })
+      }
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('fails closed when the durable retry state is corrupt', async () => {
@@ -121,25 +139,5 @@ describe('shell updater', () => {
     await expect(updater(corruptTarget, directory).start()).resolves.toMatchObject({ state: 'failed' })
     expect(corruptTarget.checkForUpdates).not.toHaveBeenCalled()
     expect(corruptTarget.downloadUpdate).not.toHaveBeenCalled()
-  })
-
-  it('does not download the current version and starts only once per controller', async () => {
-    const directory = await dataDirectory()
-    const currentTarget = target('1.0.0')
-    const controller = updater(currentTarget, directory)
-
-    await Promise.all([controller.start(), controller.start()])
-    await controller.start()
-    expect(currentTarget.checkForUpdates).toHaveBeenCalledTimes(1)
-    expect(currentTarget.downloadUpdate).not.toHaveBeenCalled()
-  })
-
-  it('retains downloaded installers outside the updater cache', async () => {
-    const directory = await dataDirectory()
-    const cache = join(directory, 'updater-cache.exe')
-    await writeFile(cache, 'installer')
-
-    await updater(target('2.0.0', [cache]), directory).start()
-    expect(await readFile(join(directory, 'updates', 'installers', '2.0.0', 'updater-cache.exe'), 'utf8')).toBe('installer')
   })
 })

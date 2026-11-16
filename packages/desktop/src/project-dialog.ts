@@ -1,8 +1,13 @@
 import type { DesktopProject, DesktopProjects } from './projects.js'
 import type { EnvironmentRequest, EnvironmentResult, SandboxReadiness } from './environment.js'
 import type { HardwareDetection, VariantPlan } from './hardware.js'
+import type { WslStatus } from './wsl.js'
 
 export interface ProjectDialogBridge {
+  wslStatus(): Promise<WslStatus>
+  prepareWsl(): Promise<WslStatus>
+  wslProjectRoot(id: string): Promise<string>
+  copyWslModels(): Promise<string | undefined>
   list(): Promise<DesktopProjects>
   save(project: DesktopProject): Promise<void>
   sandbox(root: string): Promise<SandboxReadiness | undefined>
@@ -29,7 +34,15 @@ function field(id: string): string {
   return document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`#${id}`)!.value.trim()
 }
 
+function isWslRoot(root: string): boolean {
+  const path = root.replaceAll('\\', '/').toLowerCase()
+  return path.startsWith('//wsl.localhost/dinkster-desktop-') || path.startsWith('//wsl$/dinkster-desktop-')
+}
+
 function localProject(): DesktopProject {
+  if ((field('local-host') === 'wsl2') !== isWslRoot(field('local-root'))) {
+    throw new Error('Choose a project folder on the selected engine host. For WSL2, use the Linux project folder button.')
+  }
   const channel = field('local-channel')
   if (channel !== 'stable' && channel !== 'nightly') throw new Error('unsupported channel')
   const existing = savedProjects.find((project) => project.id === field('local-project'))
@@ -257,6 +270,8 @@ function populateLocal(project: DesktopProject | undefined, engineId?: string): 
     'development-frontend-dev': project?.development?.frontendDev ?? '',
   })) document.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`)!.value = value
   document.querySelector<HTMLInputElement>('#development-frontend-remote')!.checked = project?.development?.allowFrontendDevRemote === true
+  document.querySelector<HTMLSelectElement>('#local-host')!.value = isWslRoot(project?.root ?? '') ? 'wsl2' : 'native'
+  document.querySelector<HTMLElement>('#wsl-settings')!.hidden = field('local-host') !== 'wsl2'
   document.querySelector<HTMLInputElement>('#local-sandbox')!.checked = project?.sandboxPacks === true
   resetSandbox()
   if (project?.root) void checkSandbox()
@@ -264,6 +279,39 @@ function populateLocal(project: DesktopProject | undefined, engineId?: string): 
   document.querySelector<HTMLElement>('#source-settings')!.hidden = field('local-operation') !== 'source'
   clearHardware()
 }
+
+document.querySelector<HTMLSelectElement>('#local-host')!.addEventListener('change', () => {
+  document.querySelector<HTMLElement>('#wsl-settings')!.hidden = field('local-host') !== 'wsl2'
+  document.querySelector<HTMLInputElement>('#local-root')!.value = ''
+  resetSandbox()
+  clearHardware()
+})
+
+async function checkWsl(prepare = false): Promise<void> {
+  const status = prepare ? await bridge.prepareWsl() : await bridge.wslStatus()
+  document.querySelector<HTMLElement>('#wsl-status')!.textContent = status.detail
+}
+
+for (const [id, prepare] of [['wsl-check', false], ['wsl-prepare', true]] as const) {
+  document.querySelector<HTMLButtonElement>(`#${id}`)!.addEventListener('click', () => {
+    void perform(() => checkWsl(prepare))
+  })
+}
+document.querySelector<HTMLButtonElement>('#wsl-root')!.addEventListener('click', () => {
+  void perform(async () => {
+    const id = field('local-project') || newProjectId
+    document.querySelector<HTMLInputElement>('#local-root')!.value = await bridge.wslProjectRoot(id)
+    resetSandbox()
+    void checkSandbox()
+    clearHardware()
+  })
+})
+document.querySelector<HTMLButtonElement>('#wsl-copy')!.addEventListener('click', () => {
+  void perform(async () => {
+    const path = await bridge.copyWslModels()
+    if (path) message.textContent = `Models copied to ${path}. Add this Linux folder in the engine's model folder settings.`
+  })
+})
 
 function showDevelopment(): void {
   const development = field('local-kind') === 'development'

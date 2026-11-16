@@ -4,24 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { assetLocations, chooseDirectory, fileCapabilities, grantedFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from '../src/local-files.js'
+import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from '../src/local-files.js'
 
 describe('local file authority', () => {
-  it('scripts development folder choices without reading the hook in packaged apps', async () => {
-    const selected = join(tmpdir(), 'chosen folder with spaces')
-    const native = async () => ({ canceled: false, filePaths: [join(tmpdir(), 'native folder')] })
-    const unexpectedDialog = async (): Promise<never> => { throw new Error('Unexpected native dialog') }
-    const environment = { DINKSTER_TEST_FOLDER_CHOICE: JSON.stringify(selected) }
-    expect(await chooseDirectory(false, unexpectedDialog, environment)).toEqual({ canceled: false, filePaths: [selected] })
-    environment.DINKSTER_TEST_FOLDER_CHOICE = 'null'
-    expect(await chooseDirectory(false, unexpectedDialog, environment)).toEqual({ canceled: true, filePaths: [] })
-    expect(await chooseDirectory(false, native, {})).toEqual(await native())
-    environment.DINKSTER_TEST_FOLDER_CHOICE = '42'
-    await expect(chooseDirectory(false, unexpectedDialog, environment)).rejects.toThrow('Invalid test folder choice')
-    Object.defineProperty(environment, 'DINKSTER_TEST_FOLDER_CHOICE', { get: () => { throw new Error('Packaged hook read') } })
-    expect(await chooseDirectory(true, native, environment)).toEqual(await native())
-  })
-
   it('binds capabilities and requests to the running managed connection only', () => {
     const managed = 'http://127.0.0.1:5011'
     expect(fileCapabilities(`${managed}/`, managed, true)).toEqual({ nativeFolderChoice: true, reveal: false })
@@ -82,6 +67,57 @@ describe('local file authority', () => {
       expect(await assetLocations(url, asset, 'work')).toEqual([{ root: vault, path: join(vault, 'blob') }])
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('opens only an operator-registered model location and rechecks revocation before opening', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dinkster-model-location-'))
+    const folder = join(root, 'existing models')
+    await mkdir(folder)
+    let status = 200
+    let locations: unknown = [{ id: 'studio', path: folder }]
+    let revoke = false
+    let requests = 0
+    const server = createServer((request, response) => {
+      expect(request.url).toBe('/api/models/settings?project=work')
+      requests++
+      response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ locations: revoke && requests % 2 === 0 ? [] : locations }))
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('server unavailable')
+    const url = `http://127.0.0.1:${address.port}`
+    const opened: string[] = []
+    let authorized = true
+    const shell = { openExternal: async (value: string) => { opened.push(value) } }
+    const authorize = async () => { if (!authorized) throw new Error('managed context changed') }
+    try {
+      await revealModelLocation(url, 'studio', 'work', shell, authorize)
+      expect(opened).toEqual([pathToFileURL(await realpath(folder)).href])
+      opened.length = 0
+      for (const invalid of [folder, '../studio', { id: 'studio', path: folder }, null]) {
+        await expect(revealModelLocation(url, invalid, 'work', shell, authorize)).rejects.toThrow('Invalid model location')
+      }
+      for (const denied of [401, 403, 404, 500]) {
+        status = denied
+        await expect(revealModelLocation(url, 'studio', 'work', shell, authorize)).rejects.toThrow('copy the server path')
+      }
+      status = 200
+      for (const invalid of [[], [{ id: 'other', path: folder }], [{ id: 'studio', path: 'relative' }], [{ id: 'studio', path: folder }, { id: 'studio', path: folder }]]) {
+        locations = invalid
+        await expect(revealModelLocation(url, 'studio', 'work', shell, authorize)).rejects.toThrow('copy the server path')
+      }
+      locations = [{ id: 'studio', path: folder }]
+      requests = 0
+      revoke = true
+      await expect(revealModelLocation(url, 'studio', 'work', shell, authorize)).rejects.toThrow('copy the server path')
+      revoke = false
+      authorized = false
+      await expect(revealModelLocation(url, 'studio', 'work', shell, authorize)).rejects.toThrow('copy the server path')
+      expect(opened).toEqual([])
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+      await rm(root, { recursive: true, force: true })
     }
   })
 

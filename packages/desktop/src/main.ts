@@ -8,29 +8,16 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, sc
 import updater from 'electron-updater'
 import { applicationIcon, showAbout, trayIcon, windowBackground } from './branding.js'
 import {
-  clearEngineOperation,
-  createInstallSnapshot,
+  defaultDataDirectory,
   desktopStorageBytes,
-  listEngineReleases,
-  readEngineOperation,
-  readInstallSnapshot,
-  readStoredEngineSelection,
   redactDiagnosticText,
   systemCheck,
-  writeEngineOperation,
-  writeEngineSelection,
-  writeInstallSnapshot,
-  type EngineOperation,
-  type EngineSelection,
   type SystemCheck,
 } from './desktop-manager.js'
-import { availableLoopbackPort, EngineRuntime, defaultDataDirectory } from './engine.js'
-import { configuredEngineAccelerator, isEngineAccelerator } from './accelerator.js'
-import { changeEngineTransaction } from './engine-transaction.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
-import { assetLocations, chooseDirectory, dropResolutionSupported, requireLocalFiles, resolveDroppedPath, revealGrantedFile } from './local-files.js'
+import { assetLocations, chooseDirectory, dropResolutionSupported, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from './local-files.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
 import { RotatingLog } from './rotating-log.js'
@@ -38,10 +25,10 @@ import {
   RemoteWorkerFileGrants,
   RemoteWorkerLifecycle,
 } from './remote-workers.js'
-import { ENGINE_RELEASE } from './release.js'
 import { ShellUpdater } from './shell-updater.js'
 import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
 import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } from './environment.js'
+import { WslHost, wslLinuxPath, wslLocation } from './wsl.js'
 import toolsRelease from './environment-tools-release.json' with { type: 'json' }
 import { detectNvidiaGpus, planVariant } from './hardware.js'
 import { createWebHost, type WebHost } from './web-host.js'
@@ -71,7 +58,6 @@ import type {
   DesktopPanelPlacement,
   DesktopWindowContext,
   DesktopWindowLayout,
-  LifecycleStatus,
 } from './types.js'
 
 const { autoUpdater } = updater
@@ -79,12 +65,22 @@ let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
 const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
+const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirectory()
+const wslHost = new WslHost(dataDirectory, {
+  label: toolsRelease.label,
+  manifest: `https://releases.dinkster.org/tools/${toolsRelease.label}/tools-manifest.json`,
+  sha256: toolsRelease.manifest.sha256,
+  release: `https://releases.dinkster.org/tools/${toolsRelease.label}`,
+})
+if (app.isPackaged && process.platform === 'win32') {
+  process.env['DINKSTER_MXC_EXECUTABLE'] = join(process.resourcesPath, 'sandbox', 'wxc-exec.exe')
+}
 const environmentClient = new EnvironmentClient(undefined, undefined, undefined, app.isPackaged ? {
   manifest: join(process.resourcesPath, 'tools', toolsRelease.manifest.name),
   sha256: toolsRelease.manifest.sha256,
   release: join(process.resourcesPath, 'tools'),
   cacheRoot: join(app.getPath('userData'), 'environment-tools'),
-} : undefined, app.isPackaged ? app.getVersion() : undefined)
+} : undefined, app.isPackaged ? app.getVersion() : undefined, wslHost)
 let pendingProjectPlan: { token: string; project: DesktopProject; request: EnvironmentRequest } | undefined
 const windows = new Map<string, BrowserWindow>()
 const redockingWindows = new Set<string>()
@@ -97,21 +93,15 @@ const pendingDeepLinks = new Map<string, DesktopDeepLink[]>()
 const remoteWorkerFileGrants = new RemoteWorkerFileGrants()
 let lifecycleLease: LifecycleLease | undefined
 let quitting = false
-const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirectory()
-let backendPort = 3639
-let selection: EngineSelection | undefined
 const updateFeed = process.env['DINKSTER_UPDATE_FEED_URL']
-const shellUpdater = new ShellUpdater({ target: autoUpdater, dataDirectory, currentVersion: app.getVersion(), updateFeed, packaged: app.isPackaged })
+const shellUpdater = new ShellUpdater({ target: autoUpdater, dataDirectory, currentVersion: app.getVersion(), updateFeed, packaged: app.isPackaged,
+  diagnostic: (message) => { void shellLog.append(message) },
+})
 const lifecycleQueue = new LifecycleQueue()
 const windowQueue = new LifecycleQueue()
 const layoutPersistenceQueue = new LifecycleQueue()
 const executeFile = promisify(execFile)
-const engineLog = new RotatingLog(join(dataDirectory, 'logs', 'engine.log'))
 const shellLog = new RotatingLog(join(dataDirectory, 'logs', 'desktop.log'))
-const configuredAccelerator = configuredEngineAccelerator(
-  process.env['DINKSTER_ACCELERATOR'] ?? process.env['DINKSTER_ENGINE_VARIANT'],
-)
-if (configuredAccelerator.diagnostic) void shellLog.append(configuredAccelerator.diagnostic)
 
 function windowContext(id: string): DesktopWindowContext {
   const workspace = windowLayout.workspaces.find((candidate) => candidate.id === id)
@@ -191,57 +181,10 @@ async function flushWindowLayout(): Promise<void> {
   await persistWindowLayout()
 }
 
-function createRuntime(selected?: EngineSelection): EngineRuntime {
-  return new EngineRuntime({
-    dataDirectory,
-    ...(process.env['DINKSTER_ENGINE_SOURCE'] ? { sourceDirectory: process.env['DINKSTER_ENGINE_SOURCE'] } : {}),
-    port: backendPort,
-    ...(selected
-      ? { variant: selected.variant, releaseCommit: selected.commit }
-      : configuredAccelerator.accelerator ? { variant: configuredAccelerator.accelerator } : {}),
-  })
-}
-
-let runtime = createRuntime()
-
-function attachRuntime(next: EngineRuntime): void {
-  let lastVariant: LifecycleStatus['variant']
-  next.on('status', (status: LifecycleStatus) => {
-    if (next !== runtime) return
-    sendToWindows('desktop:status-changed', status)
-    if (status.variant && status.variant !== lastVariant) {
-      lastVariant = status.variant
-      void sendInfo()
-    }
-  })
-  let pendingLog = ''
-  next.on('log', (chunk: string) => {
-    if (next !== runtime) return
-    const lines = `${pendingLog}${chunk}`.split(/\r?\n/)
-    pendingLog = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.trim()) continue
-      const safeLine = redactDiagnosticText(line.trim())
-      void engineLog.append(safeLine)
-      sendToWindows('desktop:log', safeLine)
-    }
-  })
-}
-
-attachRuntime(runtime)
-
 async function desktopInfo(): Promise<DesktopInfo> {
-  const active = selection ?? {
-    commit: ENGINE_RELEASE.commit,
-    variant: runtime.status.variant ?? 'cpu',
-  }
   return {
     appVersion: app.getVersion(),
-    engineCommit: active.commit,
-    ...(active.commit === ENGINE_RELEASE.commit ? { remoteWorkerProtocol: ENGINE_RELEASE.workerProtocol } : {}),
-    variant: active.variant,
     storageBytes: await desktopStorageBytes(dataDirectory),
-    releases: await listEngineReleases(dataDirectory, active),
     update: shellUpdater.status,
   }
 }
@@ -258,45 +201,9 @@ const remoteWorkerLifecycle = new RemoteWorkerLifecycle(
   dataDirectory,
   remoteWorkerFileGrants,
   serializeLifecycle,
-  () => {
-    if (activeSelection().commit !== ENGINE_RELEASE.commit) {
-      throw new Error('Restore the packaged engine before changing remote workers')
-    }
-  },
-  () => runtime.start(),
+  () => { throw new Error('Remote engines are not yet connected to project engines') },
+  async () => { throw new Error('Remote engines are not yet connected to project engines') },
 )
-
-function activeSelection(): EngineSelection {
-  return selection ?? { commit: ENGINE_RELEASE.commit, variant: runtime.status.variant ?? 'cpu', followPackaged: true }
-}
-
-async function changeEngine(
-  target: EngineSelection,
-  kind: EngineOperation['kind'],
-  expectedDependencies?: readonly { readonly name: string; readonly version: string }[],
-): Promise<void> {
-  const previous = activeSelection()
-  await changeEngineTransaction({
-    previous,
-    target,
-    kind,
-    ...(expectedDependencies ? { expectedDependencies } : {}),
-    currentRuntime: runtime,
-    createRuntime,
-    activateRuntime: (next) => {
-      runtime = next
-      attachRuntime(next)
-    },
-    writeOperation: (operation) => writeEngineOperation(dataDirectory, operation),
-    snapshot: (selected, reason) => createInstallSnapshot(dataDirectory, selected, reason),
-    persist: async (selected) => {
-      await writeEngineSelection(dataDirectory, selected)
-      selection = selected
-    },
-    clearOperation: () => clearEngineOperation(dataDirectory),
-    committed: sendInfo,
-  })
-}
 
 function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
   const expected = [...windows.values()].find((managed) => managed.webContents === event.sender)?.webContents
@@ -312,7 +219,7 @@ function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
 }
 
 async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unknown): Promise<{
-  url: string; project: string; revalidate(): Promise<void>
+  url: string; project: string; distribution?: string; revalidate(): Promise<void>
 }> {
   if (quitting) throw new Error('Desktop is shutting down')
   const parent = BrowserWindow.fromWebContents(event.sender)
@@ -355,21 +262,11 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
       await checkBinding()
     }
     await revalidate()
-    return { url, project: folderProject, revalidate }
+    const location = wslLocation(root)
+    return { url, project: folderProject, revalidate, ...(location ? { distribution: location.distribution } : {}) }
   }
   trustedIpc(event)
-  const current = runtime
-  const project = windowProject(senderWindowId(event)) ?? 'default'
-  const url = `http://127.0.0.1:${backendPort}`
-  const revalidate = async (): Promise<void> => {
-    trustedIpc(event)
-    requireLocalFiles(backendUrl, webHost?.url, current.status.phase === 'running')
-    if (quitting || runtime !== current || (windowProject(senderWindowId(event)) ?? 'default') !== project
-      || !await current.ownsBackend() || runtime !== current) throw new Error('The shell-managed backend changed')
-    trustedIpc(event)
-  }
-  await revalidate()
-  return { url, project, revalidate }
+  throw new Error('Native file access requires a bound project-managed local engine')
 }
 
 const projectDialogPath = join(app.getAppPath(), 'resources', 'projects.html')
@@ -399,6 +296,29 @@ async function createProjectManager(): Promise<void> {
   projectWindow.on('closed', () => { projectWindow = undefined; pendingProjectPlan = undefined })
   await projectWindow.loadFile(projectDialogPath)
 }
+
+ipcMain.handle('desktop:wsl-status', async (event) => {
+  trustedProjectIpc(event)
+  return wslHost.status()
+})
+ipcMain.handle('desktop:wsl-prepare', (event) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  return wslHost.prepare()
+}))
+ipcMain.handle('desktop:wsl-project-root', async (event, id: unknown) => {
+  trustedProjectIpc(event)
+  if (!validProjectId(id)) throw new Error('Invalid WSL project id')
+  const status = await wslHost.status()
+  if (!status.ready) throw new Error(status.detail)
+  return wslHost.projectRoot(id)
+})
+ipcMain.handle('desktop:wsl-copy-models', (event) => serializeLifecycle(async () => {
+  trustedProjectIpc(event)
+  const result = await dialog.showOpenDialog(projectWindow!, { title: 'Copy a Windows model folder to the private WSL disk', properties: ['openDirectory'] })
+  trustedProjectIpc(event)
+  const path = result.filePaths[0]
+  return result.canceled || !path ? undefined : wslHost.copyModels(path)
+}))
 
 ipcMain.handle('desktop:projects-list', async (event) => {
   trustedProjectIpc(event)
@@ -450,8 +370,9 @@ ipcMain.handle('desktop:projects-inspect', (event, input: EnvironmentRequest) =>
     ...(input.channel === undefined ? {} : { channel: input.channel }),
     ...(input.mirrors === undefined ? {} : { mirrors: input.mirrors }) }
   const result = await environmentClient.run(request)
-  const hardware = await detectNvidiaGpus()
-  const plan = planVariant((result.variants ?? []).map((entry) => entry.manifest), hardware, input.gpus ?? [], process.platform)
+  const wsl = wslLocation(request.root)
+  const hardware = wsl ? await wslHost.hardware() : await detectNvidiaGpus()
+  const plan = planVariant((result.variants ?? []).map((entry) => entry.manifest), hardware, input.gpus ?? [], wsl ? 'linux' : process.platform)
   return { result, hardware, plan }
 }))
 
@@ -673,7 +594,6 @@ async function shutdown(): Promise<void> {
   await windowQueue.run(async () => {})
   await Promise.all([...remoteWindows.values()].map((binding) => binding.gateway?.close()))
   const stopped = await Promise.allSettled([
-    runtime.stop(),
     ...[...localEngines.values()].map(({ root, engine }) => environmentClient.run({ root, operation: 'stop', engine }, true)),
     Promise.resolve().then(() => webHost?.close()),
   ])
@@ -813,7 +733,7 @@ async function createWindow(): Promise<void> {
   const appDirectory = app.isPackaged
     ? join(process.resourcesPath, 'app')
     : join(app.getAppPath(), '..', 'app', 'dist')
-  webHost = await createWebHost(appDirectory, backendPort, await readPersistedPort('web-host.json'))
+  webHost = await createWebHost(appDirectory, undefined, await readPersistedPort('web-host.json'))
   try {
     await writeFileAtomic(join(dataDirectory, 'web-host.json'), `${JSON.stringify({ port: Number(new URL(webHost.url).port) })}\n`)
   } catch (error) {
@@ -995,8 +915,6 @@ function routeDeepLink(link: DesktopDeepLink): Promise<void> {
 }
 
 ipcMain.handle('desktop:locale', (event) => { trustedIpc(event); return app.getLocale() })
-ipcMain.handle('desktop:status', (event) => { trustedIpc(event); return runtime.status })
-ipcMain.handle('desktop:retry', (event) => { trustedIpc(event); return serializeLifecycle(async () => runtime.start()) })
 ipcMain.handle('desktop:info', (event) => { trustedIpc(event); return desktopInfo() })
 ipcMain.handle('desktop:window-context', (event) => {
   trustedIpc(event)
@@ -1190,21 +1108,6 @@ ipcMain.handle('desktop:choose-remote-worker-file', async (event, kind: unknown)
   const path = result.canceled ? undefined : result.filePaths[0]
   return path === undefined ? undefined : remoteWorkerFileGrants.issue(windowId, kind, path)
 })
-ipcMain.handle('desktop:select-engine', (event, commit: unknown, variant: unknown) => serializeLifecycle(async () => {
-  trustedIpc(event)
-  if (typeof commit !== 'string' || !isEngineAccelerator(variant)) throw new Error('invalid engine selection')
-  const active = activeSelection()
-  const installed = await listEngineReleases(dataDirectory, active)
-  if (commit !== ENGINE_RELEASE.commit && !installed.some((release) => release.commit === commit && release.variant === variant)) {
-    throw new Error('the requested engine release is not installed')
-  }
-  const nextSelection: EngineSelection = {
-    commit,
-    variant,
-    ...(commit === ENGINE_RELEASE.commit ? { followPackaged: true } : {}),
-  }
-  await changeEngine(nextSelection, 'environment-change')
-}))
 ipcMain.handle('desktop:check-for-updates', async (event) => {
   trustedIpc(event)
   await sendInfo()
@@ -1218,11 +1121,11 @@ ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) =
   let context: Awaited<ReturnType<typeof managedFiles>>
   try { context = await managedFiles(event, backendUrl) }
   catch { return { nativeFolderChoice: false, reveal: false, resolvePath: false } }
-  const { url, project, revalidate } = context
+  const { url, project, revalidate, distribution } = context
   const resolvePath = await dropResolutionSupported(url)
   let exact = false
   try {
-    await assetLocations(url, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project)
+    await assetLocations(url, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project, distribution)
     exact = true
   } catch { /* Folder choice does not depend on exact-file lookup support. */ }
   await revalidate()
@@ -1234,57 +1137,34 @@ ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) =>
   if (!parent) throw new Error('The requesting window is no longer available')
   const result = await chooseDirectory(app.isPackaged, () => dialog.showOpenDialog(parent, { title: 'Choose an existing asset folder', properties: ['openDirectory'] }))
   await context.revalidate()
-  return result.canceled ? undefined : result.filePaths[0]
+  const path = result.filePaths[0]
+  return result.canceled || !path ? undefined : context.distribution ? wslLinuxPath(context.distribution, path) : path
+})
+ipcMain.handle('desktop:reveal-model-location', async (event, backendUrl: unknown, location: unknown) => {
+  const context = await managedFiles(event, backendUrl)
+  await revealModelLocation(context.url, location, context.project, shell, context.revalidate, context.distribution)
 })
 ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown, path: unknown) => {
   const context = await managedFiles(event, backendUrl)
-  return resolveDroppedPath(context.url, path, context.project, context.revalidate)
+  return resolveDroppedPath(context.url, path, context.project, context.revalidate, context.distribution)
 })
 ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: unknown) => {
   const context = await managedFiles(event, backendUrl)
-  const locations = await assetLocations(context.url, asset, context.project)
+  const locations = await assetLocations(context.url, asset, context.project, context.distribution)
   const location = locations[0]
   if (!location) throw new Error('No verified local copy exists in this project; copy the server path instead')
   return revealGrantedFile(location.path, [location.root], shell, async () => {
     await context.revalidate()
-    const active = await assetLocations(context.url, asset, context.project)
+    const active = await assetLocations(context.url, asset, context.project, context.distribution)
     if (!active.some((item) => item.path === location.path && item.root === location.root)) {
       throw new Error('The local asset location is no longer authorized')
     }
     await context.revalidate()
   })
 })
-ipcMain.handle('desktop:export-snapshot', (event) => serializeLifecycle(async () => {
-  trustedIpc(event)
-  const snapshot = await createInstallSnapshot(dataDirectory, activeSelection(), 'manual')
-  const result = await dialog.showSaveDialog(window!, {
-    title: 'Export Dinkster install snapshot',
-    defaultPath: `dinkster-install-${snapshot.selection.commit.slice(0, 12)}.json`,
-    filters: [{ name: 'Dinkster install snapshot', extensions: ['json'] }],
-  })
-  if (result.canceled || !result.filePath) return undefined
-  await writeInstallSnapshot(result.filePath, snapshot)
-  return result.filePath
-}))
-ipcMain.handle('desktop:import-snapshot', (event) => serializeLifecycle(async () => {
-  trustedIpc(event)
-  const result = await dialog.showOpenDialog(window!, {
-    title: 'Restore Dinkster install snapshot', properties: ['openFile'],
-    filters: [{ name: 'Dinkster install snapshot', extensions: ['json'] }],
-  })
-  if (result.canceled || !result.filePaths[0]) return undefined
-  const snapshot = await readInstallSnapshot(result.filePaths[0])
-  const installed = await listEngineReleases(dataDirectory, activeSelection())
-  if (snapshot.selection.commit !== ENGINE_RELEASE.commit && !installed.some((release) =>
-    release.commit === snapshot.selection.commit && release.variant === snapshot.selection.variant)) {
-    throw new Error(`snapshot release ${snapshot.selection.commit.slice(0, 12)} is not installed by this desktop`)
-  }
-  await changeEngine({ ...snapshot.selection, followPackaged: false }, 'snapshot-restore', snapshot.dependencies)
-  return snapshot
-}))
 ipcMain.handle('desktop:system-check', async (event) => {
   trustedIpc(event)
-  return systemCheck(dataDirectory, activeSelection(), await gpuCheck())
+  return systemCheck(dataDirectory, await gpuCheck())
 })
 ipcMain.handle('desktop:clear-cache', (event) => serializeLifecycle(async () => {
   trustedIpc(event)
@@ -1303,12 +1183,9 @@ ipcMain.handle('desktop:export-support-report', (event) => serializeLifecycle(as
     createdAt: new Date().toISOString(),
     platform: process.platform,
     architecture: process.arch,
-    lifecycle: runtime.status,
     desktop: await desktopInfo(),
-    system: await systemCheck(dataDirectory, activeSelection(), await gpuCheck()),
-    snapshot: await createInstallSnapshot(dataDirectory, activeSelection(), 'manual'),
+    system: await systemCheck(dataDirectory, await gpuCheck()),
     logs: {
-      engine: await engineLog.readTail(),
       desktop: await shellLog.readTail(),
     },
   }, null, 2)}\n`
@@ -1357,6 +1234,7 @@ app.on('open-url', (event, url) => {
 
 if (primaryInstance) app.whenReady().then(async () => {
   lifecycleLease = await acquireLifecycleLease(dataDirectory)
+  await shellLog.append(JSON.stringify({ event: 'desktop-startup', version: app.getVersion(), pid: process.pid }))
   // Unsigned macOS releases cannot replace an installed app.
   const shellUpdate = process.platform === 'darwin' ? undefined : await shellUpdater.start()
   if (shellUpdate?.state === 'installing') return
@@ -1365,61 +1243,18 @@ if (primaryInstance) app.whenReady().then(async () => {
     if (projectWindow && !projectWindow.isDestroyed()) projectWindow.setBackgroundColor(windowBackground())
     for (const remote of remoteWindows.keys()) remote.setBackgroundColor(windowBackground())
   })
-  if (!process.env['DINKSTER_ENGINE_SOURCE']) {
-    credentialStore = await CredentialStore.open(join(dataDirectory, 'credentials.json'), desktopCredentialCipher())
-    applyCredentialHeaders()
-    await createProjectManager()
-    tray = new Tray(trayIcon())
-    tray.setToolTip('Dinkster Desktop')
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Projects', click: () => { void createProjectManager() } },
-      { label: 'About Dinkster Desktop', click: () => { void showAbout() } },
-      { type: 'separator' },
-      { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
-    ]))
-    tray.on('double-click', () => { void createProjectManager() })
-    return
-  }
-  backendPort = await availableLoopbackPort()
-  const persistedDiagnostic = (message: string): void => { void shellLog.append(message) }
-  const interrupted = await readEngineOperation(dataDirectory, persistedDiagnostic)
-  selection = interrupted?.previous ?? await readStoredEngineSelection(dataDirectory, persistedDiagnostic)
-  runtime = createRuntime(selection)
-  attachRuntime(runtime)
   credentialStore = await CredentialStore.open(join(dataDirectory, 'credentials.json'), desktopCredentialCipher())
   applyCredentialHeaders()
-  await windowQueue.run(createWindow)
-  const launchLink = deepLinkFromArgv(process.argv.slice(1))
-  if (launchLink) preReadyLinks.unshift(launchLink) // launch argv precedes any staged open-url
-  windowsReady = true
-  for (const link of preReadyLinks.splice(0)) void routeDeepLink(link)
+  await createProjectManager()
   tray = new Tray(trayIcon())
   tray.setToolTip('Dinkster Desktop')
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Show Dinkster', click: () => window?.show() },
+    { label: 'Projects', click: () => { void createProjectManager() } },
     { label: 'About Dinkster Desktop', click: () => { void showAbout() } },
     { type: 'separator' },
     { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
   ]))
-  tray.on('double-click', () => window?.show())
-  void serializeLifecycle(async () => {
-    if (interrupted) {
-      await runtime.start()
-      await writeEngineSelection(dataDirectory, interrupted.previous)
-      selection = interrupted.previous
-      await clearEngineOperation(dataDirectory)
-      return
-    }
-    if (selection?.followPackaged && selection.commit !== ENGINE_RELEASE.commit) {
-      await changeEngine({ ...selection, commit: ENGINE_RELEASE.commit }, 'packaged-update')
-      return
-    }
-    await runtime.start()
-    if (!selection) {
-      selection = { commit: ENGINE_RELEASE.commit, variant: runtime.status.variant ?? 'cpu', followPackaged: true }
-      await writeEngineSelection(dataDirectory, selection)
-    }
-  }).catch(() => undefined)
+  tray.on('double-click', () => { void createProjectManager() })
 }).catch((error: unknown) => {
   console.error(error)
   void shellLog.append(redactDiagnosticText(error instanceof Error ? error.stack ?? error.message : String(error)))

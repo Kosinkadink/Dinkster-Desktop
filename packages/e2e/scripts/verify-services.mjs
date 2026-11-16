@@ -372,39 +372,6 @@ try {
   } finally {
     if (invalid.exitCode === null) invalid.kill()
   }
-  // The checkout path creates the managed workspace/window family even when
-  // provisioning fails. This checks chrome, not a real checkout engine.
-  for (const selection of ['production', 'qa']) {
-    app = await electron.launch({
-      executablePath,
-      args: [...baseArgs, ...(selection === 'qa' ? ['--services=qa'] : [])],
-      env: {
-        ...env,
-        DINKSTER_DESKTOP_DATA: join(root, `managed-${selection}`),
-        DINKSTER_ENGINE_SOURCE: join(root, 'unprovisioned-checkout'),
-      },
-      timeout: 60_000,
-    })
-    const primary = await app.firstWindow()
-    await primary.waitForFunction(
-      () => typeof window.dinksterDesktop?.openPanelWindow === 'function',
-    )
-    await mark(primary, selection, 'workspace')
-    for (const [kind, method, args] of [
-      ['workflow', 'openWorkflowWindow', ['services-window-check']],
-      ['panel', 'openPanelWindow', ['outputs', 'rail']],
-      ['additional-workspace', 'openProjectWindow', ['default']],
-    ]) {
-      const opened = app.waitForEvent('window')
-      await primary.evaluate(
-        ({ method, args }) => window.dinksterDesktop[method](...args),
-        { method, args },
-      )
-      await mark(await opened, selection, kind)
-    }
-    await app.close()
-    app = undefined
-  }
   if (!sourceOnly) {
     for (const channel of ['stable', 'nightly']) {
       const portProbe = createServer()

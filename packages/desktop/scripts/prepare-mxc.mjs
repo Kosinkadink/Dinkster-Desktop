@@ -19,6 +19,7 @@ const temporary = await mkdtemp(resolve(tmpdir(), 'dinkster-mxc-'))
 try {
   const archive = resolve(temporary, 'mxc.zip')
   const source = resolve(temporary, sourceRoot)
+  const target = resolve(temporary, 'target')
   const response = await fetch(sourceUrl)
   if (!response.ok) throw new Error(`Could not download MXC source ${commit}: ${response.status} ${response.statusText}`)
   await writeFile(archive, Buffer.from(await response.arrayBuffer()))
@@ -30,11 +31,11 @@ try {
 
   await execute('cargo', ['build', '--locked', '--release', '-p', 'wxc', '--target', 'x86_64-pc-windows-msvc'], {
     cwd: resolve(source, 'src'),
-    env: { ...process.env, MXC_TELEMETRY_COMPONENT_PATH: '' },
+    env: { ...process.env, CARGO_TARGET_DIR: target, MXC_TELEMETRY_COMPONENT_PATH: '' },
   })
 
   await mkdir(directory, { recursive: true })
-  await copyFile(resolve(source, 'src/target/x86_64-pc-windows-msvc/release/wxc-exec.exe'), output)
+  await copyFile(resolve(target, 'x86_64-pc-windows-msvc/release/wxc-exec.exe'), output)
   await writeMxcBuild(output, resolve(directory, 'mxc-build.json'))
   console.log(`Prepared ${output} from MXC ${commit} with MXC_TELEMETRY_COMPONENT_PATH explicitly empty`)
 } finally {

@@ -8,6 +8,7 @@ import type { VariantHardware } from './hardware.js'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
 import { channelTools } from './environment-channel.js'
 import { parseDesktopServices } from './services.js'
+import { wslLinuxPath, wslLocation, wslWindowsPath, type WslHost } from './wsl.js'
 
 const execute = promisify(execFile)
 
@@ -103,7 +104,7 @@ export interface EnvironmentSpace {
   readonly reclaimabilityWarnings: readonly string[]
 }
 
-/** The command owner's dinkster.environment-result/1 response, unchanged. */
+/** Validated command response; WSL filesystem paths use the native host spelling. */
 export interface EnvironmentResult {
   readonly format: 'dinkster.environment-result/1'
   readonly operation: EnvironmentOperation
@@ -412,10 +413,25 @@ function validSpace(value: unknown, root: string): boolean {
     })
 }
 
-function resultFrom(text: string, operation: EnvironmentOperation): EnvironmentResult {
+function resultFrom(text: string, operation: EnvironmentOperation, distribution?: string): EnvironmentResult {
   const value: unknown = JSON.parse(text)
   if (!value || typeof value !== 'object') throw new Error('invalid dinkster-env response')
   const row = value as Record<string, unknown>
+  if (distribution) {
+    const hostPath = (path: unknown): unknown => typeof path === 'string' ? wslWindowsPath(distribution, path) : path
+    row['root'] = hostPath(row['root'])
+    const packPlan = row['packPlan']
+    if (packPlan && typeof packPlan === 'object') {
+      const plan = packPlan as Record<string, unknown>
+      plan['root'] = hostPath(plan['root'])
+    }
+    const space = row['space']
+    if (space && typeof space === 'object') {
+      const measurement = space as Record<string, unknown>
+      measurement['project'] = hostPath(measurement['project'])
+      measurement['store'] = hostPath(measurement['store'])
+    }
+  }
   if (row['format'] !== 'dinkster.environment-result/1' || row['operation'] !== operation
     || !['planned', 'applied', 'clean', 'drift', 'error', ...(operation === 'cleanup' ? ['complete', 'deferred', 'disabled', 'coalesced'] : [])].includes(String(row['status']))
     || typeof row['root'] !== 'string' || !isAbsolute(row['root'])
@@ -537,6 +553,7 @@ export class EnvironmentClient {
     } : undefined,
     private readonly bundledTools: EnvironmentToolsInput | undefined = undefined,
     private readonly desktopVersion: string | undefined = undefined,
+    private readonly wsl: WslHost | undefined = undefined,
   ) {}
 
   async dispose(): Promise<void> {
@@ -564,6 +581,29 @@ export class EnvironmentClient {
     let prefix = this.prefix
     const selectedTools = this.desktopVersion ? await channelTools(request, this.desktopVersion) : undefined
     const toolsInput = this.toolsInput ?? (this.executable === 'dinkster-env' && !process.env['DINKSTER_ENV'] && !process.env['DINKSTER_TOOLS_PYTHON'] ? selectedTools ?? this.bundledTools : undefined)
+    const location = wslLocation(request.root)
+    if (location) {
+      if (!this.wsl || process.platform !== 'win32' || location.distribution.toLowerCase() !== this.wsl.distribution.toLowerCase()) {
+        throw new Error('This WSL project belongs to another Desktop installation')
+      }
+      const args = commandArgs.map((arg) => isAbsolute(arg) ? wslLinuxPath(this.wsl!.distribution, arg) : arg)
+      let stdout: string
+      try { stdout = await this.wsl.run(args, selectedTools) }
+      catch (error) {
+        const output = (error as { stdout?: string }).stdout
+        if (output) {
+          const result = resultFrom(output, request.operation, this.wsl.distribution)
+          throw new Error(result.error ?? result.plan.join('\n'))
+        }
+        throw error
+      }
+      const result = resultFrom(stdout, request.operation, this.wsl.distribution)
+      if (wslLinuxPath(this.wsl.distribution, result.root) !== location.path) throw new Error('dinkster-env returned a different project root')
+      if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))
+      return { ...result, root: request.root,
+        ...(result.packPlan ? { packPlan: { ...result.packPlan, root: request.root } } : {}),
+        ...(result.space ? { space: { ...result.space, project: request.root } } : {}) }
+    }
     if (toolsInput) {
       const key = JSON.stringify(toolsInput)
       let pending = this.tools.get(key)
@@ -603,7 +643,9 @@ export class EnvironmentClient {
           // Start rechecks the current generation and exact assignment on each
           // attempt. Never replay an approved generation-changing operation.
           if (confirmed && request.operation === 'start' && result.status === 'error'
-            && result.error === `another environment writer holds ${request.root}` && Date.now() < writerDeadline) {
+            && (result.error === `another environment writer holds ${request.root}`
+              || result.error?.startsWith(`another environment writer holds ${request.root} (operation=`))
+            && Date.now() < writerDeadline) {
             await setTimeout(250)
             continue
           }

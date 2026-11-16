@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import httpProxy from 'http-proxy'
 import type { EnvironmentRequest, EnvironmentResult } from './environment.js'
+import { wslLocation, wslWindowsPath } from './wsl.js'
 
 export const PROJECT_INSTALL_HEADER = 'x-dinkster-desktop-install'
 
@@ -187,7 +188,10 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
       try {
         if (action === 'plan' || action === 'prepare') {
           await discard()
-          directory = await mkdtemp(join(tmpdir(), 'dinkster-desktop-pack-review-'))
+          const location = wslLocation(options.root)
+          directory = await mkdtemp(location
+            ? wslWindowsPath(location.distribution, '/tmp/dinkster-desktop-pack-review-')
+            : join(tmpdir(), 'dinkster-desktop-pack-review-'))
           const inputs = join(directory, 'inputs')
           if (preparing) {
             preparing.file = join(directory, 'progress.json')
@@ -212,13 +216,14 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
           directory = undefined
           expiry = setTimeout(() => { if (!busy) void discard().catch(() => undefined) }, 900_000)
           expiry.unref()
-          let publicPlan = JSON.stringify(result.packPlan)
-          for (const [path, label] of [[result.packPlan['root'], '<project>'], [result.packPlan['store'], '<store>'], [tmpdir(), '<temporary>']] as const) {
+          let publicPlan = JSON.stringify({ plan: result.packPlan, review: result.plan })
+          for (const [path, label] of [[result.packPlan['root'], '<project>'], [result.packPlan['store'], '<store>'],
+            [pending.directory, '<temporary>'], [wslLocation(pending.directory)?.path, '<temporary>'], [tmpdir(), '<temporary>']] as const) {
             if (typeof path === 'string' && path) publicPlan = publicPlan.split(JSON.stringify(path).slice(1, -1)).join(label)
           }
-          const plan: unknown = JSON.parse(publicPlan)
+          const { plan, review } = JSON.parse(publicPlan) as { plan: unknown; review: string[] }
           await deliver(200, { confirmation: token, plan,
-            review: [...result.plan, JSON.stringify(plan, null, 2)].join('\n'), expiresInSeconds: 900 })
+            review: [...review, JSON.stringify(plan, null, 2)].join('\n'), expiresInSeconds: 900 })
         } else {
           if (Object.keys(raw).length !== 1 || typeof raw['confirmation'] !== 'string') { await deliver(400, { error: 'bad-request' }); return }
           const approved = pending

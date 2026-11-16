@@ -29,7 +29,7 @@
     .endpoint { overflow-wrap: anywhere; font-size: 12px; }
     details { margin-top: 20px; border: 1px solid #3c3c3c; border-radius: 10px; padding: 20px; background: #202020; }
     #local { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
-    #local p, #local .actions, #development-sources { grid-column: 1 / -1; }
+    #local p, #local .actions, #development-sources, #wsl-settings { grid-column: 1 / -1; }
     fieldset { min-width: 0; border: 1px solid #555; border-radius: 6px; margin: 0 0 20px; padding: 20px; }
     fieldset p { color: #f3cf80; }
     summary { cursor: pointer; font-weight: 600; margin-bottom: 16px; }
@@ -65,6 +65,19 @@
           <form id="local">
             <label>Saved project<select id="local-project"><option value="">New local project</option></select></label>
             <label>Project name<input id="local-name" required maxlength="128" placeholder="Local studio"></label>
+            <label>Engine host<select id="local-host"><option value="native">This operating system</option><option value="wsl2">WSL2 - private Linux disk (Windows x64)</option></select></label>
+            <fieldset id="wsl-settings" hidden>
+              <legend>Private WSL2 engine</legend>
+              <p id="wsl-status" role="status">Check WSL2 to see installation guidance.</p>
+              <p>Prepare downloads Ubuntu and installs Bubblewrap in a Desktop-owned distribution. Existing distributions are not changed. Windows drives and Windows executable interop are disabled. Projects and libraries live on the Linux disk.</p>
+              <p>Copy models to the Linux disk before adding them as a model folder in the engine. This makes a separate copy and does not move or delete the Windows originals. Existing copies are never replaced.</p>
+              <div class="actions">
+                <button id="wsl-check" type="button">Check WSL2</button>
+                <button id="wsl-prepare" type="button">Prepare private distribution</button>
+                <button id="wsl-root" type="button">Use Linux project folder</button>
+                <button id="wsl-copy" type="button">Copy Windows model folder</button>
+              </div>
+            </fieldset>
             <label>Install root<input id="local-root" required placeholder="Absolute project directory"></label>
             <label>Channel<select id="local-channel"><option value="stable">Stable</option><option value="nightly">Nightly</option></select></label>
             <label>Project kind<select id="local-kind"><option value="release">Published release</option><option value="development">Development - unpublished sources</option></select></label>

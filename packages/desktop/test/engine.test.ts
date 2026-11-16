@@ -154,7 +154,7 @@ describe('EngineRuntime checkout lifecycle', () => {
     expect(runtime.status).toMatchObject({ phase: 'failed', detail: 'Dinkster could not start' })
   })
 
-  it('starts, restarts and stops a provisioned supervisor without running checkout setup', async () => {
+  it.each(['production', 'qa'] as const)('starts, restarts and stops a provisioned supervisor using %s services without checkout setup', async (services) => {
     const { data, source } = await fixture()
     await addSupervisor(source)
     const script = join(source, 'supervisor.cjs')
@@ -169,6 +169,7 @@ describe('EngineRuntime checkout lifecycle', () => {
         if (request.url === '/supervisor/engine/restart') restarts++;
         response.setHeader('content-type', 'application/json');
         response.end(JSON.stringify({state:'ready', instance, restarts,
+          dinkster:{services:{name:process.env.DINKSTER_SERVICES}},
           accelerator:process.env.DINKSTER_ACCELERATOR,
           python:process.env.DINKSTER_EXECUTION_PYTHON}));
       }).listen(port, '127.0.0.1');
@@ -179,7 +180,7 @@ describe('EngineRuntime checkout lifecycle', () => {
         ? actual.spawn(process.execPath, [script, ...args], options)
         : actual.spawn(command, args, options)) as typeof childProcess.spawn)
     const port = await availableLoopbackPort()
-    const runtime = createRuntime({ dataDirectory: data, sourceDirectory: source, variant: 'cpu', port })
+    const runtime = createRuntime({ dataDirectory: data, sourceDirectory: source, variant: 'cpu', port, services })
     expect(await runtime.ownsBackend()).toBe(false)
     await runtime.start()
     expect(runtime.status).toMatchObject({ phase: 'running', variant: 'cpu' })
@@ -191,7 +192,8 @@ describe('EngineRuntime checkout lifecycle', () => {
     foreign.mockRestore()
     await runtime.start()
     const status = await (await fetch(`http://127.0.0.1:${port}/supervisor/status`)).json()
-    expect(status).toMatchObject({ state: 'ready', restarts: 1, accelerator: 'cpu' })
+    expect(status).toMatchObject({ state: 'ready', restarts: 1, accelerator: 'cpu', dinkster: { services: { name: services } } })
+    expect(vi.mocked(childProcess.spawn).mock.calls.find(([command]) => command.includes('dinkster-supervisor'))?.[2]?.env?.['DINKSTER_SERVICES']).toBe(services)
     expect(status.python).toBe(process.platform === 'win32' ? join(source, '.venv', 'Scripts', 'python.exe') : join(source, '.venv', 'bin', 'python'))
     expect((await readdir(source)).sort()).toEqual(['.venv', 'supervisor.cjs'])
     await runtime.stop()

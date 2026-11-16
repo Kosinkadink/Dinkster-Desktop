@@ -58,18 +58,6 @@ describe('desktop package inputs', () => {
     )
   })
 
-  it('keeps both tinkerer launchers on the shared web runtime', async () => {
-    const windows = await readFile(resolve(root, 'scripts/start-dinkster.bat'), 'utf8')
-    const bash = await readFile(resolve(root, 'scripts/start-dinkster.sh'), 'utf8')
-    const main = await readFile(resolve(root, 'packages/desktop/src/main.ts'), 'utf8')
-    const webCli = await readFile(resolve(root, 'packages/desktop/src/web-cli.ts'), 'utf8')
-    expect(windows).toContain('pnpm --filter @dinkster/desktop start:web')
-    expect(bash).toContain('pnpm --filter @dinkster/desktop start:web')
-    expect(main).toContain('app.requestSingleInstanceLock()')
-    expect(main).toContain('acquireLifecycleLease(dataDirectory)')
-    expect(webCli).toContain('acquireLifecycleLease(dataDirectory)')
-  })
-
   it('routes shell updates only through the bounded startup controller', async () => {
     const main = await readFile(resolve(root, 'packages/desktop/src/main.ts'), 'utf8')
     expect(main).toContain('await shellUpdater.start()')

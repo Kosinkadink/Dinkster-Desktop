@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import type { VariantHardware } from './hardware.js'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
 import { channelTools } from './environment-channel.js'
+import { parseDesktopServices } from './services.js'
 
 const execute = promisify(execFile)
 
@@ -524,6 +525,7 @@ export class EnvironmentClient {
   private readonly tools = new Map<string, ReturnType<typeof acquireEnvironmentTools>>()
   private readonly active = new Set<Promise<EnvironmentResult>>()
   private closed = false
+  private readonly services = parseDesktopServices(['--services', process.env['DINKSTER_SERVICES'] ?? 'production'])
 
   constructor(
     private readonly executable = process.env['DINKSTER_TOOLS_PYTHON'] ?? process.env['DINKSTER_ENV'] ?? 'dinkster-env',
@@ -573,7 +575,7 @@ export class EnvironmentClient {
       prefix = ['-I', '-m', 'dinkster_supervisor.environment']
     }
     const args = [...prefix, ...commandArgs]
-    const environment = { ...process.env }
+    const environment: NodeJS.ProcessEnv = { ...process.env, DINKSTER_SERVICES: this.services }
     if (prefix[0] === '-I') {
       if (!isAbsolute(executable)) throw new Error('the tools interpreter must be absolute')
       // Engine descendants must not inherit host Python configuration either.

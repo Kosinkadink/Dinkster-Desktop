@@ -15,6 +15,7 @@ import {
   type EngineAccelerator,
 } from './accelerator.js'
 import type { LifecycleStatus } from './types.js'
+import { engineServices, type DesktopServices } from './services.js'
 
 export interface EngineRuntimeOptions {
   readonly dataDirectory: string
@@ -22,6 +23,7 @@ export interface EngineRuntimeOptions {
   readonly variant?: EngineAccelerator
   readonly releaseCommit?: string
   readonly port?: number
+  readonly services?: DesktopServices
 }
 
 function executable(root: string, name: string): string {
@@ -234,6 +236,7 @@ export class EngineRuntime extends EventEmitter {
     const library = join(this.options.dataDirectory, 'library')
     await mkdir(library, { recursive: true })
     const env = engineProcessEnvironment(variant)
+    env['DINKSTER_SERVICES'] = this.options.services ?? 'production'
     env['DINKSTER_EXECUTION_PYTHON'] = executable(source, 'python')
     env['UV_PROJECT_ENVIRONMENT'] = join(source, '.venv')
     delete env['UV_CONSTRAINT']
@@ -289,8 +292,13 @@ export class EngineRuntime extends EventEmitter {
       variant,
       signal,
       exitCode: () => this.child?.exitCode,
-      update: (status) => this.update(status),
+      update: (status) => { if (status.phase !== 'running') this.update(status) },
     })
+    const selected = this.options.services ?? 'production'
+    const reported = await engineServices(`http://127.0.0.1:${port}`)
+    if (reported !== selected) throw new Error(`The local engine reports ${reported} services; Desktop selected ${selected}.`)
+    this.assertStarting(signal)
+    this.update({ phase: 'running', detail: 'Dinkster is running locally', ...(variant ? { variant } : {}) })
   }
 
   private async ensureSource(variant: EngineAccelerator, signal: AbortSignal): Promise<string> {

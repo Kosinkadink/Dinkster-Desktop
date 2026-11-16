@@ -25,6 +25,7 @@ import {
   RemoteWorkerFileGrants,
   RemoteWorkerLifecycle,
 } from './remote-workers.js'
+import { desktopTitle, engineServices, parseDesktopServices } from './services.js'
 import { ShellUpdater } from './shell-updater.js'
 import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
 import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } from './environment.js'
@@ -61,6 +62,16 @@ import type {
 } from './types.js'
 
 const { autoUpdater } = updater
+const services = (() => {
+  try { return parseDesktopServices(process.argv) }
+  catch (error) {
+    dialog.showErrorBox('Invalid hosted services', error instanceof Error ? error.message : String(error))
+    app.exit(1)
+    throw error
+  }
+})()
+// Child tools inherit only this launch's selection, never an inherited engine choice.
+process.env['DINKSTER_SERVICES'] = services
 let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
 const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean }>()
@@ -285,10 +296,10 @@ async function createProjectManager(): Promise<void> {
   projectWindow = new BrowserWindow({
     ...windowChromeOptions(),
     width: 1040, height: 760, minWidth: 600, minHeight: 500,
-    title: 'Dinkster Desktop', icon: applicationIcon(), backgroundColor: windowBackground(),
+    title: desktopTitle(services), icon: applicationIcon(), backgroundColor: windowBackground(),
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
-  installWindowChrome(projectWindow)
+  installWindowChrome(projectWindow, undefined, services)
   projectWindow.on('page-title-updated', (event) => event.preventDefault())
   denyRendererPermissions(projectWindow.webContents.session)
   projectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -392,6 +403,7 @@ async function handoffProject(project: DesktopProject, result: EnvironmentResult
     if (binding.projectId !== project.id || managed.isDestroyed()) continue
     if (!project.engines.some((engine) => engine.id === binding.engineId && engine.kind === 'local')) continue
     const url = localEngineUrl(project, binding.engineId, result)
+    if (await engineServices(url) !== services) throw new Error(`The updated engine did not select ${services} services.`)
     binding.backendUrl = url
     binding.development = status.sourceDescription !== undefined
     if (binding.gateway) binding.gateway.setTarget(url)
@@ -478,14 +490,21 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   else {
     const root = project!.root!
     await requirePackSandbox(project!, true)
-    const result = await environmentClient.run({
+    const request: EnvironmentRequest = {
       root, operation: 'start', engine: engine.id, gpus: engine.gpus,
       sandboxPacks: project!.sandboxPacks === true,
       ...(engine.port === undefined ? {} : { port: engine.port }),
-    }, true)
+    }
+    let result = await environmentClient.run(request, true)
     if (result.status !== 'applied') throw new Error('dinkster-env did not start the selected engine')
-    localEngines.set(`${projectId}/${engineId}`, { root, engine: engine.id })
     url = localEngineUrl(project!, engine.id, result)
+    if (await engineServices(url) !== services) {
+      await environmentClient.run({ root, operation: 'stop', engine: engine.id }, true)
+      result = await environmentClient.run(request, true)
+      url = localEngineUrl(project!, engine.id, result)
+      if (await engineServices(url) !== services) throw new Error(`The restarted engine did not select ${services} services.`)
+    }
+    localEngines.set(`${projectId}/${engineId}`, { root, engine: engine.id })
     development = (await environmentClient.run({ root, operation: 'status' })).sourceDescription !== undefined
   }
   const existing = [...remoteWindows].find(([managed, binding]) => !managed.isDestroyed() && binding.projectId === projectId && binding.engineId === engineId)
@@ -500,13 +519,13 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   }
   const remote = new BrowserWindow({
     ...windowChromeOptions(),
-    width: 1440, height: 900, title: 'Dinkster Desktop',
+    width: 1440, height: 900, title: desktopTitle(services),
     icon: applicationIcon(), backgroundColor: windowBackground(),
     webPreferences: engine.kind === 'local'
       ? { ...secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')), additionalArguments: ['--dinkster-local-files'] }
       : { contextIsolation: true, sandbox: true, nodeIntegration: false },
   })
-  installWindowChrome(remote, () => binding.development)
+  installWindowChrome(remote, () => binding.development, services)
   remote.on('page-title-updated', (event) => event.preventDefault())
   const binding: { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean } = {
     projectId, engineId, url, backendUrl: url, folderProject: undefined, document: 0, development,
@@ -530,6 +549,7 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
         },
         activate: async (result, added) => {
           const next = localEngineUrl(project!, engineId, result)
+          if (await engineServices(next) !== services) throw new Error('activation-failed')
           const health = await fetch(`${next}/api/health`, { signal: AbortSignal.timeout(10_000) })
           const body = await health.json() as { ok?: boolean; compositionState?: { epoch?: number; failed?: number } }
           const epoch = body.compositionState?.epoch
@@ -653,12 +673,12 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
     minWidth: Math.min(900, bounds.width),
     minHeight: Math.min(640, bounds.height),
     show: false,
-    title: 'Dinkster Desktop',
+    title: desktopTitle(services),
     icon: applicationIcon(),
     backgroundColor: windowBackground(),
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
-  installWindowChrome(managed)
+  installWindowChrome(managed, undefined, services)
   managed.on('page-title-updated', (event) => event.preventDefault())
   windows.set(id, managed)
   if (id === 'primary') window = managed
@@ -1214,9 +1234,14 @@ if (process.defaultApp) {
   app.setAsDefaultProtocolClient('dinkster')
 }
 
-const primaryInstance = app.requestSingleInstanceLock()
+const primaryInstance = app.requestSingleInstanceLock({ services })
 if (!primaryInstance) app.quit()
-app.on('second-instance', (_event, argv) => {
+app.on('second-instance', (_event, argv, _directory, additionalData) => {
+  const incoming = (additionalData as { services?: unknown } | undefined)?.services
+  if (incoming !== services) {
+    dialog.showErrorBox('Hosted services do not match', `The running Desktop uses ${services} services. Close it before launching with different services.`)
+    return
+  }
   const link = deepLinkFromArgv(argv)
   if (link) {
     void routeDeepLink(link)
@@ -1247,10 +1272,10 @@ if (primaryInstance) app.whenReady().then(async () => {
   applyCredentialHeaders()
   await createProjectManager()
   tray = new Tray(trayIcon())
-  tray.setToolTip('Dinkster Desktop')
+  tray.setToolTip(desktopTitle(services))
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Projects', click: () => { void createProjectManager() } },
-    { label: 'About Dinkster Desktop', click: () => { void showAbout() } },
+    { label: 'About Dinkster Desktop', click: () => { void showAbout(services) } },
     { type: 'separator' },
     { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
   ]))

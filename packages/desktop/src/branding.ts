@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, nativeImage, nativeTheme } from 'electron'
+import { desktopTitle, type DesktopServices } from './services.js'
 
 const directory = app.isPackaged
   ? join(process.resourcesPath, 'branding')
@@ -30,7 +31,7 @@ export function trayIcon(): Electron.NativeImage {
 
 let about: BrowserWindow | undefined
 
-export async function showAbout(): Promise<void> {
+export async function showAbout(services: DesktopServices = 'production'): Promise<void> {
   if (about && !about.isDestroyed()) {
     about.show()
     about.focus()
@@ -39,7 +40,7 @@ export async function showAbout(): Promise<void> {
   const panel = new BrowserWindow({
     width: 520,
     height: 320,
-    title: 'About Dinkster Desktop',
+    title: services === 'qa' ? desktopTitle(services) : 'About Dinkster Desktop',
     icon: applicationIcon(),
     backgroundColor: windowBackground(),
     resizable: false,
@@ -60,11 +61,11 @@ export async function showAbout(): Promise<void> {
   })
   const wordmark = (theme: string): string => readFileSync(join(directory, 'svg', `dinkster-wordmark-color-${theme}.svg`)).toString('base64')
   await panel.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
-<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>About Dinkster Desktop</title>
+<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>${services === 'qa' ? desktopTitle(services) : 'About Dinkster Desktop'}</title>
 <style>
 body{margin:0;background:${palette.light.bg.canvas};color:${palette.light.text.primary};font:16px system-ui;text-align:center;padding:38px 32px}
 img{width:360px;max-width:100%;height:112px;object-fit:contain}p{margin:16px 0 0}small{color:${palette.light.text.secondary}}.dark{display:none}
 @media(prefers-color-scheme:dark){body{background:${palette.dark.bg.canvas};color:${palette.dark.text.primary}}small{color:${palette.dark.text.secondary}}.light{display:none}.dark{display:inline}}
-</style></head><body><img class="light" alt="Dinkster" src="data:image/svg+xml;base64,${wordmark('light')}"><img class="dark" alt="Dinkster" src="data:image/svg+xml;base64,${wordmark('dark')}"><p>Dinkster Desktop</p><p><small>Version ${app.getVersion().replace(/[^0-9A-Za-z.+-]/g, '')}</small></p></body></html>`)}`)
+</style></head><body><img class="light" alt="Dinkster" src="data:image/svg+xml;base64,${wordmark('light')}"><img class="dark" alt="Dinkster" src="data:image/svg+xml;base64,${wordmark('dark')}"><p>${desktopTitle(services)}</p><p><small>Version ${app.getVersion().replace(/[^0-9A-Za-z.+-]/g, '')}</small></p></body></html>`)}`)
   panel.show()
 }

@@ -6,6 +6,7 @@ on:
       - '.github/workflows/verify-services.yml'
       - 'packages/desktop/src/**'
       - 'packages/e2e/scripts/verify-services.mjs'
+      - 'scripts/frontend-release.json'
 
 permissions:
   contents: read

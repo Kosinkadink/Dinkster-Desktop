@@ -90,6 +90,15 @@ a `stable` or `nightly` channel to one or more named engines. Additional local
 engines need distinct explicit ports. Each engine records its assigned GPUs.
 Two projects cannot bind the same install root.
 
+Pack sandboxing is opt-in per local project. Check availability in the local
+installation controls; Desktop displays the selected engine's readiness report
+and disables enabling when a prerequisite is missing. Save the binding to retain
+the choice. Opening a sandboxed local engine passes `--sandbox-packs`; a requested
+sandbox never falls back to an unsandboxed launch. Use **Stop engine**, review and
+confirm the operation, then change and save the choice before opening again.
+In-process packs and remote workers are outside this setting. A saved enabled
+request remains enabled when availability changes until explicitly turned off.
+
 A remote-only project stores server URLs and no install root. Opening it loads
 the server's frontend in an isolated window without a Desktop preload or Node
 capabilities. It does not invoke environment commands or create a generation.
@@ -302,8 +311,9 @@ cleanup / retry**, reviewing its plan before confirmation.
 
 For development, `DINKSTER_ENV` selects an installed environment executable.
 Alternatively, `DINKSTER_TOOLS_PYTHON` selects an interpreter containing the
-tools and runs `-I -m dinkster_supervisor.environment` with bundled-only child
-PATH and no inherited Python configuration. The release-owned manifest inputs
+tools and runs `-I -m dinkster_supervisor.environment` with bundled Python
+first on child PATH and no inherited Python configuration. System tools such as
+bubblewrap remain discoverable on the inherited PATH. The release-owned manifest inputs
 in [README](../README.md#environment-client-development) enable extraction-only
 bootstrap without a host interpreter. Desktop does not install missing tools
 by resolving packages at runtime.

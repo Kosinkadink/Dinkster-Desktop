@@ -246,6 +246,27 @@ describe('private WSL readiness', () => {
     await expect(service.status()).rejects.toThrow('list failed')
   })
 
+  it('uses selected Linux readiness and sandbox start for a WSL project', async () => {
+    const service = host()
+    const sandbox = { format: 'dinkster.sandbox-readiness/1', available: false, detail: 'Linux user namespaces are disabled' }
+    const run = vi.spyOn(service, 'run').mockImplementation(async (args) => JSON.stringify({
+      format: 'dinkster.environment-result/1', operation: args[2], status: 'clean',
+      root: '/home/dinkster/projects/studio', current: 2, plan: [],
+      ...(args[2] === 'doctor' ? { sandbox } : { engines: [{ name: 'main', generation: 2, state: 'ready', sandboxPacks: true }] }),
+    }))
+    const client = new EnvironmentClient('dinkster-env', [], undefined, undefined, undefined, service)
+    try {
+      const root = service.projectRoot('studio')
+      expect((await client.run({ root, operation: 'doctor', sandbox: true })).sandbox).toEqual(sandbox)
+      expect(run.mock.calls[0]?.[0]).toEqual(['--root', '/home/dinkster/projects/studio', 'doctor', '--sandbox', '--json'])
+      expect((await client.run({ root, operation: 'start', sandboxPacks: true }, true)).engines?.[0]?.sandboxPacks).toBe(true)
+      expect(run.mock.calls[1]?.[0]).toEqual(['--root', '/home/dinkster/projects/studio', 'start', '--sandbox-packs', '--json', '--yes'])
+    } finally {
+      run.mockRestore()
+      await client.dispose()
+    }
+  })
+
   it('accepts Windows WSL aliases but refuses a response for another Linux project', async () => {
     const service = host()
     let responseRoot = '/home/dinkster/projects/studio'

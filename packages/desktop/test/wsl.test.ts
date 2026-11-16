@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { WslHost, wslLinuxPath, wslLocation, wslWindowsPath } from '../src/wsl.js'
 import { EnvironmentClient } from '../src/environment.js'
+import type { EnvironmentToolsInput } from '../src/environment-tools.js'
+
+const trustedChannelKeys = vi.hoisted(() => ({} as Record<string, string>))
+vi.mock('../src/channel-signatures.js', async (original) => {
+  const actual = await original<typeof import('../src/channel-signatures.js')>()
+  return { ...actual, verifyChannel: (text: string, channel: string) => actual.verifyChannel(text, channel, trustedChannelKeys) }
+})
 
 vi.mock('node:path', async (original) => {
   const module = await original<typeof import('node:path')>()
@@ -20,6 +28,8 @@ afterEach(() => {
   Object.defineProperty(process, 'platform', platform)
   Object.defineProperty(process, 'arch', architecture)
   execute.mockReset()
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
 
 const distribution = 'Dinkster-Desktop-012345abcdef'
@@ -32,6 +42,52 @@ describe('private WSL readiness', () => {
     Object.defineProperty(process, 'arch', { value: 'x64' })
     return new WslHost('C:\\Desktop data', tools)
   }
+
+  it.each([false, true])('ignores host tools overrides for WSL with channel selection %s', async (channelSelected) => {
+    host()
+    const channelTools = { manifest: 'https://channel.invalid/tools.json', sha256: 'b'.repeat(64), release: 'https://channel.invalid/release' }
+    const override = { manifest: 'https://host.invalid/tools.json', sha256: 'c'.repeat(64), release: 'https://host.invalid/release' }
+    for (const [key, value] of Object.entries({
+      DINKSTER_TOOLS_MANIFEST: override.manifest,
+      DINKSTER_TOOLS_MANIFEST_SHA256: override.sha256,
+      DINKSTER_TOOLS_RELEASE: override.release,
+    })) vi.stubEnv(key, value)
+    vi.stubEnv('DINKSTER_ENV', undefined)
+    vi.stubEnv('DINKSTER_TOOLS_PYTHON', undefined)
+
+    const key = generateKeyPairSync('ed25519')
+    const publicBytes = key.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32)
+    const keyId = `sha256:${createHash('sha256').update(publicBytes).digest('hex')}`
+    trustedChannelKeys[keyId] = publicBytes.toString('base64')
+    const signed = JSON.stringify({ channel: 'nightly', format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0',
+      tools: { manifest: channelTools.manifest, release: channelTools.release, sha256: channelTools.sha256 } })
+    const envelope = JSON.stringify({ signatures: [{ keyId, signature: sign(null, Buffer.from(signed), key.privateKey).toString('base64') }], signed: JSON.parse(signed) })
+    vi.stubGlobal('fetch', async (url: string) => {
+      if (String(url) !== 'https://channel.invalid/channels/nightly.json') throw new Error('unexpected download')
+      return new Response(envelope)
+    })
+
+    // Stand in for the guest process: its response identifies the complete tools
+    // input it booted, while retaining the real client's selection and decoding.
+    class Guest extends WslHost {
+      override async run(args: readonly string[], input: EnvironmentToolsInput = tools): Promise<string> {
+        return JSON.stringify({ format: 'dinkster.environment-result/1', operation: args[2],
+          status: 'clean', root: args[1], current: null, plan: [], sourceDescription: JSON.stringify(input) })
+      }
+    }
+    const guest = new Guest('C:\\Desktop data', tools)
+    const client = new EnvironmentClient(undefined, undefined, undefined, undefined, '0.2.0', guest)
+    try {
+      const result = await client.run({ root: guest.projectRoot('studio'),
+        operation: channelSelected ? 'update' : 'status',
+        ...(channelSelected ? { channel: 'nightly' as const, mirrors: ['https://channel.invalid'] } : {}) })
+      expect(JSON.parse(result.sourceDescription!)).toEqual(channelSelected ? channelTools : tools)
+      expect(result.root).toBe(guest.projectRoot('studio'))
+    } finally {
+      await client.dispose()
+      delete trustedChannelKeys[keyId]
+    }
+  })
 
   it('reports missing WSL without installing it or selecting a user distribution', async () => {
     const service = host()

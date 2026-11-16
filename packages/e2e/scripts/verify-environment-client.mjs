@@ -27,6 +27,13 @@ let app
 try {
   for (const heading of ['Original supervisor', 'Updated supervisor']) {
     const server = createServer((request, response) => {
+      if (request.url === '/api/nodes?wire=1') {
+        response.setHeader('Content-Type', 'application/json')
+        response.end(
+          JSON.stringify({ dinkster: { services: { name: 'production' } } }),
+        )
+        return
+      }
       if (request.url === '/api/health' || request.url === '/api/composition') {
         response.setHeader('Content-Type', 'application/json')
         response.end(

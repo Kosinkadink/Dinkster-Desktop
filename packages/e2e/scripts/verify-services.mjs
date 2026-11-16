@@ -216,7 +216,13 @@ async function configuration(directory) {
           !/DINKSTER_SERVICES|"services"\s*:|\[QA\]/.test(bytes.toString()),
           `Persisted services in ${name}`,
         )
-        files[name] = createHash('sha256').update(bytes).digest('hex')
+        // Process state and lease owners change on every engine start, but must
+        // still pass the persisted-services scan above.
+        if (
+          !name.startsWith('runtime/') &&
+          !name.startsWith('dinkster-library/vault/.leases/')
+        )
+          files[name] = createHash('sha256').update(bytes).digest('hex')
       }
     }
   }

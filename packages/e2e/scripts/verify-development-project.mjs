@@ -167,7 +167,7 @@ try {
   )
   const generation = join(
     project,
-    'generations',
+    'builds',
     (await readFile(join(project, 'current'), 'utf8')).trim(),
   )
   receipt.generation = generation

@@ -297,9 +297,24 @@ try {
   assert.equal(result.status, 'applied')
   const number = (await readFile(join(projectRoot, 'current'), 'utf8')).trim()
   assert.match(number, /^[1-9][0-9]*$/)
-  const generation = join(projectRoot, 'generations', number)
+  const generation = join(projectRoot, 'builds', number)
   const record = JSON.parse(
-    await readFile(join(generation, 'generation.json'), 'utf8'),
+    await readFile(join(generation, 'build.json'), 'utf8'),
+  )
+  const settings = JSON.parse(
+    await readFile(join(projectRoot, 'environment.json'), 'utf8'),
+  )
+  assert.equal(settings.channel, 'stable')
+  const readiness = await manager.evaluate(
+    (root) => window.dinksterProjects.sandbox(root),
+    projectRoot,
+  )
+  assert.equal(readiness.format, 'dinkster.sandbox-readiness/1')
+  assert.equal(typeof readiness.available, 'boolean')
+  assert(readiness.detail)
+  await writeFile(
+    join(root, 'sandbox-readiness.json'),
+    JSON.stringify(readiness, null, 2),
   )
   assert.equal(record.engine.release, channel.engine.release)
   assert.equal(record.engine.version, channel.engine.version)
@@ -536,9 +551,9 @@ with writer_lock(Path(sys.argv[1])):
     await readFile(join(projectRoot, 'current'), 'utf8')
   ).trim()
   assert.notEqual(nextNumber, number)
-  const nextGeneration = join(projectRoot, 'generations', nextNumber)
+  const nextGeneration = join(projectRoot, 'builds', nextNumber)
   const nextRecord = JSON.parse(
-    await readFile(join(nextGeneration, 'generation.json'), 'utf8'),
+    await readFile(join(nextGeneration, 'build.json'), 'utf8'),
   )
   assert.equal(nextRecord.engine.release, nightly.engine.release)
   const nextPython = join(
@@ -588,7 +603,7 @@ with writer_lock(Path(sys.argv[1])):
   assert.notEqual(recoveredNumber, number)
   const recovered = JSON.parse(
     await readFile(
-      join(projectRoot, 'generations', recoveredNumber, 'generation.json'),
+      join(projectRoot, 'builds', recoveredNumber, 'build.json'),
       'utf8',
     ),
   )
@@ -632,6 +647,26 @@ with writer_lock(Path(sys.argv[1])):
     ),
   )
   await engine.close()
+  const stopPlan = await manager.evaluate(
+    ({ project, root }) =>
+      window.dinksterProjects.plan(project, {
+        root,
+        operation: 'stop',
+        engine: 'main',
+      }),
+    { project, root: projectRoot },
+  )
+  assert(stopPlan.token)
+  const stopped = await manager.evaluate(
+    (token) => window.dinksterProjects.apply(token),
+    stopPlan.token,
+  )
+  assert.equal(stopped.status, 'applied')
+  assert.equal(
+    stopped.engines.find((engine) => engine.name === 'main').state,
+    'stopped',
+  )
+  await writeFile(join(root, 'stopped.json'), JSON.stringify(stopped, null, 2))
   assert.equal(
     mirrorFailures.length,
     0,

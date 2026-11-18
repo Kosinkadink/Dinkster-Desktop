@@ -295,13 +295,14 @@ describe('Desktop dinkster-env command client', () => {
     await client.dispose()
   })
 
-  it('refuses a channel above the running Desktop before invoking any command, without gating offline operations', async () => {
+  it.each(['environment.json', 'project.json'])('reads %s and refuses a channel above Desktop without gating offline operations', async (settingsFile) => {
     const { root } = await commandFixture()
     const script = join(root, 'command.cjs')
     const client = new EnvironmentClient(process.execPath, [script], undefined, undefined, '0.2.0')
     await mkdir(join(root, 'channels'))
     const channel = join(root, 'channels', 'nightly.json')
-    await writeFile(join(root, 'project.json'), JSON.stringify({ channel: 'nightly', mirrors: [root] }))
+    if (settingsFile === 'environment.json') await writeFile(join(root, 'project.json'), JSON.stringify({ migrated: true }))
+    await writeFile(join(root, settingsFile), JSON.stringify({ channel: 'nightly', mirrors: [root] }))
     await writeFile(channel, channelFixture({ format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.1' }))
     for (const operation of ['setup', 'update', 'catalog'] as const) {
       await expect(client.run({ root, operation })).rejects.toThrow('DesktopVersionTooOld: channel requires Desktop 0.2.1')

@@ -55,7 +55,12 @@ assert.equal(
 )
 assert.equal(JSON.parse(toolsBytes).commit, manifest.commit)
 const toolsManifest = JSON.parse(toolsBytes)
-const toolsName = `dinkster-tools-${process.platform === 'win32' ? 'windows' : 'linux'}-x86_64.zip`
+const toolsOs = { win32: 'windows', linux: 'linux', darwin: 'macos' }[
+  process.platform
+]
+const toolsArch = { x64: 'x86_64', arm64: 'arm64' }[process.arch]
+assert(toolsOs && toolsArch, 'Unsupported packaged acceptance platform')
+const toolsName = `dinkster-tools-${toolsOs}-${toolsArch}.zip`
 const toolsRow = toolsManifest.artifacts.find((row) => row.name === toolsName)
 assert(toolsRow)
 const toolsArchive = Buffer.from(
@@ -191,7 +196,9 @@ try {
     root: projectRoot,
     operation: 'setup',
     channel: 'stable',
-    variant: process.platform === 'win32' ? 'win-cpu' : 'linux-cpu',
+    variant: { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
+      process.platform
+    ],
     mirrors: [mirrorUrl],
     data: join(root, 'store'),
     engine: 'main',
@@ -229,7 +236,7 @@ try {
   }
   mirrorChannel = channelText
   const integrity = await app.evaluate(
-    async ({ app }, { root, tools, manifest }) => {
+    async ({ app }, { root, tools, manifest, toolsName }) => {
       const path = process.getBuiltinModule('node:path')
       const fs = process.getBuiltinModule('node:fs/promises')
       const require = process
@@ -261,9 +268,7 @@ try {
       await refuse('manifest')
       await fs.writeFile(input.manifest, manifest)
       const native = JSON.parse(manifest).artifacts.find(
-        (row) =>
-          row.name ===
-          `dinkster-tools-${process.platform === 'win32' ? 'windows' : 'linux'}-x86_64.zip`,
+        (row) => row.name === toolsName,
       )
       const archive = path.join(directory, native.name)
       await fs.writeFile(archive, 'x')
@@ -272,7 +277,12 @@ try {
       await refuse('digest')
       return results
     },
-    { root, tools: channel.tools, manifest: toolsBytes.toString('utf8') },
+    {
+      root,
+      tools: channel.tools,
+      manifest: toolsBytes.toString('utf8'),
+      toolsName,
+    },
   )
   assert.match(integrity.manifest, /checksum mismatch/)
   assert.match(integrity.size, /size mismatch/)

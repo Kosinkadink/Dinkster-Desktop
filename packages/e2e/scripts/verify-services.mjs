@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -71,6 +71,26 @@ const receipt = {
   engines: [],
 }
 let app
+const runtimeRoots = new Map()
+
+async function retainRuntimeLogs(directory, destination) {
+  let entries
+  try {
+    entries = await readdir(directory, { withFileTypes: true })
+  } catch (error) {
+    if (error.code === 'ENOENT') return
+    throw error
+  }
+  for (const entry of entries) {
+    const source = join(directory, entry.name)
+    const target = join(destination, entry.name)
+    if (entry.isDirectory()) await retainRuntimeLogs(source, target)
+    else if (entry.isFile() && entry.name.endsWith('.log')) {
+      await mkdir(destination, { recursive: true })
+      await copyFile(source, target)
+    }
+  }
+}
 
 async function launch(selection) {
   app = await electron.launch({
@@ -447,13 +467,18 @@ try {
         root: guest ? guest.projectRoot(channel) : join(root, channel),
         engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [], port }],
       }
+      runtimeRoots.set(channel, join(project.root, 'runtime'))
       const request = {
         root: project.root,
         operation: 'setup',
         channel,
         mirrors: ['https://releases.dinkster.org'],
         port,
-        variant: process.platform === 'win32' && !wsl ? 'win-cpu' : 'linux-cpu',
+        variant: wsl
+          ? 'linux-cpu'
+          : { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
+              process.platform
+            ],
         data: guest ? guest.projectRoot('store') : join(root, 'store'),
         engine: 'main',
         gpus: [],
@@ -746,6 +771,15 @@ try {
   )
   throw error
 } finally {
-  await app?.close()
-  await new Promise((done) => fixture.close(done))
+  try {
+    await app?.close()
+  } finally {
+    try {
+      for (const [channel, directory] of runtimeRoots) {
+        await retainRuntimeLogs(directory, join(root, 'runtime-logs', channel))
+      }
+    } finally {
+      await new Promise((done) => fixture.close(done))
+    }
+  }
 }

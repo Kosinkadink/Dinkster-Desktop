@@ -425,12 +425,7 @@ try {
               delay 0.1
             end repeat
             set errorWindow to window 1 of invalidApp
-            set dialogText to ""
-            repeat with dialogItem in (entire contents of errorWindow)
-              try
-                set dialogText to dialogText & " " & (value of dialogItem as text)
-              end try
-            end repeat
+            set dialogText to (value of every static text of errorWindow) as text
             if dialogText does not contain "Invalid hosted services" then error "Error did not name the invalid services option"
             if dialogText does not contain "production or qa" then error "Error did not name both allowed values"
           end tell

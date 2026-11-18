@@ -297,7 +297,25 @@ try {
         .createRequire(`${app.getAppPath()}/package.json`)
       await require(`${app.getAppPath()}/dist/branding.js`).showAbout(selection)
     }, selection)
-    await mark(await aboutOpened, selection, 'about')
+    const aboutPage = await aboutOpened
+    await expect(
+      aboutPage.getByRole('heading', {
+        name: `Dinkster Desktop${selection === 'qa' ? ' [QA]' : ''}`,
+        exact: true,
+      }),
+    ).toBeVisible()
+    const shellVersion = await app.evaluate(({ app }) => app.getVersion())
+    await expect(
+      aboutPage.getByText(`Version ${shellVersion}`, { exact: true }),
+    ).toBeVisible()
+    await aboutPage.evaluate(() => document.fonts.ready)
+    assert.match(
+      await aboutPage
+        .getByRole('heading')
+        .evaluate((heading) => getComputedStyle(heading).fontFamily),
+      /Noto Sans/,
+    )
+    await mark(aboutPage, selection, 'about')
     for (const [index, page] of app.windows().entries()) {
       const title = await (
         await app.browserWindow(page)

@@ -1,7 +1,12 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { forwardMirror } from '../../e2e/scripts/forward-mirror.mjs'
+import { download } from '../src/io.js'
 
+const roots = []
 const servers = []
 async function listen(handler) {
   const server = createServer(handler)
@@ -16,6 +21,36 @@ afterEach(async () => {
       await new Promise((done) => server.close(done))
     }),
   )
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+})
+
+it.each([false, true])('recovers a mirrored interrupted transfer or reports bounded failure (persistent: %s)', async (persistent) => {
+  const root = await mkdtemp(join(tmpdir(), 'dinkster-mirror-test-'))
+  roots.push(root)
+  const destination = join(root, 'artifact')
+  await writeFile(destination, 'original')
+  let requests = 0
+  const origin = await listen((request, response) => {
+    requests++
+    response.writeHead(200, { 'Content-Length': 9 })
+    if (persistent || requests < 3) {
+      response.write('part')
+      response.socket.end()
+    } else response.end('recovered')
+  })
+  const failures = []
+  const forwards = []
+  const mirror = await listen((request, response) => {
+    forwards.push(forwardMirror(`${origin}/artifact`, response).catch((error) => failures.push(error)))
+  })
+  const transfer = download(`${mirror}/artifact`, destination, undefined, 9)
+  if (persistent) await expect(transfer).rejects.toThrow(/download interrupted.*3 attempts/)
+  else await transfer
+  await Promise.all(forwards)
+  expect(requests).toBe(3)
+  expect(await readFile(destination, 'utf8')).toBe(persistent ? 'original' : 'recovered')
+  expect(failures).toHaveLength(persistent ? 3 : 2)
+  for (const error of failures) expect(error.diagnostic).toMatchObject({ status: 200, contentLength: '9', bytesReceived: 4 })
 })
 
 it('preserves a complete upstream body and status', async () => {

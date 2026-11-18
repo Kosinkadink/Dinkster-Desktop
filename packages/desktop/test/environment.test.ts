@@ -510,7 +510,7 @@ describe('Desktop dinkster-env command client', () => {
       if (corruption === 'archive') expect(requests).toContain(`${mirror}/tools/${label}/${row.name}`)
       expect(requests.some((url) => url.startsWith(origin))).toBe(false)
       const corruptOnly = await channelTools({ root, operation: 'setup', channel: 'nightly', mirrors: [mirror] }, '0.2.0')
-      await expect(acquireEnvironmentTools(corruptOnly!)).rejects.toThrow('official tools origin denied')
+      await expect(acquireEnvironmentTools(corruptOnly!)).rejects.toThrow(/checksum mismatch.*official tools origin denied/)
     }
     originOnline = true
     const fallback = await channelTools({ root, operation: 'setup', channel: 'nightly', mirrors: [mirror] }, '0.2.0')

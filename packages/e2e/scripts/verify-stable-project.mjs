@@ -105,6 +105,7 @@ let mirrorChannel = channelText
 let mirrorOnline = true
 const mirrorRequests = []
 const mirrorFailures = []
+const failedMirrorRequests = new Set()
 const mirror = createMirror(async (request, response) => {
   mirrorRequests.push(request.url)
   if (!mirrorOnline) {
@@ -129,7 +130,9 @@ const mirror = createMirror(async (request, response) => {
   }
   try {
     await forwardMirror(`${publicRoot}${request.url}`, response)
+    failedMirrorRequests.delete(request.url)
   } catch (error) {
+    failedMirrorRequests.add(request.url)
     mirrorFailures.push(error)
     console.error(error)
     writeFileSync(
@@ -668,9 +671,9 @@ with writer_lock(Path(sys.argv[1])):
   )
   await writeFile(join(root, 'stopped.json'), JSON.stringify(stopped, null, 2))
   assert.equal(
-    mirrorFailures.length,
+    failedMirrorRequests.size,
     0,
-    'Upstream mirror requests must succeed',
+    'Every failed upstream mirror request must recover',
   )
 } catch (error) {
   await manager

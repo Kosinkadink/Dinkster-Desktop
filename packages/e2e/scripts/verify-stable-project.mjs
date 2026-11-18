@@ -159,6 +159,7 @@ const app = await electron.launch({
   timeout: 60_000,
 })
 let manager
+let toolsPython
 try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
   await app.evaluate(() => {
@@ -402,7 +403,7 @@ print(json.dumps({'python': sys.executable, 'packages': packages, 'packs': packs
     1,
     'Desktop must acquire the exact Stable tools',
   )
-  const toolsPython = join(
+  toolsPython = join(
     toolsTrees[0],
     'payload/python',
     process.platform === 'win32' ? 'python.exe' : 'bin/python3',
@@ -686,6 +687,71 @@ with writer_lock(Path(sys.argv[1])):
     'Every failed upstream mirror request must recover',
   )
 } catch (error) {
+  if (
+    process.platform === 'win32' &&
+    toolsPython &&
+    String(error).includes('authenticated supervisor did not stop')
+  ) {
+    try {
+      const diagnostic = execFileSync(
+        toolsPython,
+        [
+          '-I',
+          '-c',
+          `
+import hashlib, json, sys, time
+from pathlib import Path
+root = Path(sys.argv[1])
+number = (root / 'project/current').read_text().strip()
+record = json.loads((root / 'project/runtime' / number / 'main.json').read_text())
+instance = record['instance']
+lifecycle = root / 'project/runtime' / number / 'main.process' / hashlib.sha256(instance.encode()).hexdigest()
+state = json.loads((lifecycle / 'state.json').read_text())
+assert state['instance'] == instance and state['pid'] == record['pid']
+if state['state'] != 'running':
+    print('Supervisor lifecycle is not running; no attachment attempted')
+else:
+    output = root / 'supervisor-shutdown.log'
+    script = root / 'supervisor-shutdown-diagnostic.py'
+    script.write_text(r'''import asyncio, faulthandler, sys
+from pathlib import Path
+if (__INSTANCE__ in sys.argv
+        and Path(sys.argv[0]).name == 'supervisor.py'
+        and Path(sys.argv[0]).parent.name == 'dinkster_supervisor'):
+    with Path(__OUTPUT__).open('w') as output:
+        faulthandler.dump_traceback(file=output, all_threads=True)
+        try:
+            tasks = asyncio.all_tasks()
+        except RuntimeError:
+            tasks = ()
+        for task in tasks:
+            output.write('Async task\\n')
+            coroutine = task.get_coro()
+            while coroutine is not None:
+                frame = getattr(coroutine, 'cr_frame', getattr(coroutine, 'gi_frame', None))
+                if frame is not None:
+                    output.write(f'{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}\\n')
+                coroutine = getattr(coroutine, 'cr_await', getattr(coroutine, 'gi_yieldfrom', None))
+'''.replace('__INSTANCE__', repr('--instance=' + instance)).replace('__OUTPUT__', repr(str(output))), encoding='utf-8')
+    # A pending request may still read the script, so retain it until runner disposal.
+    sys.remote_exec(record['pid'], str(script))
+    deadline = time.monotonic() + 5
+    while not output.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    print('Shutdown stacks retained' if output.exists() else 'Attachment requested; target did not produce stacks')
+`,
+          root,
+        ],
+        { encoding: 'utf8', env, timeout: 10_000 },
+      )
+      await writeFile(join(root, 'shutdown-diagnostics.log'), diagnostic)
+    } catch (diagnosticError) {
+      await writeFile(
+        join(root, 'shutdown-diagnostics.log'),
+        `Shutdown stack capture failed: ${diagnosticError.message}`,
+      )
+    }
+  }
   await manager
     ?.screenshot({ path: join(root, 'failed.png'), fullPage: true })
     .catch(() => undefined)

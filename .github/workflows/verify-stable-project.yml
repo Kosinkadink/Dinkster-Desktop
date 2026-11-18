@@ -101,6 +101,7 @@ jobs:
           path: |
             ${{ runner.temp }}/signed-stable-project/*.png
             ${{ runner.temp }}/signed-stable-project/*.json
+            ${{ runner.temp }}/signed-stable-project/*.log
             ${{ runner.temp }}/signed-stable-project/project/runtime/**/*.log
           retention-days: 7
           if-no-files-found: ignore

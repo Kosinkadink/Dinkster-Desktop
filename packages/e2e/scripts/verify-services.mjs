@@ -405,6 +405,54 @@ try {
         },
       )
     }
+    if (process.platform === 'darwin') {
+      const { stdout } = await promisify(execFile)(
+        'osascript',
+        [
+          '-e',
+          `
+          set invalidPid to (system attribute "DINKSTER_INVALID_PID") as integer
+          set screenshotPath to system attribute "DINKSTER_INVALID_SCREENSHOT"
+          set deadline to (current date) + 20
+          tell application "System Events"
+            repeat
+              set candidates to application processes whose unix id is invalidPid
+              if (count of candidates) is 1 then
+                set invalidApp to item 1 of candidates
+                if (count of windows of invalidApp) > 0 then exit repeat
+              end if
+              if (current date) > deadline then error "Invalid services error dialog did not appear"
+              delay 0.1
+            end repeat
+            set errorWindow to window 1 of invalidApp
+            set dialogText to ""
+            repeat with dialogItem in (entire contents of errorWindow)
+              try
+                set dialogText to dialogText & " " & (value of dialogItem as text)
+              end try
+            end repeat
+            if dialogText does not contain "Invalid hosted services" then error "Error did not name the invalid services option"
+            if dialogText does not contain "production or qa" then error "Error did not name both allowed values"
+          end tell
+          do shell script "/usr/sbin/screencapture -x " & quoted form of screenshotPath
+          tell application "System Events"
+            click button "OK" of errorWindow
+            return dialogText
+          end tell
+          `,
+        ],
+        {
+          env: {
+            ...env,
+            DINKSTER_INVALID_PID: String(invalid.pid),
+            DINKSTER_INVALID_SCREENSHOT: join(root, 'invalid-services.png'),
+          },
+          timeout: 30_000,
+        },
+      )
+      assert.match(stdout, /Invalid hosted services/)
+      assert.match(stdout, /production or qa/)
+    }
     assert.equal(
       await Promise.race([
         invalidExited,
@@ -418,7 +466,7 @@ try {
       ]),
       1,
     )
-    if (process.platform !== 'win32') {
+    if (process.platform === 'linux') {
       assert.match(invalidStderr, /Invalid hosted services/)
       assert.match(invalidStderr, /production or qa/)
     }

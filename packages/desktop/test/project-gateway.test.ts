@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http'
+import { createServer, request as httpRequest, type IncomingHttpHeaders, type Server } from 'node:http'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import * as paths from 'node:path'
@@ -69,6 +69,49 @@ async function fixture(allowPackInstall = true) {
   const plan = () => post('plan', { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] })
   return { gateway, calls, queue, enqueued, post, plan, setOwner: (value: string) => { owner = value }, fail: (value: string) => { failure = value }, hold: (value: (() => Promise<void>) | undefined) => { hold = value } }
 }
+
+it('forwards only validated gateway origins as the current upstream origin for HTTP and WebSocket', async () => {
+  const received: IncomingHttpHeaders[] = []
+  const targets: string[] = []
+  for (let index = 0; index < 2; index++) {
+    const server = createServer((request, response) => {
+      received.push(request.headers)
+      response.end('bundle')
+    })
+    server.on('upgrade', (request, socket) => {
+      received.push(request.headers)
+      socket.end('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n')
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('no address')
+    targets.push(`http://127.0.0.1:${address.port}`)
+  }
+  const f = await fixture()
+  for (const target of targets) {
+    f.gateway.setTarget(target)
+    const before = received.length
+    expect((await fetch(`${f.gateway.url}/assets/app.js`, { headers: { origin: 'https://attacker.invalid' } })).status).toBe(403)
+    expect(received).toHaveLength(before)
+    expect(await (await fetch(`${f.gateway.url}/assets/app.js`, { headers: { origin: f.gateway.url, authorization: 'Bearer retained' } })).text()).toBe('bundle')
+    expect(received.at(-1)).toMatchObject({ host: new URL(target).host, origin: target, authorization: 'Bearer retained' })
+    await fetch(`${f.gateway.url}/assets/app.css`)
+    expect(received.at(-1)?.origin).toBeUndefined()
+    for (const origin of ['https://attacker.invalid', f.gateway.url]) {
+      const count = received.length
+      const upgraded = await new Promise<boolean>((resolve, reject) => {
+        const request = httpRequest(f.gateway.url, { headers: { origin, connection: 'Upgrade', upgrade: 'websocket' } })
+        request.on('upgrade', (_response, socket) => { socket.destroy(); resolve(true) })
+        request.on('error', (error: NodeJS.ErrnoException) => { if (error.code === 'ECONNRESET') resolve(false); else reject(error) })
+        request.end()
+      })
+      expect(upgraded).toBe(origin === f.gateway.url)
+      expect(received).toHaveLength(count + (upgraded ? 1 : 0))
+      if (upgraded) expect(received.at(-1)).toMatchObject({ host: new URL(target).host, origin: target })
+    }
+  }
+})
 
 it('keeps one origin, consumes only the retained review and switches upstream without navigation', async () => {
   const f = await fixture()

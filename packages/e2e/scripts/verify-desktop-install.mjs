@@ -86,7 +86,7 @@ try {
       assert.equal(await readFile(path, 'utf8'), record, 'Refused URL must not change bindings')
       async function inspect(directory) {
         for (const entry of await readdir(directory, { withFileTypes: true })) {
-          assert(!['generations', 'current', 'store', 'journal', '.venv'].includes(entry.name), `Unexpected environment state: ${entry.name}`)
+          assert(!['builds', 'generations', 'current', 'store', 'journal', '.venv'].includes(entry.name), `Unexpected environment state: ${entry.name}`)
           if (entry.isDirectory()) await inspect(join(directory, entry.name))
         }
       }

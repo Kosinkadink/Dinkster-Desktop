@@ -39,6 +39,50 @@ describe('artifact downloads', () => {
     }
   })
 
+  it.each([false, true])('bounds retries for an interrupted transfer (persistent: %s)', async (persistent) => {
+    let requests = 0
+    const server = createServer((_request, response) => {
+      requests++
+      response.writeHead(200, { 'Content-Length': 9 })
+      if (persistent || requests < 3) {
+        response.write('part')
+        response.socket!.end()
+      } else response.end('recovered')
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const destination = join(root, 'interrupted.zip')
+    await writeFile(destination, 'original')
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('download fixture did not bind')
+      const transfer = download(`http://127.0.0.1:${address.port}/artifact.zip`, destination, undefined, 9)
+      if (persistent) await expect(transfer).rejects.toThrow(/download interrupted.*3 attempts/)
+      else await transfer
+      expect(requests).toBe(3)
+      expect(await readFile(destination, 'utf8')).toBe(persistent ? 'original' : 'recovered')
+      expect(existsSync(`${destination}.part`)).toBe(false)
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('does not retry a denied response or extend an aborted download', async () => {
+    const destination = join(root, 'refused.zip')
+    await writeFile(destination, 'original')
+    const fetcher = vi.fn(async () => new Response(null, { status: 403 }))
+    vi.stubGlobal('fetch', fetcher)
+    await expect(download('https://example.test/archive', destination)).rejects.toThrow('403')
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    const controller = new AbortController()
+    controller.abort()
+    fetcher.mockImplementation(async () => { throw controller.signal.reason })
+    await expect(download('https://example.test/archive', destination, controller.signal)).rejects.toThrow()
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(await readFile(destination, 'utf8')).toBe('original')
+    expect(existsSync(`${destination}.part`)).toBe(false)
+  })
+
   it('rejects credential-bearing redirects and HTTPS downgrades without replacing the artifact', async () => {
     const destination = join(root, 'redirect.zip')
     await writeFile(destination, 'original')

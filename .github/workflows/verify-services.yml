@@ -18,6 +18,8 @@ jobs:
         include:
           - os: ubuntu-latest
             host: native
+          - os: macos-latest
+            host: native
           - os: windows-latest
             host: native
           - os: windows-2025
@@ -55,6 +57,23 @@ jobs:
       - name: Package Linux AppImage
         if: runner.os == 'Linux'
         run: pnpm --filter @dinkster/desktop package:linux
+      - name: Package and verify Apple Silicon launch services
+        if: runner.os == 'macOS'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ runner.temp }}/desktop-services-proof
+        run: |
+          test "$(uname -m)" = arm64
+          pnpm --filter @dinkster/desktop package:mac
+          archives=(packages/desktop/release/Dinkster-Desktop-*-macos-arm64.zip)
+          test "${#archives[@]}" = 1
+          ditto -x -k "${archives[0]}" "$RUNNER_TEMP/desktop-services-installed"
+          app="$RUNNER_TEMP/desktop-services-installed/Dinkster Desktop.app"
+          xattr -dr com.apple.quarantine "$app"
+          export DINKSTER_DESKTOP_EXECUTABLE="$app/Contents/MacOS/Dinkster Desktop"
+          test "$(lipo -archs "$DINKSTER_DESKTOP_EXECUTABLE")" = arm64
+          node packages/desktop/scripts/verify-installed-tools.mjs "$app/Contents/Resources"
+          node packages/e2e/scripts/verify-services.mjs
       - uses: actions/download-artifact@v4
         if: runner.os == 'Windows'
         with:
@@ -90,5 +109,6 @@ jobs:
             ${{ runner.temp }}/desktop-services-proof/*.png
             ${{ runner.temp }}/desktop-services-proof/*.json
             ${{ runner.temp }}/desktop-services-proof/*.log
+            ${{ runner.temp }}/desktop-services-proof/runtime-logs/**/*.log
           retention-days: 7
           if-no-files-found: ignore

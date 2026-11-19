@@ -175,7 +175,7 @@ try {
   assert.equal(status.root, root)
   receipt.installed = status
   const settings = JSON.parse(
-    await readFile(join(root, 'project.json'), 'utf8'),
+    await readFile(join(root, 'environment.json'), 'utf8'),
   )
   assert.equal(settings.variant, 'linux-cpu')
   receipt.steps.push(

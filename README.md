@@ -160,7 +160,13 @@ Local operations review the command's plan before confirmation. A saved engine
 binding starts the existing generation through `dinkster-env start`; updates
 and rollbacks route open windows to the newly returned supervisor URL, not the
 previous port. Desktop metadata stores bindings only; the environment command
-owns `project.json`, store discovery, generations and process identity.
+owns `environment.json`, `builds/<n>/build.json`, store discovery and process
+identity. The bundled supervisor tools must understand the same disk layout as
+any engine offered to this Desktop by a release channel. Desktop 0.2.9 bundles
+supervisor 0.0.13 to control environments written by Stable 0.0.16, including
+readiness, start and stop while offline. Legacy `project.json` settings are read
+only until the supervisor performs its one-time environment migration; Desktop's
+separate `projects.json` file remains a registry of shell bindings.
 
 The local manager's **Cleanup status (read-only)** operation displays backend
 retention reasons, automatic-cleanup preference, quarantined generations and

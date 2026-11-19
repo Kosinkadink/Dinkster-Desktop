@@ -285,6 +285,7 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
       reply(response, 403, { error: 'origin-not-allowed' }); return
     }
     delete request.headers[PROJECT_INSTALL_HEADER]
+    if (request.headers.origin !== undefined) request.headers.origin = target
     proxy.web(request, response, { target }, () => {
       if (!response.headersSent) reply(response, 502, { error: 'backend-unavailable' })
       else response.destroy()
@@ -293,6 +294,7 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
   server.on('upgrade', (request, socket, head) => {
     if (request.headers.host !== new URL(origin).host || (request.headers.origin !== undefined && request.headers.origin !== origin)) { socket.destroy(); return }
     delete request.headers[PROJECT_INSTALL_HEADER]
+    if (request.headers.origin !== undefined) request.headers.origin = target
     upgrades.add(socket)
     socket.once('close', () => upgrades.delete(socket))
     proxy.ws(request, socket, head, { target }, () => socket.destroy())

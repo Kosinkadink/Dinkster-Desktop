@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -71,6 +71,26 @@ const receipt = {
   engines: [],
 }
 let app
+const runtimeRoots = new Map()
+
+async function retainRuntimeLogs(directory, destination) {
+  let entries
+  try {
+    entries = await readdir(directory, { withFileTypes: true })
+  } catch (error) {
+    if (error.code === 'ENOENT') return
+    throw error
+  }
+  for (const entry of entries) {
+    const source = join(directory, entry.name)
+    const target = join(destination, entry.name)
+    if (entry.isDirectory()) await retainRuntimeLogs(source, target)
+    else if (entry.isFile() && entry.name.endsWith('.log')) {
+      await mkdir(destination, { recursive: true })
+      await copyFile(source, target)
+    }
+  }
+}
 
 async function launch(selection) {
   app = await electron.launch({
@@ -238,10 +258,11 @@ async function configuration(directory) {
           !/DINKSTER_SERVICES|"services"\s*:|\[QA\]/.test(bytes.toString()),
           `Persisted services in ${name}`,
         )
-        // Process state and lease owners change on every engine start, but must
-        // still pass the persisted-services scan above.
+        // Process state, the engine lock owner and lease owners change on every
+        // engine start, but must still pass the persisted-services scan above.
         if (
           !name.startsWith('runtime/') &&
+          name !== 'dinkster-library/.engine.lock' &&
           !name.startsWith('dinkster-library/vault/.leases/')
         )
           files[name] = createHash('sha256').update(bytes).digest('hex')
@@ -384,6 +405,49 @@ try {
         },
       )
     }
+    if (process.platform === 'darwin') {
+      const { stdout } = await promisify(execFile)(
+        'osascript',
+        [
+          '-e',
+          `
+          set invalidPid to (system attribute "DINKSTER_INVALID_PID") as integer
+          set screenshotPath to system attribute "DINKSTER_INVALID_SCREENSHOT"
+          set deadline to (current date) + 20
+          tell application "System Events"
+            repeat
+              set candidates to application processes whose unix id is invalidPid
+              if (count of candidates) is 1 then
+                set invalidApp to item 1 of candidates
+                if (count of windows of invalidApp) > 0 then exit repeat
+              end if
+              if (current date) > deadline then error "Invalid services error dialog did not appear"
+              delay 0.1
+            end repeat
+            set errorWindow to window 1 of invalidApp
+            set dialogText to (value of every static text of errorWindow) as text
+            if dialogText does not contain "Invalid hosted services" then error "Error did not name the invalid services option"
+            if dialogText does not contain "production or qa" then error "Error did not name both allowed values"
+          end tell
+          do shell script "/usr/sbin/screencapture -x " & quoted form of screenshotPath
+          tell application "System Events"
+            click button "OK" of errorWindow
+            return dialogText
+          end tell
+          `,
+        ],
+        {
+          env: {
+            ...env,
+            DINKSTER_INVALID_PID: String(invalid.pid),
+            DINKSTER_INVALID_SCREENSHOT: join(root, 'invalid-services.png'),
+          },
+          timeout: 30_000,
+        },
+      )
+      assert.match(stdout, /Invalid hosted services/)
+      assert.match(stdout, /production or qa/)
+    }
     assert.equal(
       await Promise.race([
         invalidExited,
@@ -397,7 +461,7 @@ try {
       ]),
       1,
     )
-    if (process.platform !== 'win32') {
+    if (process.platform === 'linux') {
       assert.match(invalidStderr, /Invalid hosted services/)
       assert.match(invalidStderr, /production or qa/)
     }
@@ -446,13 +510,18 @@ try {
         root: guest ? guest.projectRoot(channel) : join(root, channel),
         engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [], port }],
       }
+      runtimeRoots.set(channel, join(project.root, 'runtime'))
       const request = {
         root: project.root,
         operation: 'setup',
         channel,
         mirrors: ['https://releases.dinkster.org'],
         port,
-        variant: process.platform === 'win32' && !wsl ? 'win-cpu' : 'linux-cpu',
+        variant: wsl
+          ? 'linux-cpu'
+          : { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
+              process.platform
+            ],
         data: guest ? guest.projectRoot('store') : join(root, 'store'),
         engine: 'main',
         gpus: [],
@@ -745,6 +814,15 @@ try {
   )
   throw error
 } finally {
-  await app?.close()
-  await new Promise((done) => fixture.close(done))
+  try {
+    await app?.close()
+  } finally {
+    try {
+      for (const [channel, directory] of runtimeRoots) {
+        await retainRuntimeLogs(directory, join(root, 'runtime-logs', channel))
+      }
+    } finally {
+      await new Promise((done) => fixture.close(done))
+    }
+  }
 }

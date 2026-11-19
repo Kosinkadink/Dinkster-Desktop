@@ -73,6 +73,13 @@ const receipt = {
 let app
 const runtimeRoots = new Map()
 
+function progress(stage, channel, selection) {
+  appendFileSync(
+    join(root, 'services-progress.log'),
+    `${new Date().toISOString()} ${channel} ${selection ?? '-'} ${stage}\n`,
+  )
+}
+
 async function retainRuntimeLogs(directory, destination) {
   let entries
   try {
@@ -258,13 +265,14 @@ async function configuration(directory) {
           !/DINKSTER_SERVICES|"services"\s*:|\[QA\]/.test(bytes.toString()),
           `Persisted services in ${name}`,
         )
-        // Process state, attachment locks, live mount scans and lease owners
-        // change on restart, but must still pass the services scan above.
+        // Process state, attachment locks and derived mount indexes change on
+        // engine start, but must still pass the persisted-services scan above.
         if (
           !name.startsWith('runtime/') &&
           name !== 'dinkster-library/.engine.lock' &&
+          !/^dinkster-library\/helper-[0-9a-f-]{36}\.lock$/.test(name) &&
           name !== 'dinkster-library/worker-state/mounts-snapshot.json' &&
-          !/^dinkster-library\/helper-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.lock$/.test(
+          !/^dinkster-library\/worker-state\/asset-indexes\/[^/]+\.json$/.test(
             name,
           ) &&
           !name.startsWith('dinkster-library/vault/.leases/')
@@ -497,6 +505,7 @@ try {
   }
   if (!sourceOnly) {
     for (const channel of ['stable', 'nightly']) {
+      progress('setup started', channel)
       const portProbe = createServer()
       await new Promise((done) => portProbe.listen(0, '127.0.0.1', done))
       const port = portProbe.address().port
@@ -559,9 +568,12 @@ try {
         planned.token,
       )
       assert.equal(applied.status, 'applied')
+      progress('setup applied; closing Desktop', channel)
       await app.close()
       app = undefined
+      progress('Desktop closed; reading baseline', channel)
       const baseline = await configuration(project.root)
+      progress('baseline read', channel)
       const { channelTools } = await import(
         '../../desktop/dist/environment-channel.js'
       )
@@ -629,6 +641,7 @@ try {
           `\nStarting ${channel} ${selection}; previous: ${previous ?? 'none'}\n`,
         )
         if (previous) {
+          progress('starting previous services', channel, selection)
           const result = await runTools(
             [
               'start',
@@ -647,7 +660,9 @@ try {
           ).then((response) => response.json())
           assert.equal(foreign.dinkster.services.name, previous)
         }
+        progress('launching Desktop', channel, selection)
         const manager = await launch(selection)
+        progress('opening engine', channel, selection)
         const opened = app.waitForEvent('window', { timeout: 120_000 })
         const [, engine] = await Promise.all([
           manager.evaluate(
@@ -656,6 +671,7 @@ try {
           ),
           opened,
         ])
+        progress('engine opened; checking canvas', channel, selection)
         await expect(engine.getByTestId('graph-canvas')).toBeVisible({
           timeout: 120_000,
         })
@@ -708,14 +724,22 @@ try {
           qaServicesBadge: await badge.isVisible(),
         })
         previous = selection
+        progress('engine verified; closing Desktop', channel, selection)
         await app.close()
         app = undefined
+        progress(
+          'Desktop closed; checking environment configuration',
+          channel,
+          selection,
+        )
         assert.deepEqual(
           await configuration(project.root),
           baseline,
           'A services-only restart changed project/generation configuration',
         )
+        progress('checking Desktop configuration', channel, selection)
         await configuration(env.DINKSTER_DESKTOP_DATA)
+        progress('transition verified', channel, selection)
       }
     }
   }

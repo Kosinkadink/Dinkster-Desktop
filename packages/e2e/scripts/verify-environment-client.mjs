@@ -113,11 +113,32 @@ const root = args[args.indexOf('--root') + 1];
 const operation = args[args.indexOf('--root') + 2];
 const planned = args.includes('--plan');
 const observed = ${JSON.stringify(join(scratch, 'observed.json'))};
+const cleanup = {
+  policy:{automatic:false,previousSuccessfulActivations:2,minimumAgeSeconds:0},
+  generations:[{generation:7,status:'retained',reasons:['current snapshot']}],
+  quarantine:[{journal:'600.json',stage:'complete',generations:[2]}],
+  warnings:['snapshot 2 awaits deletion']
+};
+if (operation === 'space') {
+  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'clean',root,current:7,plan:[],
+    space:{format:'dinkster.space/1',observedAt:1,project:root,store:null,scope:'Managed software only',sharing:'Shared sizes overlap',
+      complete:true,allocatedBytes:4096,observedAllocatedBytes:4096,sharedAllocatedBytes:0,
+      eligibleGenerationReclaimableBytes:1024,automaticReclaimableBytes:0,additionalExplicitReclaimableBytes:0,
+      policy:cleanup.policy,settingsCommand:'dinkster-env cleanup',settingsHelp:'Review snapshot cleanup before confirming.',
+      generations:cleanup.generations.map(row=>({...row,allocationGroup:'builds/7'})),stores:[],
+      groups:{'builds/7':{exclusiveAllocatedBytes:4096,sharedAllocatedBytes:0}},
+      warnings:[],cleanupWarnings:[],eligibilityWarnings:[],reclaimabilityWarnings:[]}}));
+  process.exit(0);
+}
+if (operation === 'cleanup') {
+  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:planned?'planned':'complete',root,current:7,plan:[],cleanup}));
+  process.exit(0);
+}
 if (operation === 'status') {
   const row = fs.existsSync(observed)
     ? JSON.parse(fs.readFileSync(observed, 'utf8'))
     : {format:'dinkster.environment-result/1',root,current:null,plan:[],engines:[]};
-  console.log(JSON.stringify({...row, operation, status:'clean'}));
+  console.log(JSON.stringify({...row, operation, status:'clean', cleanup}));
   process.exit(0);
 }
 if (operation === 'catalog') {
@@ -419,7 +440,7 @@ console.log(JSON.stringify(row));
     const result = await chosen
     if (change === 'none') assert.deepEqual(result, { path: scratch })
     if (change === 'generation') {
-      assert.match(result.error, /no longer the selected ready generation/)
+      assert.match(result.error, /no longer the selected ready snapshot/)
       assert.equal(result.path, undefined)
     }
     if (change === 'binding') {
@@ -508,7 +529,15 @@ console.log(JSON.stringify(row));
   await manager
     .getByText('Environment operation completed.', { exact: false })
     .waitFor()
-  await manager.locator('#local-operation').selectOption('rollback')
+  await manager
+    .locator('#local-operation')
+    .selectOption({ label: 'Restore previous' })
+  await expect(manager.locator('#local-operation')).toHaveValue('rollback')
+  if (artifacts)
+    await manager.screenshot({
+      path: join(artifacts, 'restore-previous.png'),
+      fullPage: true,
+    })
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
@@ -641,6 +670,38 @@ console.log(JSON.stringify(row));
     ),
     true,
   )
+  for (const operation of ['status', 'cleanup', 'space']) {
+    await manager.locator('#local-operation').selectOption(operation)
+    await manager
+      .getByRole('button', { name: 'Review environment plan' })
+      .click()
+    await expect(manager.locator('#plan')).toContainText(
+      'Automatic snapshot cleanup: off',
+    )
+    await expect(manager.locator('#plan')).toContainText(
+      'Snapshot 7: retained - current snapshot',
+    )
+    await expect(manager.locator('#plan')).not.toContainText(
+      /generation|rollback/i,
+    )
+    if (operation === 'space') {
+      await expect(manager.locator('#plan')).toContainText('Environment:')
+      await expect(manager.locator('#plan')).toContainText(
+        'Eligible snapshot cleanup: 1,024 bytes',
+      )
+    } else {
+      await expect(manager.locator('#plan')).toContainText(
+        'snapshots 2 await retry',
+      )
+    }
+    if (operation === 'cleanup')
+      await expect(manager.locator('#apply')).toBeVisible()
+    else await expect(manager.locator('#apply')).toBeHidden()
+    if (artifacts)
+      await manager.locator('#plan-panel').screenshot({
+        path: join(artifacts, `snapshot-${operation}.png`),
+      })
+  }
   await manager.locator('#local-operation').selectOption('doctor')
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await expect(manager.locator('#plan')).toContainText(

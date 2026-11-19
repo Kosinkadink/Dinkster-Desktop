@@ -325,7 +325,7 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
   }
   if (request.keepPreviousGenerations !== undefined) {
     if (request.operation !== 'cleanup' || !Number.isSafeInteger(request.keepPreviousGenerations)
-      || request.keepPreviousGenerations < 1 || request.keepPreviousGenerations > 100) throw new Error('retained generation count requires cleanup and an integer from 1 to 100')
+      || request.keepPreviousGenerations < 1 || request.keepPreviousGenerations > 100) throw new Error('retained snapshot count requires cleanup and an integer from 1 to 100')
     args.push('--keep-previous', String(request.keepPreviousGenerations))
   }
   if (request.operation === 'move') {
@@ -666,11 +666,13 @@ export class EnvironmentClient {
         const failure = error as NodeJS.ErrnoException & { stdout?: string }
         if (failure.stdout) {
           const result = resultFrom(failure.stdout, request.operation)
-          // Start rechecks the current generation and exact assignment on each
-          // attempt. Never replay an approved generation-changing operation.
-          if (confirmed && request.operation === 'start' && result.status === 'error'
-            && (result.error === `another environment writer holds ${request.root}`
-              || result.error?.startsWith(`another environment writer holds ${request.root} (operation=`))
+          // Start rechecks its assignment; sandbox readiness is read-only and
+          // can meet a concurrent runtime inspection. Never replay a mutation.
+          const retryRoot = confirmed && request.operation === 'start' ? request.root
+            : request.operation === 'doctor' && request.sandbox === true ? join(request.root, 'runtime') : undefined
+          if (retryRoot !== undefined && result.status === 'error'
+            && (result.error === `another environment writer holds ${retryRoot}`
+              || result.error?.startsWith(`another environment writer holds ${retryRoot} (operation=`))
             && Date.now() < writerDeadline) {
             await setTimeout(250)
             continue

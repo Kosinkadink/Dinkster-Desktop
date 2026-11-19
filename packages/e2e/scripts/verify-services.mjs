@@ -258,11 +258,13 @@ async function configuration(directory) {
           !/DINKSTER_SERVICES|"services"\s*:|\[QA\]/.test(bytes.toString()),
           `Persisted services in ${name}`,
         )
-        // Process state, the engine lock owner and lease owners change on every
+        // Process state, attachment locks and the live mount index change on
         // engine start, but must still pass the persisted-services scan above.
         if (
           !name.startsWith('runtime/') &&
           name !== 'dinkster-library/.engine.lock' &&
+          !/^dinkster-library\/helper-[0-9a-f-]{36}\.lock$/.test(name) &&
+          name !== 'dinkster-library/worker-state/mounts-snapshot.json' &&
           !name.startsWith('dinkster-library/vault/.leases/')
         )
           files[name] = createHash('sha256').update(bytes).digest('hex')

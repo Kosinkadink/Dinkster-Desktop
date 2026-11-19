@@ -754,6 +754,33 @@ describe('Desktop dinkster-env command client', () => {
     }
   })
 
+  it('retries a read-only sandbox query only for its runtime lock', async () => {
+    const { root, client } = await commandFixture()
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    const runtime = join(root, 'runtime')
+    for (const [sandbox, lock, succeeds] of [
+      [true, runtime, true],
+      [false, runtime, false],
+      [true, root, false],
+      [true, join(root, 'other-runtime'), false],
+    ] as const) {
+      const marker = join(root, 'sandbox-lock-released')
+      await rm(marker, { force: true })
+      const error = `another environment writer holds ${lock} (operation=environment, pid=4350, acquiredAt=2026-11-19T02:15:08Z)`
+      await writeFile(script, `const f = require('node:fs');
+        if (!f.existsSync(${JSON.stringify(marker)})) {
+          f.writeFileSync(${JSON.stringify(marker)}, 'released');
+          console.log(JSON.stringify({format:'dinkster.environment-result/1',operation:'doctor',
+            root:${JSON.stringify(root)},current:2,plan:[],status:'error',error:${JSON.stringify(error)}}));
+          process.exit(1);
+        }\n` + original)
+      const pending = client.run({ root, operation: 'doctor', sandbox })
+      if (succeeds) expect((await pending).status).toBe('clean')
+      else await expect(pending).rejects.toThrow(error)
+    }
+  })
+
   it('rejects nonzero responses even when their status claims success, and surfaces drift details', async () => {
     const { root } = await commandFixture()
     for (const status of ['applied', 'drift']) {

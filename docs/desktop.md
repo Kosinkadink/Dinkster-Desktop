@@ -92,7 +92,9 @@ Two projects cannot bind the same install root.
 
 Pack sandboxing is opt-in per local project. Check availability in the local
 installation controls; Desktop displays the selected engine's readiness report
-and disables enabling when a prerequisite is missing. Save the binding to retain
+and disables enabling when a prerequisite is missing. Native readiness checks
+retry a competing runtime lock for up to 30 seconds without changing the
+installed snapshot. Other failures remain visible. Save the binding to retain
 the choice. Opening a sandboxed local engine passes `--sandbox-packs`; a requested
 sandbox never falls back to an unsandboxed launch. Use **Stop engine**, review and
 confirm the operation, then change and save the choice before opening again.

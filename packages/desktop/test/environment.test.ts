@@ -77,6 +77,26 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('reads library pages without activation flags and rejects malformed pages', async () => {
+    const { root, client } = await commandFixture()
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    const response = original.replace("status:error ? 'error' :", "status:operation === 'library-list' ? 'clean' : error ? 'error' :")
+      .replace('root, current: 2,', 'root, current: 2, library: {kind:"workflows",records:[{id:"first"}],cursor:"-opaque"},')
+    await writeFile(script, response)
+    expect((await client.run({ root, operation: 'library-list', libraryKind: 'workflows', libraryProject: 'second', libraryCursor: '-opaque', libraryLimit: 2 })).library).toEqual({ kind: 'workflows', records: [{ id: 'first' }], cursor: '-opaque' })
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'library-list', 'workflows', '--project', 'second', '--limit', '2', '--cursor=-opaque', '--json'])
+    await expect(client.run({ root, operation: 'library-list', libraryKind: 'assets', repair: true })).rejects.toThrow('read-only')
+    await expect(client.run({ root, operation: 'library-list', libraryKind: 'projects' }, true)).rejects.toThrow('read-only')
+    await expect(client.run({ root, operation: 'library-list', libraryKind: 'assets', libraryLimit: 201 })).rejects.toThrow('page size')
+    await expect(client.run({ root, operation: 'start', libraryKind: 'projects' })).rejects.toThrow('require library-list')
+    for (const page of [{ kind: 'workflows', records: [], cursor: 4 }, { kind: 'workflows', cursor: null }, { kind: 'wrong', records: [], cursor: null }]) {
+      await writeFile(script, response.replace('{kind:"workflows",records:[{id:"first"}],cursor:"-opaque"}', JSON.stringify(page)))
+      await expect(client.run({ root, operation: 'library-list', libraryKind: 'workflows' })).rejects.toThrow('library list response')
+    }
+    await client.dispose()
+  })
+
   it.each(['production', 'qa'] as const)('keeps the validated %s selection for tools descendants', async (services) => {
     vi.stubEnv('DINKSTER_SERVICES', services)
     const { root, client } = await commandFixture()

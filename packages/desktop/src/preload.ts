@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { ProjectDialogBridge } from './project-dialog.js'
+import type { DesktopLibraryBridge } from './library.js'
 import type { DesktopProjects } from './projects.js'
 import type {
   DesktopBridge,
@@ -67,7 +68,15 @@ const bridge: DesktopBridge = {
 }
 
 const localFilesOnly = process.argv.includes('--dinkster-local-files')
-contextBridge.exposeInMainWorld('dinksterDesktop', localFilesOnly ? {
+const libraryOnly = process.argv.includes('--dinkster-library')
+const library: DesktopLibraryBridge = {
+  installations: () => ipcRenderer.invoke('desktop:library-installations'),
+  projects: (installation, cursor) => ipcRenderer.invoke('desktop:library-projects', installation, cursor),
+  workflows: (installation, project, cursor) => ipcRenderer.invoke('desktop:library-workflows', installation, project, cursor),
+  assets: (installation, project, cursor) => ipcRenderer.invoke('desktop:library-assets', installation, project, cursor),
+}
+if (libraryOnly) contextBridge.exposeInMainWorld('dinksterLibrary', library)
+if (!libraryOnly) contextBridge.exposeInMainWorld('dinksterDesktop', localFilesOnly ? {
   fileCapabilities: bridge.fileCapabilities,
   chooseDirectory: bridge.chooseDirectory,
   revealFile: bridge.revealFile,
@@ -89,4 +98,4 @@ const projects: ProjectDialogBridge = {
   plan: (project, request) => ipcRenderer.invoke('desktop:projects-plan', project, request),
   apply: (token) => ipcRenderer.invoke('desktop:projects-apply', token),
 }
-if (!localFilesOnly) contextBridge.exposeInMainWorld('dinksterProjects', projects)
+if (!localFilesOnly && !libraryOnly) contextBridge.exposeInMainWorld('dinksterProjects', projects)

@@ -274,6 +274,24 @@ describe('private WSL readiness', () => {
     }
   })
 
+  it('reads library pages inside the private distribution without starting an engine', async () => {
+    const service = host()
+    const run = vi.spyOn(service, 'run').mockImplementation(async (args) => JSON.stringify({
+      format: 'dinkster.environment-result/1', operation: args[2], status: 'clean',
+      root: '/home/dinkster/projects/studio', current: null, plan: [],
+      library: { kind: 'assets', assets: [], cursor: null },
+    }))
+    const client = new EnvironmentClient('dinkster-env', [], undefined, undefined, undefined, service)
+    try {
+      const root = service.projectRoot('studio')
+      expect((await client.run({ root, operation: 'library-list', libraryKind: 'assets', libraryProject: 'beta', libraryCursor: '-next' })).library).toEqual({ kind: 'assets', assets: [], cursor: null })
+      expect(run.mock.calls[0]?.[0]).toEqual(['--root', '/home/dinkster/projects/studio', 'library-list', 'assets', '--project', 'beta', '--limit', '50', '--cursor=-next', '--json'])
+    } finally {
+      run.mockRestore()
+      await client.dispose()
+    }
+  })
+
   it('accepts Windows WSL aliases but refuses a response for another Linux project', async () => {
     const service = host()
     let responseRoot = '/home/dinkster/projects/studio'

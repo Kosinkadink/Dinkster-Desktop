@@ -687,6 +687,44 @@ with writer_lock(Path(sys.argv[1])):
     'Every failed upstream mirror request must recover',
   )
 } catch (error) {
+  if (String(error).includes('another environment writer holds')) {
+    const lockPath = join(projectRoot, '.lock')
+    const diagnostic = {
+      error: String(error),
+      capturedAt: new Date().toISOString(),
+    }
+    try {
+      const bytes = await readFile(lockPath)
+      const metadata = await stat(lockPath)
+      diagnostic.lock = {
+        bytes: bytes.subarray(0, 4096).toString('base64'),
+        size: metadata.size,
+        inode: metadata.ino,
+        modifiedAt: metadata.mtime.toISOString(),
+      }
+    } catch (captureError) {
+      diagnostic.lockError = captureError.message
+    }
+    if (process.platform !== 'win32') {
+      try {
+        diagnostic.openFiles = execFileSync(
+          'lsof',
+          ['-Fpcnfl', '--', lockPath],
+          {
+            encoding: 'utf8',
+            timeout: 5000,
+          },
+        )
+      } catch (captureError) {
+        diagnostic.openFiles = captureError.stdout?.toString() ?? ''
+        diagnostic.holderError = captureError.message
+      }
+    }
+    await writeFile(
+      join(root, 'writer-lock-diagnostics.json'),
+      JSON.stringify(diagnostic, null, 2),
+    )
+  }
   if (
     process.platform === 'win32' &&
     toolsPython &&

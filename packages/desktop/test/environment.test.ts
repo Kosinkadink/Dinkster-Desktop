@@ -686,9 +686,9 @@ describe('Desktop dinkster-env command client', () => {
       ])
     }
     for (const keepPreviousGenerations of [0, -1, 101, 1.5, NaN, true, '2']) {
-      await expect(client.run({ root, operation: 'cleanup', keepPreviousGenerations } as unknown as EnvironmentRequest)).rejects.toThrow('retained generation count')
+      await expect(client.run({ root, operation: 'cleanup', keepPreviousGenerations } as unknown as EnvironmentRequest)).rejects.toThrow('retained snapshot count')
     }
-    await expect(client.run({ root, operation: 'status', keepPreviousGenerations: 2 })).rejects.toThrow('retained generation count')
+    await expect(client.run({ root, operation: 'status', keepPreviousGenerations: 2 })).rejects.toThrow('retained snapshot count')
     const retried = await client.run({ root, operation: 'cleanup' }, true)
     expect(retried.status).toBe('deferred')
     expect(retried.cleanupAttempt).toEqual(cleanup.lastAttempt)
@@ -750,6 +750,33 @@ describe('Desktop dinkster-env command client', () => {
         }\n` + original)
       const pending = client.run({ root, operation, engine: 'main' }, confirmed)
       if (succeeds) expect((await pending).engines?.[0]?.state).toBe('ready')
+      else await expect(pending).rejects.toThrow(error)
+    }
+  })
+
+  it('retries a read-only sandbox query only for its runtime lock', async () => {
+    const { root, client } = await commandFixture()
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    const runtime = join(root, 'runtime')
+    for (const [sandbox, lock, succeeds] of [
+      [true, runtime, true],
+      [false, runtime, false],
+      [true, root, false],
+      [true, join(root, 'other-runtime'), false],
+    ] as const) {
+      const marker = join(root, 'sandbox-lock-released')
+      await rm(marker, { force: true })
+      const error = `another environment writer holds ${lock} (operation=environment, pid=4350, acquiredAt=2026-11-19T02:15:08Z)`
+      await writeFile(script, `const f = require('node:fs');
+        if (!f.existsSync(${JSON.stringify(marker)})) {
+          f.writeFileSync(${JSON.stringify(marker)}, 'released');
+          console.log(JSON.stringify({format:'dinkster.environment-result/1',operation:'doctor',
+            root:${JSON.stringify(root)},current:2,plan:[],status:'error',error:${JSON.stringify(error)}}));
+          process.exit(1);
+        }\n` + original)
+      const pending = client.run({ root, operation: 'doctor', sandbox })
+      if (succeeds) expect((await pending).status).toBe('clean')
       else await expect(pending).rejects.toThrow(error)
     }
   })

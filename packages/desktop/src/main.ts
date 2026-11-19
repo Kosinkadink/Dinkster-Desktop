@@ -262,7 +262,7 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
       const active = status.engines?.find((entry) => entry.name === engineId)
       if (status.status !== 'clean' || status.root !== root || !status.current || active?.state !== 'ready' || active.generation !== status.current
         || active.url !== binding.backendUrl || (generation !== undefined && generation !== active.generation)) {
-        throw new Error('The local engine is no longer the selected ready generation')
+        throw new Error('The local engine is no longer the selected ready snapshot')
       }
       generation = active.generation
       await checkBinding()

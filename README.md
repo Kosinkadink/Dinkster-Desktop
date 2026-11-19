@@ -2,14 +2,14 @@
 
 Electron host for the Dinkster application and its local engine lifecycle.
 The [Desktop engine boundaries](docs/desktop.md) document the release mirror,
-project install-root bindings, and supervisor-per-generation swap contract.
+project install-root bindings, and supervisor-per-snapshot swap contract.
 
 ## Inputs
 
 The desktop shell and its external inputs are pinned independently:
 
 - `scripts/frontend-release.json` pins the permanent `dinkster-frontend` PyPI wheel by version, URL, size and SHA256. `pnpm prepare:frontend` verifies that wheel and copies its application and native branding into the package inputs. The engine selects the same published frontend release; Desktop does not build frontend source.
-- `packages/desktop/src/backend-release.json` records backend identity in shell release metadata. Shell packaging does not download or embed that source archive or native wheels. Project generations are acquired by the environment tools, not by the shell's package builder; Desktop has no separate single-engine launcher.
+- `packages/desktop/src/backend-release.json` records backend identity in shell release metadata. Shell packaging does not download or embed that source archive or native wheels. Project snapshots are acquired by the environment tools, not by the shell's package builder; Desktop has no separate single-engine launcher.
 
 A local build uses the same verified release as CI, without a frontend checkout:
 
@@ -101,7 +101,7 @@ copy the app to a directory you control. Gatekeeper may require right-click
 **Open** or removal of `com.apple.quarantine` from that verified app before
 launch. This unsigned-build procedure does not establish a signature or
 notarization. [Apple signing and notarization](https://github.com/Kosinkadink/comfy-vibe-station/issues/501)
-are separate from tools and engine setup, doctor, start, update and rollback.
+are separate from tools and engine setup, doctor, start, update and restore.
 Local project commands use the native environment tools, not host Python or uv.
 
 ## Environment client development
@@ -144,7 +144,7 @@ Before setup, update or catalog invokes an environment command, packaged Desktop
 authenticates the selected Stable or Nightly channel with an independently
 pinned Ed25519 public key, then enforces `minimumDesktopVersion`, reporting
 `DesktopVersionTooOld` when the shell must update first. Status, doctor, start,
-stop and other installed-generation operations do not fetch channel metadata.
+stop and other installed-snapshot operations do not fetch channel metadata.
 A trusted channel may explicitly supply a `tools` object with `label`, `manifest`,
 `sha256` and `release` to select newer tools through the same verified acquisition
 path. Desktop first tries each configured mirror's `tools/<label>` directory,
@@ -157,8 +157,8 @@ or unknown-key channels refuse. The pinned root has key ID
 `sha256:4b5b2c78b32db1ebedc4702a92d6e4e252c17531f0e102ab82dd910be6dec7b9`.
 
 Local operations review the command's plan before confirmation. A saved engine
-binding starts the existing generation through `dinkster-env start`; updates
-and rollbacks route open windows to the newly returned supervisor URL, not the
+binding starts the existing snapshot through `dinkster-env start`; updates
+and restores route open windows to the newly returned supervisor URL, not the
 previous port. Desktop metadata stores bindings only; the environment command
 owns `environment.json`, `builds/<n>/build.json`, store discovery and process
 identity. The bundled supervisor tools must understand the same disk layout as
@@ -169,24 +169,24 @@ only until the supervisor performs its one-time environment migration; Desktop's
 separate `projects.json` file remains a registry of shell bindings.
 
 The local manager's **Cleanup status (read-only)** operation displays backend
-retention reasons, automatic-cleanup preference, quarantined generations and
-persistent retry warnings. **Generation cleanup / retry** reviews a plan before
-confirmation. Keep the preference to retry generation-only cleanup, or select
+retention reasons, automatic-cleanup preference, quarantined snapshots and
+persistent retry warnings. **Snapshot cleanup / retry** reviews a plan before
+confirmation. Keep the preference to retry snapshot-only cleanup, or select
 on/off to change the backend preference without collecting immediately. The
-adjacent previous-generations field accepts 1-100 (default 1), in addition to
+adjacent previous-snapshots field accepts 1-100 (default 1), in addition to
 current; leave it blank to keep the saved count. Both settings use the backend's
 project policy. A count change takes effect on the next eligible cleanup, not
 while saving it. Preview and status show the effective count. Shared
 caches remain under the separate **Garbage collection** operation. Desktop
-does not duplicate retention policy, delete generation files or stop engines
+does not duplicate retention policy, delete snapshot files or stop engines
 for cleanup. Older tools without cleanup details report that they are unavailable;
 this UI does not update the immutable bundled tools pin.
 
 The Linux Electron client boundary check runs with
 `node packages/e2e/scripts/verify-environment-client.mjs` under a display (or
 `xvfb-run --auto-servernum`). It uses subprocess response stubs to check plan
-confirmation, changed-port handoff, rollback, remote-only routing and shutdown
-delegation. It is not a substitute for real CLI/generation file comparisons.
+confirmation, changed-port handoff, restore, remote-only routing and shutdown
+delegation. It is not a substitute for real CLI/snapshot file comparisons.
 `DINKSTER_ELECTRON_EXECUTABLE` optionally selects the installed Electron binary;
 `DINKSTER_SMOKE_ARTIFACTS` optionally retains screenshots.
 

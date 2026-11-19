@@ -55,7 +55,12 @@ assert.equal(
 )
 assert.equal(JSON.parse(toolsBytes).commit, manifest.commit)
 const toolsManifest = JSON.parse(toolsBytes)
-const toolsName = `dinkster-tools-${process.platform === 'win32' ? 'windows' : 'linux'}-x86_64.zip`
+const toolsOs = { win32: 'windows', linux: 'linux', darwin: 'macos' }[
+  process.platform
+]
+const toolsArch = { x64: 'x86_64', arm64: 'arm64' }[process.arch]
+assert(toolsOs && toolsArch, 'Unsupported packaged acceptance platform')
+const toolsName = `dinkster-tools-${toolsOs}-${toolsArch}.zip`
 const toolsRow = toolsManifest.artifacts.find((row) => row.name === toolsName)
 assert(toolsRow)
 const toolsArchive = Buffer.from(
@@ -105,6 +110,7 @@ let mirrorChannel = channelText
 let mirrorOnline = true
 const mirrorRequests = []
 const mirrorFailures = []
+const failedMirrorRequests = new Set()
 const mirror = createMirror(async (request, response) => {
   mirrorRequests.push(request.url)
   if (!mirrorOnline) {
@@ -129,7 +135,9 @@ const mirror = createMirror(async (request, response) => {
   }
   try {
     await forwardMirror(`${publicRoot}${request.url}`, response)
+    failedMirrorRequests.delete(request.url)
   } catch (error) {
+    failedMirrorRequests.add(request.url)
     mirrorFailures.push(error)
     console.error(error)
     writeFileSync(
@@ -151,6 +159,7 @@ const app = await electron.launch({
   timeout: 60_000,
 })
 let manager
+let toolsPython
 try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
   await app.evaluate(() => {
@@ -188,7 +197,9 @@ try {
     root: projectRoot,
     operation: 'setup',
     channel: 'stable',
-    variant: process.platform === 'win32' ? 'win-cpu' : 'linux-cpu',
+    variant: { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
+      process.platform
+    ],
     mirrors: [mirrorUrl],
     data: join(root, 'store'),
     engine: 'main',
@@ -226,7 +237,7 @@ try {
   }
   mirrorChannel = channelText
   const integrity = await app.evaluate(
-    async ({ app }, { root, tools, manifest }) => {
+    async ({ app }, { root, tools, manifest, toolsName }) => {
       const path = process.getBuiltinModule('node:path')
       const fs = process.getBuiltinModule('node:fs/promises')
       const require = process
@@ -258,9 +269,7 @@ try {
       await refuse('manifest')
       await fs.writeFile(input.manifest, manifest)
       const native = JSON.parse(manifest).artifacts.find(
-        (row) =>
-          row.name ===
-          `dinkster-tools-${process.platform === 'win32' ? 'windows' : 'linux'}-x86_64.zip`,
+        (row) => row.name === toolsName,
       )
       const archive = path.join(directory, native.name)
       await fs.writeFile(archive, 'x')
@@ -269,7 +278,12 @@ try {
       await refuse('digest')
       return results
     },
-    { root, tools: channel.tools, manifest: toolsBytes.toString('utf8') },
+    {
+      root,
+      tools: channel.tools,
+      manifest: toolsBytes.toString('utf8'),
+      toolsName,
+    },
   )
   assert.match(integrity.manifest, /checksum mismatch/)
   assert.match(integrity.size, /size mismatch/)
@@ -297,9 +311,24 @@ try {
   assert.equal(result.status, 'applied')
   const number = (await readFile(join(projectRoot, 'current'), 'utf8')).trim()
   assert.match(number, /^[1-9][0-9]*$/)
-  const generation = join(projectRoot, 'generations', number)
+  const generation = join(projectRoot, 'builds', number)
   const record = JSON.parse(
-    await readFile(join(generation, 'generation.json'), 'utf8'),
+    await readFile(join(generation, 'build.json'), 'utf8'),
+  )
+  const settings = JSON.parse(
+    await readFile(join(projectRoot, 'environment.json'), 'utf8'),
+  )
+  assert.equal(settings.channel, 'stable')
+  const readiness = await manager.evaluate(
+    (root) => window.dinksterProjects.sandbox(root),
+    projectRoot,
+  )
+  assert.equal(readiness.format, 'dinkster.sandbox-readiness/1')
+  assert.equal(typeof readiness.available, 'boolean')
+  assert(readiness.detail)
+  await writeFile(
+    join(root, 'sandbox-readiness.json'),
+    JSON.stringify(readiness, null, 2),
   )
   assert.equal(record.engine.release, channel.engine.release)
   assert.equal(record.engine.version, channel.engine.version)
@@ -374,7 +403,7 @@ print(json.dumps({'python': sys.executable, 'packages': packages, 'packs': packs
     1,
     'Desktop must acquire the exact Stable tools',
   )
-  const toolsPython = join(
+  toolsPython = join(
     toolsTrees[0],
     'payload/python',
     process.platform === 'win32' ? 'python.exe' : 'bin/python3',
@@ -536,9 +565,9 @@ with writer_lock(Path(sys.argv[1])):
     await readFile(join(projectRoot, 'current'), 'utf8')
   ).trim()
   assert.notEqual(nextNumber, number)
-  const nextGeneration = join(projectRoot, 'generations', nextNumber)
+  const nextGeneration = join(projectRoot, 'builds', nextNumber)
   const nextRecord = JSON.parse(
-    await readFile(join(nextGeneration, 'generation.json'), 'utf8'),
+    await readFile(join(nextGeneration, 'build.json'), 'utf8'),
   )
   assert.equal(nextRecord.engine.release, nightly.engine.release)
   const nextPython = join(
@@ -588,7 +617,7 @@ with writer_lock(Path(sys.argv[1])):
   assert.notEqual(recoveredNumber, number)
   const recovered = JSON.parse(
     await readFile(
-      join(projectRoot, 'generations', recoveredNumber, 'generation.json'),
+      join(projectRoot, 'builds', recoveredNumber, 'build.json'),
       'utf8',
     ),
   )
@@ -632,12 +661,97 @@ with writer_lock(Path(sys.argv[1])):
     ),
   )
   await engine.close()
+  const stopPlan = await manager.evaluate(
+    ({ project, root }) =>
+      window.dinksterProjects.plan(project, {
+        root,
+        operation: 'stop',
+        engine: 'main',
+      }),
+    { project, root: projectRoot },
+  )
+  assert(stopPlan.token)
+  const stopped = await manager.evaluate(
+    (token) => window.dinksterProjects.apply(token),
+    stopPlan.token,
+  )
+  assert.equal(stopped.status, 'applied')
   assert.equal(
-    mirrorFailures.length,
+    stopped.engines.find((engine) => engine.name === 'main').state,
+    'stopped',
+  )
+  await writeFile(join(root, 'stopped.json'), JSON.stringify(stopped, null, 2))
+  assert.equal(
+    failedMirrorRequests.size,
     0,
-    'Upstream mirror requests must succeed',
+    'Every failed upstream mirror request must recover',
   )
 } catch (error) {
+  if (
+    process.platform === 'win32' &&
+    toolsPython &&
+    String(error).includes('authenticated supervisor did not stop')
+  ) {
+    try {
+      const diagnostic = execFileSync(
+        toolsPython,
+        [
+          '-I',
+          '-c',
+          `
+import hashlib, json, sys, time
+from pathlib import Path
+root = Path(sys.argv[1])
+number = (root / 'project/current').read_text().strip()
+record = json.loads((root / 'project/runtime' / number / 'main.json').read_text())
+instance = record['instance']
+lifecycle = root / 'project/runtime' / number / 'main.process' / hashlib.sha256(instance.encode()).hexdigest()
+state = json.loads((lifecycle / 'state.json').read_text())
+assert state['instance'] == instance and state['pid'] == record['pid']
+if state['state'] != 'running':
+    print('Supervisor lifecycle is not running; no attachment attempted')
+else:
+    output = root / 'supervisor-shutdown.log'
+    script = root / 'supervisor-shutdown-diagnostic.py'
+    script.write_text(r'''import asyncio, faulthandler, sys
+from pathlib import Path
+if (__INSTANCE__ in sys.argv
+        and Path(sys.argv[0]).name == 'supervisor.py'
+        and Path(sys.argv[0]).parent.name == 'dinkster_supervisor'):
+    with Path(__OUTPUT__).open('w') as output:
+        faulthandler.dump_traceback(file=output, all_threads=True)
+        try:
+            tasks = asyncio.all_tasks()
+        except RuntimeError:
+            tasks = ()
+        for task in tasks:
+            output.write('Async task\\n')
+            coroutine = task.get_coro()
+            while coroutine is not None:
+                frame = getattr(coroutine, 'cr_frame', getattr(coroutine, 'gi_frame', None))
+                if frame is not None:
+                    output.write(f'{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}\\n')
+                coroutine = getattr(coroutine, 'cr_await', getattr(coroutine, 'gi_yieldfrom', None))
+'''.replace('__INSTANCE__', repr('--instance=' + instance)).replace('__OUTPUT__', repr(str(output))), encoding='utf-8')
+    # A pending request may still read the script, so retain it until runner disposal.
+    sys.remote_exec(record['pid'], str(script))
+    deadline = time.monotonic() + 5
+    while not output.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    print('Shutdown stacks retained' if output.exists() else 'Attachment requested; target did not produce stacks')
+`,
+          root,
+        ],
+        { encoding: 'utf8', env, timeout: 10_000 },
+      )
+      await writeFile(join(root, 'shutdown-diagnostics.log'), diagnostic)
+    } catch (diagnosticError) {
+      await writeFile(
+        join(root, 'shutdown-diagnostics.log'),
+        `Shutdown stack capture failed: ${diagnosticError.message}`,
+      )
+    }
+  }
   await manager
     ?.screenshot({ path: join(root, 'failed.png'), fullPage: true })
     .catch(() => undefined)

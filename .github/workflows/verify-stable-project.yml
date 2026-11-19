@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     env:
       CUDA_VISIBLE_DEVICES: ''
       DINKSTER_ACCELERATOR: cpu
@@ -48,6 +48,23 @@ jobs:
         run: |
           pnpm --filter @dinkster/desktop prepare:tools
           pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
+      - name: Package and verify Apple Silicon Stable project
+        if: runner.os == 'macOS'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ runner.temp }}/signed-stable-project
+        run: |
+          test "$(uname -m)" = arm64
+          pnpm --filter @dinkster/desktop package:mac
+          archives=(packages/desktop/release/Dinkster-Desktop-*-macos-arm64.zip)
+          test "${#archives[@]}" = 1
+          ditto -x -k "${archives[0]}" "$RUNNER_TEMP/desktop-stable-installed"
+          app="$RUNNER_TEMP/desktop-stable-installed/Dinkster Desktop.app"
+          xattr -dr com.apple.quarantine "$app"
+          export DINKSTER_DESKTOP_EXECUTABLE="$app/Contents/MacOS/Dinkster Desktop"
+          test "$(lipo -archs "$DINKSTER_DESKTOP_EXECUTABLE")" = arm64
+          node packages/desktop/scripts/verify-installed-tools.mjs "$app/Contents/Resources"
+          node packages/e2e/scripts/verify-stable-project.mjs
       - name: Package Windows installer
         if: runner.os == 'Windows' && !inputs.shared_installer
         run: pnpm --filter @dinkster/desktop package:win
@@ -84,5 +101,7 @@ jobs:
           path: |
             ${{ runner.temp }}/signed-stable-project/*.png
             ${{ runner.temp }}/signed-stable-project/*.json
+            ${{ runner.temp }}/signed-stable-project/*.log
+            ${{ runner.temp }}/signed-stable-project/project/runtime/**/*.log
           retention-days: 7
           if-no-files-found: ignore

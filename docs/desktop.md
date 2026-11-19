@@ -177,9 +177,12 @@ and remote or stale managed contexts never open the file manager. No model
 files are moved or deleted.
 
 Desktop bindings are not environment state. The environment tools own
-`project.json`, generation records, `current`, `store`, journals, dependency
-constraints, and private supervisor runtime metadata. Desktop never writes
-those files or defines substitute formats for them.
+`environment.json`, `builds/<n>/build.json`, `current`, `store`, journals,
+dependency constraints, and private supervisor runtime metadata. Desktop never
+writes those files or defines substitute formats for them. Desktop reads legacy
+`project.json` settings only when `environment.json` is absent, before the
+supervisor performs its one-time migration. Desktop's separate `projects.json`
+registry stores shell bindings, not environment settings.
 
 ## Environment commands
 

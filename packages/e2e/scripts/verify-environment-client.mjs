@@ -182,7 +182,7 @@ console.log(JSON.stringify(row));
   )
   await mkdir(join(scratch, 'installation'))
   await writeFile(
-    join(scratch, 'installation/project.json'),
+    join(scratch, 'installation/environment.json'),
     JSON.stringify({
       format: 'dinkster.project/1',
       channel: 'stable',
@@ -951,7 +951,13 @@ console.log(JSON.stringify(row));
     'undefined',
   )
   const dataFiles = await readdir(env.DINKSTER_DESKTOP_DATA)
-  for (const forbidden of ['generations', 'current', 'store', 'journal'])
+  for (const forbidden of [
+    'builds',
+    'generations',
+    'current',
+    'store',
+    'journal',
+  ])
     assert(!dataFiles.includes(forbidden))
   // Windows detection is mocked here; the UI and variant rule run unchanged.
   for (const driver of ['524.99', '580.10']) {

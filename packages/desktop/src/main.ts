@@ -62,14 +62,7 @@ import type {
 } from './types.js'
 
 const { autoUpdater } = updater
-const services = (() => {
-  try { return parseDesktopServices(process.argv) }
-  catch (error) {
-    dialog.showErrorBox('Invalid hosted services', error instanceof Error ? error.message : String(error))
-    app.exit(1)
-    throw error
-  }
-})()
+const services = parseDesktopServices(process.argv)
 // Child tools inherit only this launch's selection, never an inherited engine choice.
 process.env['DINKSTER_SERVICES'] = services
 let window: BrowserWindow | undefined

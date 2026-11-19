@@ -29,7 +29,7 @@ function releaseFile(release: string, name: string): string {
 }
 
 async function acquire(locations: string[], target: string, maximumBytes: number, sha256: string, exactSize = false): Promise<void> {
-  let failure: unknown
+  const failures: Error[] = []
   for (const location of new Set(locations)) {
     try {
       const input = source(location)
@@ -40,9 +40,11 @@ async function acquire(locations: string[], target: string, maximumBytes: number
       if (exactSize && (await stat(target)).size !== maximumBytes) throw new Error('tools archive size mismatch')
       await verifyFile(target, sha256)
       return
-    } catch (error) { failure = error }
+    } catch (error) {
+      failures.push(error instanceof Error ? error : new Error(String(error)))
+    }
   }
-  throw failure
+  throw new AggregateError(failures, `Environment tools acquisition failed: ${failures.map((failure) => failure.message).join('; ')}`)
 }
 
 type ToolsArtifact = { name: string; size: number; sha256: string }

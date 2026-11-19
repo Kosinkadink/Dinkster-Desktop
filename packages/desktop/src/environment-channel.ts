@@ -47,8 +47,12 @@ function validToolsPin(tools: Record<string, unknown>): tools is Record<string, 
 export async function channelTools(request: EnvironmentRequest, desktopVersion: string): Promise<EnvironmentToolsInput | undefined> {
   if (!['setup', 'update', 'catalog'].includes(request.operation)) return undefined
   let settings: { channel?: string; mirrors?: string[] } = {}
-  try { settings = JSON.parse(await readFile(join(request.root, 'project.json'), 'utf8')) as typeof settings }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  for (const name of ['environment.json', 'project.json']) {
+    try {
+      settings = JSON.parse(await readFile(join(request.root, name), 'utf8')) as typeof settings
+      break
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  }
   const channel = request.channel ?? settings.channel ?? 'stable'
   const mirrors = request.mirrors?.length ? request.mirrors : settings.mirrors ?? []
   if (channel !== 'nightly' && channel !== 'stable') throw new Error('unsupported channel')

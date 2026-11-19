@@ -192,7 +192,7 @@ describe('private WSL readiness', () => {
     guestDisk.root = root
     try {
       await mkdir(guest.projectRoot('studio'), { recursive: true })
-      await writeFile(join(guest.projectRoot('studio'), 'project.json'), '{}')
+      await writeFile(join(guest.projectRoot('studio'), 'environment.json'), '{}')
       const result = await client.run({ root: guest.projectRoot('studio'),
         operation: channelSelected ? 'update' : 'status',
         ...(channelSelected ? { channel: 'nightly' as const, mirrors: ['https://channel.invalid'] } : {}) })

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   cp,
@@ -13,7 +14,16 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { _electron as electron, expect as baseExpect } from '@playwright/test'
+import { acquireEnvironmentTools } from '../../desktop/dist/environment-tools.js'
+import {
+  WslHost,
+  wslLinuxPath,
+  wslWindowsPath,
+} from '../../desktop/dist/wsl.js'
+
+const execute = promisify(execFile)
 
 const expect = baseExpect.configure({ timeout: 60_000 })
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -29,18 +39,43 @@ const pin = JSON.parse(
     'utf8',
   ),
 )
-const scratch = await mkdtemp(join(tmpdir(), 'dinkster-library-'))
+const wsl = process.env.DINKSTER_LIBRARY_WSL === '1'
+if (wsl)
+  assert.equal(process.platform, 'win32', 'Run WSL acceptance on Windows')
+await mkdir(artifacts, { recursive: true })
+// A registered private disk must keep its backing directory for owner cleanup.
+const scratch = await mkdtemp(
+  join(wsl ? resolve(artifacts) : tmpdir(), 'dinkster-library-'),
+)
+const desktop = join(scratch, 'desktop')
+const tools = {
+  label: pin.label,
+  sha256: pin.manifest.sha256,
+  manifest: `https://releases.dinkster.org/tools/${pin.label}/tools-manifest.json`,
+  release: `https://releases.dinkster.org/tools/${pin.label}`,
+}
+const host = wsl ? new WslHost(desktop, tools) : undefined
 const require = createRequire(join(root, 'packages/desktop/package.json'))
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex')
 let app
+let prepared = false
 try {
-  await mkdir(artifacts, { recursive: true })
-  const installation = join(scratch, 'installation')
-  await cp(fixture, installation, { recursive: true })
-  const desktop = join(scratch, 'desktop')
   await mkdir(desktop)
-  const missing = join(scratch, 'missing')
-  const unreadable = join(scratch, 'unreadable')
+  let storage = scratch
+  if (host) {
+    const initial = await host.status()
+    assert.equal(initial.available, true, initial.detail)
+    assert.equal(initial.ready, false, 'Use a fresh private distribution')
+    const ready = await host.prepare()
+    assert.equal(ready.ready, true, ready.detail)
+    prepared = true
+    storage = host.projectRoot('library-acceptance')
+    await mkdir(storage)
+  }
+  const installation = join(storage, 'installation')
+  await cp(fixture, installation, { recursive: true })
+  const missing = join(storage, 'missing')
+  const unreadable = join(storage, 'unreadable')
   await mkdir(join(unreadable, 'dinkster-library'), { recursive: true })
   await writeFile(
     join(unreadable, 'dinkster-library/records.sqlite'),
@@ -194,11 +229,89 @@ try {
   ])
   await app.close()
   app = undefined
+  let wslProcesses
+  if (host) {
+    const installed = await acquireEnvironmentTools({
+      ...tools,
+      platform: 'linux',
+      cacheRoot: wslWindowsPath(
+        host.distribution,
+        `/home/dinkster/tools/${pin.manifest.sha256}`,
+      ),
+    })
+    const harness = join(storage, 'verify-library-cli.py')
+    await cp(join(root, 'packages/e2e/scripts/verify-library-cli.py'), harness)
+    const run = async (...args) =>
+      execute(
+        'wsl.exe',
+        [
+          '--distribution',
+          host.distribution,
+          '--user',
+          'dinkster',
+          '--cd',
+          '/home/dinkster',
+          '--exec',
+          '/usr/bin/env',
+          '-i',
+          'HOME=/home/dinkster',
+          'PATH=/usr/local/bin:/usr/bin:/bin',
+          ...args,
+        ],
+        { timeout: 10 * 60_000, maxBuffer: 4 * 1024 * 1024 },
+      )
+    const python = wslLinuxPath(host.distribution, installed.python)
+    await run(
+      python,
+      '-I',
+      wslLinuxPath(host.distribution, harness),
+      '--tools-python',
+      python,
+      '--fixture',
+      wslLinuxPath(host.distribution, installation),
+      '--complete',
+      '--evidence',
+      wslLinuxPath(host.distribution, join(storage, 'cli')),
+    )
+    await cp(join(storage, 'cli'), join(artifacts, 'cli'), { recursive: true })
+    const processes = await run('ps', '-eo', 'comm=')
+    wslProcesses = processes.stdout.trim().split(/\r?\n/)
+    assert(!wslProcesses.some((name) => /python|dinkster/i.test(name)))
+  } else {
+    const installed = await acquireEnvironmentTools({
+      ...tools,
+      manifest: env.DINKSTER_TOOLS_MANIFEST,
+      release: env.DINKSTER_TOOLS_RELEASE,
+      cacheRoot: join(scratch, 'cli-tools'),
+    })
+    await execute(
+      installed.python,
+      [
+        '-I',
+        join(root, 'packages/e2e/scripts/verify-library-cli.py'),
+        '--tools-python',
+        installed.python,
+        '--fixture',
+        installation,
+        '--complete',
+        '--evidence',
+        join(artifacts, 'cli'),
+      ],
+      { env, timeout: 10 * 60_000, maxBuffer: 4 * 1024 * 1024 },
+    )
+  }
   await writeFile(
     join(artifacts, 'result.json'),
     JSON.stringify(
       {
-        platform: process.platform,
+        platform: wsl ? 'win32-private-wsl' : process.platform,
+        privateDisk: host
+          ? {
+              distribution: host.distribution,
+              directory: scratch,
+              processes: wslProcesses,
+            }
+          : undefined,
         toolsCommit: pin.commit,
         toolsManifest: pin.manifest.sha256,
         bridge,
@@ -223,5 +336,7 @@ try {
   )
 } finally {
   if (app) await app.close()
-  await rm(scratch, { recursive: true, force: true })
+  if (host && prepared)
+    await execute('wsl.exe', ['--terminate', host.distribution])
+  if (!host) await rm(scratch, { recursive: true, force: true })
 }

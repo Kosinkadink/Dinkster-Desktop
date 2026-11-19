@@ -686,9 +686,9 @@ describe('Desktop dinkster-env command client', () => {
       ])
     }
     for (const keepPreviousGenerations of [0, -1, 101, 1.5, NaN, true, '2']) {
-      await expect(client.run({ root, operation: 'cleanup', keepPreviousGenerations } as unknown as EnvironmentRequest)).rejects.toThrow('retained generation count')
+      await expect(client.run({ root, operation: 'cleanup', keepPreviousGenerations } as unknown as EnvironmentRequest)).rejects.toThrow('retained snapshot count')
     }
-    await expect(client.run({ root, operation: 'status', keepPreviousGenerations: 2 })).rejects.toThrow('retained generation count')
+    await expect(client.run({ root, operation: 'status', keepPreviousGenerations: 2 })).rejects.toThrow('retained snapshot count')
     const retried = await client.run({ root, operation: 'cleanup' }, true)
     expect(retried.status).toBe('deferred')
     expect(retried.cleanupAttempt).toEqual(cleanup.lastAttempt)

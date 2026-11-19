@@ -87,32 +87,32 @@ function showPlan(result: EnvironmentResult, token?: string): void {
   if (result.restoredFrom !== undefined) label.push(`Restore recorded release history entry: ${result.restoredFrom}`)
   if (result.cleanup) {
     const cleanup = result.cleanup
-    label.push(`Automatic generation cleanup: ${cleanup.policy ? (cleanup.policy.automatic ? 'on' : 'off') : 'unavailable'}`)
+    label.push(`Automatic snapshot cleanup: ${cleanup.policy ? (cleanup.policy.automatic ? 'on' : 'off') : 'unavailable'}`)
     if (cleanup.policy) label.push(`Keep current and ${cleanup.policy.previousSuccessfulActivations} previous successful activation(s); minimum age ${cleanup.policy.minimumAgeSeconds}s.`)
-    for (const row of cleanup.generations) label.push(`Generation ${row.generation}: ${row.status} - ${row.reasons.join('; ')}`)
-    for (const row of cleanup.quarantine) label.push(`Quarantine ${row.journal} (${row.stage}): generations ${row.generations.join(', ')} await retry.`)
+    for (const row of cleanup.generations) label.push(`Snapshot ${row.generation}: ${row.status} - ${row.reasons.join('; ')}`)
+    for (const row of cleanup.quarantine) label.push(`Quarantine ${row.journal} (${row.stage}): snapshots ${row.generations.join(', ')} await retry.`)
     label.push(...cleanup.warnings.map((warning) => `Cleanup warning: ${warning}`))
     if (cleanup.lastAttempt) label.push(`Last cleanup attempt: ${cleanup.lastAttempt.status}`, ...(cleanup.lastAttempt.warnings ?? []).map((warning) => `Cleanup warning: ${warning}`))
-    label.push('Generation-only cleanup never prunes shared caches or stops engines.')
+    label.push('Snapshot-only cleanup never prunes shared caches or stops engines.')
   } else if (result.operation === 'status') label.push('Cleanup details unavailable from these environment tools.')
   if (result.cleanupAttempt) label.push(`Cleanup attempt: ${result.cleanupAttempt.status}`, ...(result.cleanupAttempt.warnings ?? []).map((warning) => `Cleanup warning: ${warning}`))
   if (result.space) {
     const space = result.space
     const bytes = (value: number | null): string => value === null ? 'unavailable' : `${value.toLocaleString()} bytes`
-    label.push(`Project: ${space.project}`, `Shared store: ${space.store ?? 'unavailable'}`, space.scope, space.sharing,
+    label.push(`Environment: ${space.project}`, `Shared store: ${space.store ?? 'unavailable'}`, space.scope, space.sharing,
       `Measurement: ${space.complete ? 'complete' : 'incomplete; unknown sizes are not zero'}`,
       `Total allocated (shared files counted once): ${bytes(space.allocatedBytes)}`,
       `Observed allocation lower bound: ${bytes(space.observedAllocatedBytes)}`,
       `Shared allocation: ${bytes(space.sharedAllocatedBytes)}`,
       `Automatic cleanup would free now: ${bytes(space.automaticReclaimableBytes)}`,
-      `Eligible generation cleanup: ${bytes(space.eligibleGenerationReclaimableBytes)}`,
+      `Eligible snapshot cleanup: ${bytes(space.eligibleGenerationReclaimableBytes)}`,
       `Additional explicit store cleanup: ${bytes(space.additionalExplicitReclaimableBytes)}`,
-      `Automatic generation cleanup: ${space.policy.automatic ? 'on' : 'off'}`,
+      `Automatic snapshot cleanup: ${space.policy.automatic ? 'on' : 'off'}`,
       `Keep current and ${space.policy.previousSuccessfulActivations} previous successful activation(s); minimum age ${space.policy.minimumAgeSeconds}s.`,
-      'Change both preferences above using Generation cleanup / retry, then review and confirm.',
-      space.settingsCommand, space.settingsHelp, '', 'Generations:')
+      'Change both preferences above using Snapshot cleanup / retry, then review and confirm.',
+      space.settingsCommand, space.settingsHelp, '', 'Snapshots:')
     const allocation = (group: string): string => `${bytes(space.groups[group]!.exclusiveAllocatedBytes)} exclusive; ${bytes(space.groups[group]!.sharedAllocatedBytes)} shared (do not add shared sizes)`
-    for (const row of space.generations) label.push(`Generation ${row.generation}: ${row.status} - ${row.reasons.join('; ')}\n  ${allocation(row.allocationGroup)}`)
+    for (const row of space.generations) label.push(`Snapshot ${row.generation}: ${row.status} - ${row.reasons.join('; ')}\n  ${allocation(row.allocationGroup)}`)
     label.push('', 'Shared stores (never automatically cleaned):')
     for (const row of space.stores) label.push(`${row.label}: ${allocation(row.allocationGroup)}\n  ${row.reasons.join('; ')}`)
     for (const [group] of Object.entries(space.groups)) {
@@ -428,7 +428,7 @@ document.querySelector<HTMLButtonElement>('#bind-local')!.addEventListener('clic
     await render()
     document.querySelector<HTMLSelectElement>('#local-project')!.value = project.id
     newProjectId = `project-${crypto.randomUUID()}`
-    message.textContent = 'Binding saved. Opening it starts the existing generation without installing packages.'
+    message.textContent = 'Binding saved. Opening it starts the existing snapshot without installing packages.'
   })
 })
 
@@ -447,7 +447,7 @@ document.querySelector<HTMLButtonElement>('#apply')!.addEventListener('click', (
     await render()
     newProjectId = `project-${crypto.randomUUID()}`
     message.textContent = result.operation === 'cleanup'
-      ? `Cleanup request returned ${result.status}. Review retained generations and warnings above.`
+      ? `Cleanup request returned ${result.status}. Review retained snapshots and warnings above.`
       : 'Environment operation completed. Open the engine to start working.'
   })
 })

@@ -325,7 +325,7 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
   }
   if (request.keepPreviousGenerations !== undefined) {
     if (request.operation !== 'cleanup' || !Number.isSafeInteger(request.keepPreviousGenerations)
-      || request.keepPreviousGenerations < 1 || request.keepPreviousGenerations > 100) throw new Error('retained generation count requires cleanup and an integer from 1 to 100')
+      || request.keepPreviousGenerations < 1 || request.keepPreviousGenerations > 100) throw new Error('retained snapshot count requires cleanup and an integer from 1 to 100')
     args.push('--keep-previous', String(request.keepPreviousGenerations))
   }
   if (request.operation === 'move') {

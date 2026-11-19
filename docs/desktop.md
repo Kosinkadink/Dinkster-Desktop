@@ -54,7 +54,7 @@ manual asset or release step.
 After every regular publication, disposable GitHub-hosted Windows and Linux
 jobs install the published NSIS installer or AppImage and create a fresh
 project on the default Stable channel. They read back engine, inference,
-frontend and default pack versions from the installed generation, verify the
+frontend and default pack versions from the installed snapshot, verify the
 matching tools and public git source acquisition, and open the local frontend.
 The retained receipts and screenshot distinguish project setup from the
 separate shell self-update checks. RC publications keep their update checks
@@ -101,7 +101,7 @@ request remains enabled when availability changes until explicitly turned off.
 
 A remote-only project stores server URLs and no install root. Opening it loads
 the server's frontend in an isolated window without a Desktop preload or Node
-capabilities. It does not invoke environment commands or create a generation.
+capabilities. It does not invoke environment commands or create a snapshot.
 
 Desktop starts its provisioned local engine with `--allow-settings-changes`.
 Runtime settings such as max running jobs can be edited in Backends and are
@@ -131,7 +131,7 @@ source approval and consumes its one-shot confirmation token before applying.
 A moved ref, changed project or changed frontend artifact refuses and requires
 a new plan. Desktop never stores temporary fetched checkout paths or computes
 its own source digest. Return all sources to a recorded release retains the
-exact history entry shown in the plan; Rollback uses the environment's exact
+exact history entry shown in the plan; Restore previous uses the environment's exact
 recorded software history. Missing recovery inputs refuse without silently
 selecting a different ref or release.
 
@@ -147,10 +147,10 @@ are separate from managed source selection.
 Local engine windows receive only the file-capability, directory-choice,
 asset-reveal, shared-model-folder reveal and native-drop methods, not project-manager, credential or shell
 lifecycle privileges. Each request checks the saved local binding and the
-environment tools' observed ready generation and URL. Requests from child
+environment tools' observed ready snapshot and URL. Requests from child
 frames, remote engines and unrelated connections have no native authority.
 Asynchronous file operations recheck ownership before returning a path or
-opening a file manager; changing generation invalidates an outstanding request.
+opening a file manager; changing snapshot invalidates an outstanding request.
 The folder-project context comes from the trusted main frame's document-load
 `dinksterProject` URL parameter, not the Desktop installation id or later
 same-document history edits. An absent
@@ -167,7 +167,7 @@ without treating transport failures as permission to upload instead.
 Model folder reveal supplies only a registered location id. Main reads the
 operator-only shared model settings for the trusted window project, verifies
 that the selected location is unique and an existing directory, then rereads
-registration and rechecks the managed generation before opening its file URL.
+registration and rechecks the managed snapshot before opening its file URL.
 Disabled project visibility does not prevent the operator from finding a shared
 folder in Model management. Removed locations, changed paths, denied lookups
 and remote or stale managed contexts never open the file manager. No model
@@ -194,10 +194,10 @@ For [normal rotation, lost keys and suspected leaks](https://github.com/Kosinkad
 update Desktop and environment tools through independently authenticated software
 releases. Mirrors cannot replace their own trust roots. Existing security notices
 retain their pack-artifact authority; they do not revoke channel keys or installed
-engine generations. Removing a leaked key does not make an offline installation
+engine snapshots. Removing a leaked key does not make an offline installation
 aware of that compromise.
 
-The project manager delegates setup, development, update, rollback, move, doctor,
+The project manager delegates setup, development, update, restore, move, doctor,
 garbage collection, and named engine start/stop to `dinkster-env`. Mutations show the
 command's read-only plan first and require confirmation. The confirmation
 token applies to exactly that request; it cannot authorize a changed root,
@@ -248,8 +248,8 @@ an absolute host-owned review directory. Apply requires explicit confirmation
 and the supervisor's `sha256:` approval digest, not a renderer-supplied plan.
 These operations retain the current project's software settings and do not
 accept channel, variant, store, engine or device overrides. Successful reviews
-must identify the same project and current generation; successful apply results
-must name the resulting generation and engine states.
+must identify the same project and current snapshot; successful apply results
+must name the resulting snapshot and engine states.
 
 Local project windows use a Desktop-owned loopback gateway for HTTP and
 WebSocket connections. Desktop opts that gateway into the shared
@@ -281,7 +281,7 @@ navigated or re-imported, preserving its unsaved document. WebSockets reconnect
 to the new engine. Whole-project operations retain their existing window reload.
 The gateway port is saved per project/engine in Desktop's data directory so its
 origin survives shell restarts; an occupied saved port fails opening rather than
-silently changing the renderer's storage origin. Generation, history, rollback
+silently changing the renderer's storage origin. Snapshots, history, restore
 and software integrity remain supervisor responsibilities. An opted-out gateway
 returns 404; missing or untrusted capabilities return 403 before invoking tools.
 
@@ -293,23 +293,23 @@ header injection and gateway routing with supervisor and engine fixtures:
 top-level plan/apply, denied subframe and unrelated-window requests, replay
 refusal, failed-health and failed-composition activation refusal, and backend
 replacement without losing the document or origin. It also checks native file
-permissions and whole-project update/rollback. This
-does not replace real importer, generation assembly or registry acceptance.
+permissions and whole-project update/restore. This
+does not replace real importer, snapshot assembly or registry acceptance.
 
 Check drift shows the active base's variant, user-defined origin, torch version
 and torch index when the environment tools return base metadata. It also shows
 installed base and engine labels, and the engine version and full release
 identity, when returned by the tools. Missing legacy descriptors and unlabelled
 custom bases remain supported without inventing publication labels.
-Mirror discovery, artifact verification, generation construction, activation,
+Mirror discovery, artifact verification, snapshot construction, activation,
 recovery, and retention are responsibilities of the environment tools.
 
 Select **Disk space (read-only)** to show the environment tools' managed-software
-report. It shows allocated and shared space, generation retention reasons,
+report. It shows allocated and shared space, snapshot retention reasons,
 shared stores, cleanup savings, and the current automatic-cleanup preferences.
 User data is excluded. Unknown sizes stay unavailable, not zero; shared row
 sizes overlap and must not be added. The report has no confirmation action.
-Change automatic cleanup and the previous-generation count using **Generation
+Change automatic cleanup and the previous-snapshot count using **Snapshot
 cleanup / retry**, reviewing its plan before confirmation.
 
 For development, `DINKSTER_ENV` selects an installed environment executable.
@@ -322,7 +322,7 @@ bootstrap without a host interpreter. Desktop does not install missing tools
 by resolving packages at runtime.
 
 Desktop starts in the project manager in both development and installed builds.
-Engine selection, updates and rollback belong to project generations managed by
+Engine selection, updates and restore belong to project snapshots managed by
 the environment tools. Desktop has no separate single-engine launcher,
 selection journal, follow-packaged update or install snapshot restore path.
 
@@ -367,5 +367,5 @@ macOS uses inset traffic lights. Desktop reserves the control area in the
 frontend's existing `.topbar` and the project manager's header and makes the
 remaining bar draggable. Bar controls remain interactive. Pages without an
 application bar receive a small host drag strip instead. Styling is reapplied
-after navigation, including generation updates, without giving remote pages
+after navigation, including snapshot updates, without giving remote pages
 a Desktop preload or Node access.

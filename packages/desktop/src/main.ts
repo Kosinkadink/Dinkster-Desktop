@@ -288,11 +288,13 @@ function trustedLibraryIpc(event: Electron.IpcMainInvokeEvent): void {
 async function createLibraryWindow(): Promise<void> {
   if (libraryWindow && !libraryWindow.isDestroyed()) { libraryWindow.show(); libraryWindow.focus(); return }
   const panel = new BrowserWindow({
+    ...windowChromeOptions(),
     width: 1040, height: 760, minWidth: 390, minHeight: 500,
     title: desktopTitle(services), icon: applicationIcon(), backgroundColor: windowBackground(),
     webPreferences: { ...secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')), additionalArguments: ['--dinkster-library'] },
   })
   libraryWindow = panel
+  installWindowChrome(panel, undefined, services)
   panel.on('page-title-updated', (event) => event.preventDefault())
   denyRendererPermissions(panel.webContents.session)
   panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))

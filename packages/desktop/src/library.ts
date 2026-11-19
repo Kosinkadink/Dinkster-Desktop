@@ -62,7 +62,7 @@ export class DesktopLibrary implements DesktopLibraryBridge {
         if (kind === 'projects' && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) throw new Error('invalid project entry')
         if (kind === 'workflows' && (row['scope'] !== 'local' || row['project'] !== project || row['mediaType'] !== 'application/x-dinkster-workflow+json')) throw new Error('wrong workflow scope')
         if (kind === 'assets') {
-          if (!/^sha256:[a-f0-9]{64}$/.test(id) || !Array.isArray(row['observations']) || !row['observations'].length
+          if (!/^blake3:[a-f0-9]{64}$/.test(id) || !Array.isArray(row['observations']) || !row['observations'].length
             || !row['observations'].every((value: unknown) => !!value && typeof value === 'object' && (value as Record<string, unknown>)['project'] === project)) throw new Error('wrong asset project')
         }
         return { id, name }

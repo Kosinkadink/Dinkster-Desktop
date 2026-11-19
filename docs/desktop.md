@@ -23,7 +23,8 @@ Desktop opens a read-only Projects window. Choose a saved local installation,
 then a library project to browse its workflows and recorded files. Each list
 continues independently with More; Back returns immediately. Remote-only
 connections remain in Installations and are not local library sources.
-The tray's Installations entry opens the existing installation manager.
+The tray and application menu share the Projects and Installations commands;
+Installations opens the existing installation manager.
 
 Browsing runs a short-lived environment-tools command, not an engine. Native
 installations use the verified native tools; private WSL installations use the

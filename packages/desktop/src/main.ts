@@ -1310,12 +1310,17 @@ if (primaryInstance) app.whenReady().then(async () => {
   await createLibraryWindow()
   tray = new Tray(trayIcon())
   tray.setToolTip(desktopTitle(services))
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Projects', click: () => { void createLibraryWindow() } },
-    { label: 'Installations', click: () => { void createProjectManager() } },
+  const navigation: Electron.MenuItemConstructorOptions[] = [
+    { id: 'desktop-projects', label: 'Projects', click: () => { void createLibraryWindow() } },
+    { id: 'desktop-installations', label: 'Installations', click: () => { void createProjectManager() } },
     { label: 'About Dinkster Desktop', click: () => { void showAbout(services) } },
     { type: 'separator' },
     { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
+  ]
+  tray.setContextMenu(Menu.buildFromTemplate(navigation))
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: desktopTitle(services), submenu: navigation },
+    { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
   ]))
   tray.on('double-click', () => { void createLibraryWindow() })
 }).catch((error: unknown) => {

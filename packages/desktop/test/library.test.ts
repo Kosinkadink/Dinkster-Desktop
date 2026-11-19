@@ -17,7 +17,7 @@ it('browses only saved local installations and keeps project pages separate', as
     { id: 'remote', name: 'Remote studio', channel: 'nightly', engines: [{ id: 'server', name: 'Server', kind: 'remote', url: 'https://example.test' }] },
   ] })
   const script = join(root, 'command.cjs')
-  const asset = { digest: `sha256:${'a'.repeat(64)}`, name: 'Image', size: 19, mediaType: 'image/png' }
+  const asset = { digest: `blake3:${'a'.repeat(64)}`, name: 'Image', size: 19, mediaType: 'image/png' }
   await writeFile(script, `
     const args=process.argv.slice(2), kind=args[3], project=args[args.indexOf('--project')+1];
     if(args.includes('--yes') || args.includes('--plan') || args[2]!=='library-list') process.exit(2);
@@ -41,6 +41,8 @@ it('browses only saved local installations and keeps project pages separate', as
   await writeFile(script, original.replace('scope:\'local\',project,', 'scope:\'local\',project:\'other\','))
   await expect(library.workflows('local', 'beta', null)).rejects.toThrow(notice)
   await writeFile(script, original.replace('observations:[{project}]', "observations:[{project:'other'}]"))
+  await expect(library.assets('local', 'beta', null)).rejects.toThrow(notice)
+  await writeFile(script, original.replace('blake3:', 'sha256:'))
   await expect(library.assets('local', 'beta', null)).rejects.toThrow(notice)
   await client.dispose()
 })

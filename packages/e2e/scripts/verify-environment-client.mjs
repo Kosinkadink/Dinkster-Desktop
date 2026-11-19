@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { installationManager } from './installation-manager.mjs'
 import { createServer } from 'node:http'
 import {
   mkdir,
@@ -223,7 +224,7 @@ console.log(JSON.stringify(row));
     ],
     env,
   })
-  const manager = await app.firstWindow()
+  const manager = await installationManager(app)
   await manager.getByText('No projects yet.', { exact: false }).waitFor()
   await expect
     .poll(() =>

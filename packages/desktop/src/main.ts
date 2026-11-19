@@ -29,6 +29,7 @@ import { desktopTitle, engineServices, parseDesktopServices } from './services.j
 import { ShellUpdater } from './shell-updater.js'
 import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
 import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } from './environment.js'
+import { DesktopLibrary } from './library.js'
 import { WslHost, wslLinuxPath, wslLocation } from './wsl.js'
 import toolsRelease from './environment-tools-release.json' with { type: 'json' }
 import { detectNvidiaGpus, planVariant } from './hardware.js'
@@ -67,6 +68,7 @@ const services = parseDesktopServices(process.argv)
 process.env['DINKSTER_SERVICES'] = services
 let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
+let libraryWindow: BrowserWindow | undefined
 const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
 const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirectory()
@@ -274,6 +276,49 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
 }
 
 const projectDialogPath = join(app.getAppPath(), 'resources', 'projects.html')
+const libraryPath = join(app.isPackaged ? join(process.resourcesPath, 'app') : join(app.getAppPath(), '..', 'app', 'dist'), 'site', 'desktop-library.html')
+const library = new DesktopLibrary(dataDirectory, environmentClient)
+
+function trustedLibraryIpc(event: Electron.IpcMainInvokeEvent): void {
+  if (quitting || !libraryWindow || event.sender !== libraryWindow.webContents
+    || event.senderFrame !== libraryWindow.webContents.mainFrame
+    || event.senderFrame.url !== pathToFileURL(libraryPath).href) throw new Error('library capability denied for an untrusted renderer')
+}
+
+async function createLibraryWindow(): Promise<void> {
+  if (libraryWindow && !libraryWindow.isDestroyed()) { libraryWindow.show(); libraryWindow.focus(); return }
+  const panel = new BrowserWindow({
+    ...windowChromeOptions(),
+    width: 1040, height: 760, minWidth: 390, minHeight: 500,
+    title: desktopTitle(services), icon: applicationIcon(), backgroundColor: windowBackground(),
+    webPreferences: { ...secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')), additionalArguments: ['--dinkster-library'] },
+  })
+  libraryWindow = panel
+  installWindowChrome(panel, undefined, services)
+  panel.on('page-title-updated', (event) => event.preventDefault())
+  denyRendererPermissions(panel.webContents.session)
+  panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  panel.webContents.on('will-navigate', (event) => event.preventDefault())
+  panel.on('closed', () => { if (libraryWindow === panel) libraryWindow = undefined })
+  await panel.loadFile(libraryPath)
+}
+
+ipcMain.handle('desktop:library-installations', async (event) => {
+  trustedLibraryIpc(event)
+  return library.installations()
+})
+ipcMain.handle('desktop:library-projects', async (event, installation: string, cursor: string | null) => {
+  trustedLibraryIpc(event)
+  return library.projects(installation, cursor)
+})
+ipcMain.handle('desktop:library-workflows', async (event, installation: string, project: string, cursor: string | null) => {
+  trustedLibraryIpc(event)
+  return library.workflows(installation, project, cursor)
+})
+ipcMain.handle('desktop:library-assets', async (event, installation: string, project: string, cursor: string | null) => {
+  trustedLibraryIpc(event)
+  return library.assets(installation, project, cursor)
+})
 
 function trustedProjectIpc(event: Electron.IpcMainInvokeEvent): void {
   if (quitting) throw new Error('Desktop is shutting down')
@@ -616,6 +661,7 @@ async function shutdown(): Promise<void> {
     window = undefined
     await flushWindowLayout()
     projectWindow?.destroy()
+    libraryWindow?.destroy()
     for (const managed of remoteWindows.keys()) managed.destroy()
     remoteWindows.clear()
     for (const managed of windows.values()) managed.destroy()
@@ -1240,8 +1286,8 @@ app.on('second-instance', (_event, argv, _directory, additionalData) => {
     void routeDeepLink(link)
     return
   }
-  window?.show()
-  window?.focus()
+  if (window) { window.show(); window.focus() }
+  else void createLibraryWindow()
 })
 // macOS delivers protocol launches as open-url instead of argv.
 app.on('open-url', (event, url) => {
@@ -1263,16 +1309,22 @@ if (primaryInstance) app.whenReady().then(async () => {
   })
   credentialStore = await CredentialStore.open(join(dataDirectory, 'credentials.json'), desktopCredentialCipher())
   applyCredentialHeaders()
-  await createProjectManager()
+  await createLibraryWindow()
   tray = new Tray(trayIcon())
   tray.setToolTip(desktopTitle(services))
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Projects', click: () => { void createProjectManager() } },
+  const navigation: Electron.MenuItemConstructorOptions[] = [
+    { id: 'desktop-projects', label: 'Projects', click: () => { void createLibraryWindow() } },
+    { id: 'desktop-installations', label: 'Installations', click: () => { void createProjectManager() } },
     { label: 'About Dinkster Desktop', click: () => { void showAbout(services) } },
     { type: 'separator' },
     { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
+  ]
+  tray.setContextMenu(Menu.buildFromTemplate(navigation))
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: desktopTitle(services), submenu: navigation },
+    { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
   ]))
-  tray.on('double-click', () => { void createProjectManager() })
+  tray.on('double-click', () => { void createLibraryWindow() })
 }).catch((error: unknown) => {
   console.error(error)
   void shellLog.append(redactDiagnosticText(error instanceof Error ? error.stack ?? error.message : String(error)))

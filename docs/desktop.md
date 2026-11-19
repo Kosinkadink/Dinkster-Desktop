@@ -17,6 +17,29 @@ a ready managed engine using different services is stopped and restarted
 before its window opens. The Frontend independently names services from its
 engine header, so a remotely connected engine can show its own service badge.
 
+## Projects without an engine
+
+Desktop opens a read-only Projects window. Choose a saved local installation,
+then a library project to browse its workflows and recorded files. Each list
+continues independently with More; Back returns immediately. Remote-only
+connections remain in Installations and are not local library sources.
+The tray and application menu share the Projects and Installations commands;
+Installations opens the existing installation manager.
+
+Browsing runs a short-lived environment-tools command, not an engine. Native
+installations use the verified native tools; private WSL installations use the
+same Linux tools path through wsl.exe. The command closes its library helper
+before returning. No Desktop code opens a library database or inventories the
+filesystem. A missing library is empty and is not created. An unreadable
+library shows one plain by-the-way notice, not a storage approval question.
+
+The frontend wheel supplies the Projects page, shared Product components and
+bundled Noto fonts. Its isolated preload exposes only read-only library
+operations. The main process accepts saved installation IDs, project IDs and
+opaque page cursors, never renderer-selected paths or helper commands. The
+library window retains the native title bar rather than injecting a second
+content stylesheet.
+
 ## Publishing installers
 
 The owner opens a version PR changing `packages/desktop/package.json`.

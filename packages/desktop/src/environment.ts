@@ -12,7 +12,7 @@ import { wslLinuxPath, wslLocation, wslWindowsPath, type WslHost } from './wsl.j
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply' | 'source' | 'restore'
+export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply' | 'source' | 'restore' | 'library-list'
 export type EnvironmentChannel = 'stable' | 'nightly'
 
 export interface DevelopmentSources {
@@ -26,7 +26,21 @@ export interface DevelopmentSources {
   readonly allowFrontendDevRemote?: boolean
 }
 
+export type LibraryListKind = 'projects' | 'workflows' | 'assets'
+
+export interface LibraryPage {
+  readonly kind: LibraryListKind
+  readonly cursor: string | null
+  readonly items?: readonly Readonly<Record<string, unknown>>[]
+  readonly records?: readonly Readonly<Record<string, unknown>>[]
+  readonly assets?: readonly Readonly<Record<string, unknown>>[]
+}
+
 export interface EnvironmentRequest {
+  readonly libraryKind?: LibraryListKind
+  readonly libraryProject?: string
+  readonly libraryCursor?: string
+  readonly libraryLimit?: number
   readonly development?: DevelopmentSources
   readonly root: string
   readonly operation: EnvironmentOperation
@@ -115,6 +129,7 @@ export interface SandboxReadiness {
 
 /** Validated command response; WSL filesystem paths use the native host spelling. */
 export interface EnvironmentResult {
+  readonly library?: LibraryPage
   readonly sandbox?: SandboxReadiness
   readonly format: 'dinkster.environment-result/1'
   readonly operation: EnvironmentOperation
@@ -211,6 +226,16 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
+  if (request.operation === 'library-list') {
+    if (confirmed || Object.keys(request).some((key) => !['root', 'operation', 'channel', 'libraryKind', 'libraryProject', 'libraryCursor', 'libraryLimit'].includes(key))) throw new Error('library browsing is read-only')
+    if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
+    if (!request.libraryKind || !['projects', 'workflows', 'assets'].includes(request.libraryKind)) throw new Error('invalid library list')
+    if (request.libraryProject !== undefined && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(request.libraryProject)) throw new Error('invalid library project')
+    if (request.libraryCursor !== undefined && (typeof request.libraryCursor !== 'string' || !request.libraryCursor || request.libraryCursor.length > 16384 || request.libraryCursor.includes('\u0000'))) throw new Error('invalid library cursor')
+    if (request.libraryLimit !== undefined && (!Number.isInteger(request.libraryLimit) || request.libraryLimit < 1 || request.libraryLimit > 200)) throw new Error('invalid library page size')
+    return ['--root', request.root, 'library-list', request.libraryKind, '--project', request.libraryProject ?? 'default', '--limit', String(request.libraryLimit ?? 50), ...(request.libraryCursor === undefined ? [] : [`--cursor=${request.libraryCursor}`]), '--json']
+  }
+  if (['libraryKind', 'libraryProject', 'libraryCursor', 'libraryLimit'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) throw new Error('library filters require library-list')
   if (!['develop', 'source', 'restore', 'setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'space', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
   if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
@@ -483,6 +508,13 @@ function resultFrom(text: string, operation: EnvironmentOperation, distribution?
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
   }
+  if (operation === 'library-list' && row['status'] !== 'error') {
+    const page = row['library'] as Record<string, unknown> | undefined
+    const key = page?.['kind'] === 'projects' ? 'items' : page?.['kind'] === 'workflows' ? 'records' : page?.['kind'] === 'assets' ? 'assets' : undefined
+    if (row['status'] !== 'clean' || !page || !key || !Array.isArray(page[key]) || page[key].length > 200
+      || !page[key].every((item: unknown) => !!item && typeof item === 'object' && !Array.isArray(item))
+      || !(page['cursor'] === null || (typeof page['cursor'] === 'string' && page['cursor'].length > 0 && page['cursor'].length <= 16384))) throw new Error('unsupported library list response')
+  }
   if ((row['sourceDescription'] !== undefined && typeof row['sourceDescription'] !== 'string')
     || (operation === 'develop' && row['status'] === 'planned' && row['sourceApproval'] === undefined)) throw new Error('unsupported development source approval response')
   for (const key of ['sourceApproval', 'frontendApproval']) {
@@ -684,6 +716,7 @@ export class EnvironmentClient {
       }
     }
     const result = resultFrom(stdout, request.operation)
+    if (request.operation === 'library-list' && result.root !== request.root) throw new Error('dinkster-env returned a different project root')
     if (['packs-plan', 'packs-apply', 'source', 'restore'].includes(request.operation)
       && await realpath(result.root) !== await realpath(request.root)) throw new Error('dinkster-env returned a different project root')
     if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { installationManager } from './installation-manager.mjs'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
@@ -127,7 +128,7 @@ async function launch(selection) {
     await app.evaluate(() => process.env.DINKSTER_SERVICES),
     selection,
   )
-  const manager = await app.firstWindow()
+  const manager = await installationManager(app)
   await manager
     .getByRole('heading', { name: 'Projects', exact: true })
     .waitFor()
@@ -152,7 +153,7 @@ async function mark(page, selection, kind) {
         const elements = [
           document.body,
           ...document.querySelectorAll(
-            'body > header, .topbar > .topbar-group-left',
+            'body > header, .topbar > .topbar-group-left, .dinkster-topbar > .dinkster-brand',
           ),
         ]
         return (
@@ -823,7 +824,9 @@ try {
           .poll(() =>
             manager.evaluate(() =>
               getComputedStyle(
-                document.querySelector('body > header'),
+                document.querySelector(
+                  'body > header, .dinkster-topbar > .dinkster-brand',
+                ),
                 '::after',
               ).content.includes('[QA]'),
             ),

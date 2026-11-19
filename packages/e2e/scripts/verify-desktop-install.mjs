@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { installationManager } from './installation-manager.mjs'
 import { createServer } from 'node:http'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
@@ -37,7 +38,7 @@ try {
     let page
     try {
       assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
-      page = await app.firstWindow({ timeout: 60_000 })
+      page = await installationManager(app)
       await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
       if (process.env.DINKSTER_VERIFY_PUBLIC_UPDATE === '1') {
         // Projects cannot invoke desktop capabilities. Check the installed

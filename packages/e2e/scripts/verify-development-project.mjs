@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { installationManager } from './installation-manager.mjs'
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
@@ -108,7 +109,7 @@ try {
     ],
     env,
   })
-  const manager = await app.firstWindow()
+  const manager = await installationManager(app)
   await manager
     .getByText('Manage a local installation', { exact: true })
     .click()

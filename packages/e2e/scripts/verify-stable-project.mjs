@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { installationManager } from './installation-manager.mjs'
 import { createHash } from 'node:crypto'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -181,7 +182,7 @@ try {
     await app.evaluate(({ app }) => app.getVersion()),
     /^\d+\.\d+\.\d+$/,
   )
-  manager = await app.firstWindow()
+  manager = await installationManager(app)
   await manager
     .getByRole('heading', { name: 'Projects', exact: true })
     .waitFor()

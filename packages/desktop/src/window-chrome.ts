@@ -14,15 +14,15 @@ export function windowChromeOptions(platform: NodeJS.Platform = process.platform
 export function installWindowChrome(window: BrowserWindow, development: () => boolean = () => false, services: DesktopServices = 'production'): void {
   const left = process.platform === 'darwin' ? '80px' : 'env(titlebar-area-x, 0px)'
   const css = `
-    .topbar, body > header {
+    .topbar, .dinkster-topbar, body > header {
       -webkit-app-region: drag;
       min-height: max(54px, env(titlebar-area-height, 54px));
       padding-left: calc(${left} + 12px);
       padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 12px);
     }
-    .topbar > *, body > header > * { -webkit-app-region: no-drag; }
-    body:not(:has(.topbar, > header)) { padding-top: 54px; }
-    body:not(:has(.topbar, > header))::before {
+    .topbar > *, .dinkster-topbar > *, body > header > * { -webkit-app-region: no-drag; }
+    body:not(:has(.topbar, .dinkster-topbar, > header)) { padding-top: 54px; }
+    body:not(:has(.topbar, .dinkster-topbar, > header))::before {
       content: '${desktopTitle(services)}';
       position: fixed; top: 0; left: 0; right: 0; height: 54px; z-index: 2147483647;
       display: flex; align-items: center;
@@ -45,7 +45,7 @@ export function installWindowChrome(window: BrowserWindow, development: () => bo
       }
     ` : ''
     const servicesMark = services === 'qa' ? `
-      .topbar > .topbar-group-left::after, body > header::after {
+      .topbar > .topbar-group-left::after, .dinkster-topbar > .dinkster-brand::after, body > header::after {
         content: '[QA]'; flex-shrink: 0; margin-left: 8px;
         color: #ededed; font: bold 12px system-ui, sans-serif;
         pointer-events: none; -webkit-app-region: no-drag;

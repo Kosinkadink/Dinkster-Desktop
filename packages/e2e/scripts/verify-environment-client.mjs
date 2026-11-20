@@ -116,14 +116,14 @@ const planned = args.includes('--plan');
 const observed = ${JSON.stringify(join(scratch, 'observed.json'))};
 if (operation === 'project-get' || operation === 'project-check') {
   const selection=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8'));
-  const project={id:args[3],uid:'565e7ba1-c262-401d-83b1-7026465b6c39',name:'Opening project',revision:1,deleted:false,
+  const project={id:args[3],uid:'565e7ba1-c262-401d-83b1-7026465b6c39',name:'Opening project',revision:selection.revision ?? 1,deleted:false,
     environment:{id:'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
   const error=selection.refuse && operation==='project-check' ? 'library compatibility refused' : undefined;
   console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:error?'error':'clean',root,current:1,plan:[],
     ...(error?{error}:{project,environment:{id:root===selection.target?'b'.repeat(32):'a'.repeat(32),snapshot:'1'}})}));
   process.exit(0);
 }
-if (root === ${JSON.stringify(join(scratch, 'second-installation'))}) {
+if (root === ${JSON.stringify(join(scratch, 'second-installation'))} && !['packs-plan','packs-apply'].includes(operation)) {
   const state=${JSON.stringify(join(scratch, 'second-state.json'))};
   const running=fs.existsSync(state) && fs.readFileSync(state,'utf8')==='ready';
   const row={format:'dinkster.environment-result/1',operation,status:operation==='status'||operation==='doctor'?'clean':'applied',root,current:1,plan:[],
@@ -182,8 +182,16 @@ if (operation === 'catalog') {
 if (operation === 'packs-plan') {
   const output = args[args.indexOf('--output') + 1];
   fs.mkdirSync(output);
+  let projectReview;
+  if(args.includes('--project')) {
+    const selection=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8'));
+    const project={id:args[args.indexOf('--project')+1],uid:'565e7ba1-c262-401d-83b1-7026465b6c39',name:'Opening project',revision:selection.revision ?? 1,deleted:false,
+      environment:{id:'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
+    if(args[args.indexOf('--revision')+1]!==String(project.revision)) throw new Error('project revision mismatch');
+    projectReview={library:root+'/private-library',environment:'b'.repeat(32),project,projects:[{project,needs:{packs:['dinkster-text']}}]};
+  }
   console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'planned',root,current:1,
-    plan:['Add dinkster-text 1.0.0'],packPlan:{format:'dinkster.project-pack-plan/1',root,current:1},
+    plan:['Add dinkster-text 1.0.0'],packPlan:{format:'dinkster.project-pack-plan/1',root,current:1,...(projectReview?{projectReview}:{})},
     approval:'sha256:'+'c'.repeat(64),expiresInSeconds:900}));
   process.exit(0);
 }
@@ -597,7 +605,7 @@ console.log(JSON.stringify(row));
     )
   const packReview = await postInstall('plan', selection)
   assert.equal(packReview.status, 200, JSON.stringify(packReview))
-  assert.equal(packReview.body.plan.root, '<project>')
+  assert.equal(packReview.body.plan.root, '<environment>')
   await engine.evaluate(() => {
     const frame = document.createElement('iframe')
     frame.src = '/untrusted-frame'
@@ -1354,6 +1362,57 @@ console.log(JSON.stringify(row));
     true,
   )
   assert.equal(locationRequests.at(-1).searchParams.get('project'), 'beta')
+  const projectInstall = (action, body) =>
+    projectPage.evaluate(
+      async ({ action, body }) => {
+        const response = await fetch(`/api/packs/install/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        return { status: response.status, body: await response.json() }
+      },
+      { action, body },
+    )
+  assert.equal((await projectInstall('plan', selection)).status, 400)
+  const sharedSelection = { ...selection, scope: 'every-project' }
+  const projectReview = await projectInstall('plan', sharedSelection)
+  assert.equal(projectReview.status, 200, JSON.stringify(projectReview))
+  assert.equal(projectReview.body.plan.projectReview.project.id, 'beta')
+  assert.equal(projectReview.body.plan.projectReview.library, '<library>')
+  await writeFile(opening, JSON.stringify({ target: secondRoot, revision: 2 }))
+  assert.deepEqual(
+    await projectInstall('apply', {
+      confirmation: projectReview.body.confirmation,
+    }),
+    {
+      status: 409,
+      body: { error: 'plan-stale' },
+    },
+  )
+  const currentReview = await projectInstall('plan', sharedSelection)
+  assert.equal(currentReview.status, 200, JSON.stringify(currentReview))
+  await projectPage.evaluate(() => {
+    window.retainedLibraryDocument = 'unchanged'
+  })
+  const libraryApplied = await projectInstall('apply', {
+    confirmation: currentReview.body.confirmation,
+  })
+  assert.equal(libraryApplied.status, 200, JSON.stringify(libraryApplied))
+  assert.equal(
+    await projectPage.evaluate(() => window.retainedLibraryDocument),
+    'unchanged',
+  )
+  assert.equal(new URL(projectPage.url()).origin, projectOrigin)
+  const projectCalls = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+  const lastPlan = projectCalls.findLast((args) => args[2] === 'packs-plan')
+  assert.equal(lastPlan[lastPlan.indexOf('--project') + 1], 'beta')
+  assert.equal(lastPlan[lastPlan.indexOf('--revision') + 1], '2')
+  const lastApply = projectCalls.findLast((args) => args[2] === 'packs-apply')
+  assert.equal(lastApply[lastApply.indexOf('--scope') + 1], 'every-project')
   await projectPage.goto(`${projectOrigin}/?dinksterProject=other`)
   assert.deepEqual(
     await projectPage.evaluate(
@@ -1366,6 +1425,10 @@ console.log(JSON.stringify(row));
       resolvePath: false,
     },
   )
+  assert.deepEqual(await projectInstall('plan', sharedSelection), {
+    status: 409,
+    body: { error: 'plan-stale' },
+  })
   console.log(
     'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, retained document, replay refusal, remote-only routing, identity-checked stop, authoritative library opening, preflight-before-stop, failed replacement recovery and project-scoped navigation.',
   )

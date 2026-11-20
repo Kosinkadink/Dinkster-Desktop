@@ -672,18 +672,30 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
   if (engine.kind === 'local') {
     try {
       const portFile = join('project-gateways', projectId, `${engineId}.json`)
-      binding.gateway = await createProjectGateway({ get root() { return localEngines.get(`${projectId}/${engineId}`)!.root }, target: url, allowPackInstall: libraryProject === undefined, preferredPort: await readPersistedPort(portFile),
+      const readProject = async () => {
+        const root = localEngines.get(`${projectId}/${engineId}`)?.root
+        if (!root || binding.libraryProject === undefined) throw new Error('plan-stale')
+        const selected = await environmentClient.run({ root, operation: 'project-get', libraryProject: binding.libraryProject })
+        if (!selected.project || selected.project.uid !== binding.libraryUid || selected.environment?.id !== binding.environmentId
+          || selected.project.environment?.id !== binding.environmentId) throw new Error('plan-stale')
+        return selected.project
+      }
+      binding.gateway = await createProjectGateway({ get root() { return localEngines.get(`${projectId}/${engineId}`)!.root }, target: url, allowPackInstall: true, preferredPort: await readPersistedPort(portFile),
+        ...(libraryProject === undefined ? {} : { project: readProject }),
         serialize: serializeLifecycle,
         run: (request, confirmed) => environmentClient.run(request, confirmed),
         owner: async () => {
           const document = binding.document
           const saved = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === projectId)
           if (quitting || remote.isDestroyed() || remoteWindows.get(remote) !== binding || binding.document !== document
+            || (libraryProject !== undefined && binding.folderProject !== libraryProject)
             || !saved || saved.root !== localEngines.get(`${projectId}/${engineId}`)?.root || saved.engines.find((candidate) => candidate.id === engineId)?.kind !== 'local'
             || !isTrustedDesktopIpc(remote.webContents, remote.webContents.mainFrame, new URL(binding.url).origin, remote.webContents, remote.webContents.mainFrame)) {
             throw new Error('plan-stale')
           }
-          return `${projectId}/${engineId}/${document}/${saved.root}`
+          const selected = libraryProject === undefined ? undefined : await readProject()
+          if (quitting || remote.isDestroyed() || remoteWindows.get(remote) !== binding || binding.document !== document) throw new Error('plan-stale')
+          return `${projectId}/${engineId}/${document}/${saved.root}/${selected?.uid ?? ''}/${selected?.revision ?? ''}`
         },
         activate: async (result, added) => {
           const next = localEngineUrl(project!, engineId, result)

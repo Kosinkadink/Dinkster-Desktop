@@ -292,9 +292,15 @@ sandbox selection, rather than assuming its saved Desktop settings match the
 running process. Tools that omit the assignment refuse opening before any owner
 is stopped; ordinary read-only status remains compatible with those tools.
 Native file access rechecks the project uid, managed identity and document scope.
-The environment-wide pack installer is not exposed to these library-bound
-windows; project-aware Apply and the visible opening controls are not yet
-validated by this command boundary.
+Library-bound windows require an explicit `every-project` scope when planning
+shared software changes. Native code rereads their library project, revision and
+managed environment; the renderer cannot substitute an association or path.
+Changed projects, replaced identities and stale documents refuse. Reviews retain
+the affected-project details with native library paths removed, and Apply consumes
+only their single-use confirmation and retained scope. An unselected project must
+select its environment before requesting a software review. Separate-environment
+Desktop activation, pack enabling and frontend confirmation controls are not
+provided by this shared-review boundary.
 
 The client consumes `dinkster.environment-result/1`. An update may start a new
 supervisor on a different port, so open local engine windows follow the ready

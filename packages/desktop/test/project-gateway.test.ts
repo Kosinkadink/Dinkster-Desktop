@@ -6,7 +6,7 @@ import * as files from 'node:fs/promises'
 import * as os from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createProjectGateway, PROJECT_INSTALL_HEADER, type ProjectGateway } from '../src/project-gateway.js'
-import type { EnvironmentRequest, EnvironmentResult } from '../src/environment.js'
+import type { EnvironmentRequest, EnvironmentResult, LibraryProject } from '../src/environment.js'
 import { LifecycleQueue } from '../src/lifecycle-queue.js'
 import { EnvironmentClient } from '../src/environment.js'
 import { wslLinuxPath, wslWindowsPath, type WslHost } from '../src/wsl.js'
@@ -32,10 +32,12 @@ async function backend(label: string): Promise<string> {
   return `http://127.0.0.1:${address.port}`
 }
 
-async function fixture(allowPackInstall = true) {
+async function fixture(allowPackInstall = true, initialProject?: LibraryProject) {
   const calls: EnvironmentRequest[] = []
   let owner = 'document-1'
   let failure = ''
+  let project = initialProject
+  let ownerFailure = false
   let hold: (() => Promise<void>) | undefined
   const target = await backend('old')
   const next = await backend('new')
@@ -44,7 +46,8 @@ async function fixture(allowPackInstall = true) {
   const enqueued = new Promise<void>((resolve) => { submitted = resolve })
   const gateway = await createProjectGateway({ root: '/project', target, allowPackInstall,
     serialize: (action) => { submitted(); return queue.run(action) },
-    owner: async () => owner,
+    owner: async () => { if (ownerFailure) throw new Error('private /library binding changed'); return owner },
+    ...(initialProject ? { project: async () => project! } : {}),
     run: async (request, confirmed) => {
       calls.push(request)
       await hold?.()
@@ -54,8 +57,12 @@ async function fixture(allowPackInstall = true) {
       if (request.operation === 'packs-plan') {
         await mkdir(request.inputs!)
         await writeFile(join(request.inputs!, 'plan.json'), 'retained verified inputs')
-        return { ...result, packPlan: { root: '/project', store: '/store', current: 1, wheelBytes: 12345 }, approval: `sha256:${'a'.repeat(64)}`, expiresInSeconds: 900 }
+        if (project && (request.libraryProject !== project.id || request.projectRevision !== project.revision)) throw new Error('missing authoritative project review')
+        return { ...result, packPlan: { root: '/project', store: '/store', current: 1, wheelBytes: 12345,
+          ...(project ? { projectReview: { library: '/private/library', environment: project.environment?.id, project,
+            projects: [{ project, needs: { packs: ['dinkster-text'] } }] } } : {}) }, approval: `sha256:${'a'.repeat(64)}`, expiresInSeconds: 900 }
       }
+      if (project && request.packScope !== 'every-project') throw new Error('explicit scope required')
       expect(confirmed).toBe(true)
       expect(request.approval).toBe(`sha256:${'a'.repeat(64)}`)
       return result
@@ -66,8 +73,8 @@ async function fixture(allowPackInstall = true) {
   const post = (action: string, body: unknown, headers: Record<string, string> = {}) => fetch(`${gateway.url}/api/packs/install/${action}`, {
     method: 'POST', headers: { origin: gateway.url, [PROJECT_INSTALL_HEADER]: gateway.capability, ...headers }, body: JSON.stringify(body),
   })
-  const plan = () => post('plan', { packs: [{ pack: 'dinkster-text', version: '1.0.0' }] })
-  return { gateway, calls, queue, enqueued, post, plan, setOwner: (value: string) => { owner = value }, fail: (value: string) => { failure = value }, hold: (value: (() => Promise<void>) | undefined) => { hold = value } }
+  const plan = () => post('plan', { packs: [{ pack: 'dinkster-text', version: '1.0.0' }], ...(initialProject ? { scope: 'every-project' } : {}) })
+  return { gateway, calls, queue, enqueued, post, plan, setProject: (value: LibraryProject) => { project = value }, failOwner: () => { ownerFailure = true }, setOwner: (value: string) => { owner = value }, fail: (value: string) => { failure = value }, hold: (value: (() => Promise<void>) | undefined) => { hold = value } }
 }
 
 it('forwards only validated gateway origins as the current upstream origin for HTTP and WebSocket', async () => {
@@ -131,6 +138,45 @@ it('keeps one origin, consumes only the retained review and switches upstream wi
   expect(f.calls.map((call) => call.operation)).toEqual(['packs-plan', 'packs-apply'])
   await f.gateway.close()
   await expect(stat(dirname(f.calls[0]!.inputs!))).rejects.toThrow()
+})
+
+it('binds shared approvals to the native project and refuses stale or substituted consent', async () => {
+  const project: LibraryProject = { id: 'film', uid: 'film-global', name: 'Film', revision: 7, deleted: false,
+    environment: { id: 'a'.repeat(32), lastSnapshot: '1', lastRunAt: '2026-11-20T06:00:00Z' } }
+  const f = await fixture(true, project)
+  const packs = [{ pack: 'dinkster-text', version: '1.0.0' }]
+  for (const body of [{ packs }, { packs, scope: 'only-project' }, { packs, scope: 'every-project', project: 'sibling' }]) {
+    expect((await f.post('plan', body)).status).toBe(400)
+  }
+  expect(f.calls).toHaveLength(0)
+  const response = await f.plan()
+  expect(response.status).toBe(200)
+  const reviewed = await response.json() as { confirmation: string; review: string; plan: { projectReview: { projects: unknown[] } } }
+  expect(JSON.stringify(reviewed)).not.toContain('/private/library')
+  expect(reviewed.review).toContain('Film')
+  expect(reviewed.plan.projectReview.projects).toHaveLength(1)
+  expect((await f.post('apply', { confirmation: reviewed.confirmation, scope: 'only-project' })).status).toBe(400)
+  f.setProject({ ...project, revision: 8 })
+  const stale = await f.post('apply', { confirmation: reviewed.confirmation })
+  expect(stale.status).toBe(409)
+  expect(await stale.json()).toEqual({ error: 'plan-stale' })
+  expect(await (await fetch(f.gateway.url)).text()).toBe('old:no-capability')
+  for (const changed of [{ ...project, uid: 'replacement' }, { ...project, environment: { ...project.environment!, id: 'b'.repeat(32) } }]) {
+    const candidate = await fixture(true, project)
+    const review = await (await candidate.plan()).json() as { confirmation: string }
+    candidate.setProject(changed)
+    expect((await candidate.post('apply', { confirmation: review.confirmation })).status).toBe(409)
+  }
+  const successful = await fixture(true, project)
+  const review = await (await successful.plan()).json() as { confirmation: string }
+  expect((await successful.post('apply', { confirmation: review.confirmation })).status).toBe(200)
+  expect(await (await fetch(successful.gateway.url)).text()).toBe('new:no-capability')
+  expect((await successful.post('apply', { confirmation: review.confirmation })).status).toBe(409)
+  const missing = await fixture(true, project)
+  missing.failOwner()
+  const unavailable = await missing.plan()
+  expect(unavailable.status).toBe(409)
+  expect(await unavailable.json()).toEqual({ error: 'plan-stale' })
 })
 
 it('reviews, observes, cancels and applies packs on the current private WSL disk without exposing review paths', async () => {

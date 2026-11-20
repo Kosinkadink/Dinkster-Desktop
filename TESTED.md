@@ -1,3 +1,24 @@
+## Separate-project native activation
+
+X570 Linux CPU, Node 26.12.0 and Electron 37, November 20, 2026:
+188 counted unit tests, workspace typecheck, formatting and build pass. The
+expanded private-Xvfb Electron harness passes separate-project planning and
+Apply, native metadata retention before construction, source stop before
+replacement start, unchanged window origin/document, and subsequent commands
+following the new saved root. The HTTP control refuses renderer destinations,
+retains Only this project consent, redacts the destination, and refuses replay.
+
+The same Electron harness with DINKSTER_ISOLATED_START_FAILURE=1 also passes:
+the failed replacement is stopped, the previous observed owner restarts, its
+window/document survives, and the separate saved binding remains available for
+recovery. Later review refuses the stale source association rather than
+silently applying there.
+
+This is development evidence using supervisor response fixtures, not real
+snapshot construction or whole-frontend Apply acceptance. Lost construction
+responses, uncertain replacement stops, compatibility changes during handoff
+and fresh whole-PR verification remain required before a landing claim.
+
 ## Separate-project command destination
 
 X570 Linux CPU, Node 26.12.0, November 20, 2026: all 187 counted unit tests,

@@ -362,7 +362,7 @@ describe('Desktop dinkster-env command client', () => {
       '--root', root, 'packs-apply', '--input', inputs, '--approval', approval, '--scope', 'every-project', '--json',
     ])
     await expect(client.run({ ...request, packScope: 'every-project' })).rejects.toThrow('pack scope requires packs-apply')
-    await expect(client.run({ ...apply, packScope: 'only-project' } as unknown as EnvironmentRequest, true)).rejects.toThrow('unsupported pack scope')
+    await expect(client.run({ ...apply, packScope: 'only-project' }, true)).rejects.toThrow('retained destination')
     await rm(join(root, 'arguments.json'))
     for (const packs of [[{ pack: '--help', version: '1.0.0' }], [{ pack: 'dinkster-text', version: '1.0.0 --yes' }], [request.packs[0]!, request.packs[0]!]]) {
       await expect(client.run({ ...request, packs })).rejects.toThrow('invalid or repeated')
@@ -373,6 +373,52 @@ describe('Desktop dinkster-env command client', () => {
     await expect(client.run({ ...request, channel: 'nightly' })).rejects.toThrow('retains the current')
     await expect(client.run({ ...apply, approval: 'b'.repeat(64) }, true)).rejects.toThrow('approval digest')
     await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
+    await client.dispose()
+  })
+
+  it('binds separate-project planning and application to the retained native destination', async () => {
+    const { root, client } = await commandFixture()
+    const destination = join(root, 'separate environment')
+    const inputs = join(root, 'inputs')
+    const approval = `sha256:${'c'.repeat(64)}`
+    const response = { format: 'dinkster.environment-result/1', operation: 'packs-plan', status: 'planned', root, current: 2,
+      plan: [], packPlan: { format: 'dinkster.project-pack-plan/1', root, current: 2, fork: { destination } }, approval, expiresInSeconds: 900 }
+    const respond = async (value: unknown) => writeFile(join(root, 'command.cjs'),
+      `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(join(root, 'arguments.json'))}, JSON.stringify(process.argv.slice(2))); console.log(${JSON.stringify(JSON.stringify(value))});`)
+    await respond(response)
+    const request: EnvironmentRequest = { root, operation: 'packs-plan', inputs, destination,
+      libraryProject: 'film', projectRevision: 7, packs: [{ pack: 'dinkster-text', version: '1.0.0' }] }
+    expect(await client.run(request)).toEqual(response)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+      '--root', root, 'packs-plan', 'dinkster-text@1.0.0', '--output', inputs, '--project', 'film', '--revision', '7', '--destination', destination, '--json',
+    ])
+    for (const wrong of [undefined, { destination: 'relative' }, { destination: join(root, 'other') }]) {
+      await respond({ ...response, packPlan: { ...response.packPlan, fork: wrong } })
+      await expect(client.run(request)).rejects.toThrow('different pack destination')
+    }
+    await respond(response)
+    await expect(client.run({ ...request, destination: undefined })).rejects.toThrow('different pack destination')
+    await expect(client.run({ ...request, destination: 'relative' })).rejects.toThrow('absolute reviewed project destination')
+    await expect(client.run({ ...request, libraryProject: undefined, projectRevision: undefined })).rejects.toThrow('absolute reviewed project destination')
+    const apply: EnvironmentRequest = { root, operation: 'packs-apply', inputs, approval, destination, packScope: 'only-project' }
+    const applied = { format: 'dinkster.environment-result/1', operation: 'packs-apply', status: 'applied', root, current: 1, plan: [], destination, engines: [] }
+    await respond(applied)
+    expect(await client.run(apply, true)).toEqual(applied)
+    // The destination is retained locally; the supervisor takes it only from the approved plan.
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+      '--root', root, 'packs-apply', '--input', inputs, '--approval', approval, '--scope', 'only-project', '--json',
+    ])
+    for (const wrong of [undefined, 'relative', join(root, 'other')]) {
+      await respond({ ...applied, destination: wrong })
+      await expect(client.run(apply, true)).rejects.toThrow('different pack destination')
+    }
+    await mkdir(destination)
+    await respond({ ...applied, root: destination })
+    await expect(client.run(apply, true)).rejects.toThrow('different project root')
+    await respond(applied)
+    await expect(client.run({ ...apply, destination: undefined }, true)).rejects.toThrow('retained destination')
+    await expect(client.run({ ...apply, packScope: 'every-project' }, true)).rejects.toThrow('absolute reviewed project destination')
+    await expect(client.run({ ...apply, destination: undefined, packScope: 'every-project' }, true)).rejects.toThrow('different pack destination')
     await client.dispose()
   })
 

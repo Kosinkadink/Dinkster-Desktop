@@ -188,6 +188,7 @@ it('reviews, observes, cancels and applies packs on the current private WSL disk
   const nativeJoin = paths.join
   vi.spyOn(paths, 'join').mockImplementation((...parts) => parts[0]?.startsWith('\\\\') ? paths.win32.join(...parts) : nativeJoin(...parts))
   vi.spyOn(paths, 'isAbsolute').mockImplementation(paths.win32.isAbsolute)
+  vi.spyOn(paths, 'relative').mockImplementation(paths.win32.relative)
   let allocation = 0
   vi.spyOn(files, 'mkdtemp').mockImplementation(async (prefix) => {
     const path = wslLinuxPath(distribution, String(prefix)) + ++allocation
@@ -208,8 +209,11 @@ it('reviews, observes, cancels and applies packs on the current private WSL disk
   let release: (() => void) | undefined
   let progress = ''
   let inputs = ''
+  let forkDestination: string | undefined
   const host = { distribution, run: async (args: readonly string[]) => {
     const planning = args.includes('packs-plan')
+    if (planning) forkDestination = args.includes('--destination') ? args[args.indexOf('--destination') + 1] : undefined
+    else if (forkDestination) expect(args).toContain('only-project')
     inputs = args[args.indexOf(planning ? '--output' : '--input') + 1]!
     expect(inputs).toMatch(/^\/tmp\/dinkster-desktop-pack-review-[^/]+\/inputs$/)
     expect(disk.has(paths.posix.dirname(inputs))).toBe(true)
@@ -224,7 +228,9 @@ it('reviews, observes, cancels and applies packs on the current private WSL disk
     return JSON.stringify({ format: 'dinkster.environment-result/1', operation: planning ? 'packs-plan' : 'packs-apply',
       root: '/home/dinkster/projects/test', current: planning ? 1 : 2, status: planning ? 'planned' : 'applied', engines: [],
       plan: [`review ${inputs}`, `host ${wslWindowsPath(distribution, inputs)}`],
+      ...(!planning && forkDestination ? { destination: forkDestination } : {}),
       ...(planning ? { packPlan: { format: 'dinkster.project-pack-plan/1', root: '/home/dinkster/projects/test', current: 1,
+        ...(forkDestination ? { fork: { destination: forkDestination } } : {}),
         inputs, hostInputs: wslWindowsPath(distribution, inputs) }, approval: `sha256:${'a'.repeat(64)}`, expiresInSeconds: 900 } : {}) })
   } } as unknown as WslHost
   const client = new EnvironmentClient('unused', [], undefined, undefined, undefined, host)
@@ -257,6 +263,19 @@ it('reviews, observes, cancels and applies packs on the current private WSL disk
     await queue.run(async () => {})
     expect(disk.size).toBe(0)
     expect(await (await post('preparation/status', identity)).json()).toMatchObject({ state: 'cancelled' })
+    const separate = wslWindowsPath(distribution, '/home/dinkster/projects/separate')
+    const retained = wslWindowsPath(distribution, '/tmp/dinkster-desktop-pack-review-direct/inputs')
+    disk.set('/tmp/dinkster-desktop-pack-review-direct', '')
+    const plannedSeparate = await client.run({ root, operation: 'packs-plan', packs: packs.packs, inputs: retained,
+      libraryProject: 'film', projectRevision: 3, destination: separate })
+    expect(plannedSeparate.packPlan?.['fork']).toEqual({ destination: separate })
+    const appliedSeparate = await client.run({ root, operation: 'packs-apply', inputs: retained,
+      approval: plannedSeparate.approval!, packScope: 'only-project', destination: separate }, true)
+    expect(appliedSeparate.destination).toBe(separate)
+    expect(appliedSeparate.root).toBe(root)
+    forkDestination = '/home/dinkster/projects/Separate'
+    await expect(client.run({ root, operation: 'packs-apply', inputs: retained,
+      approval: plannedSeparate.approval!, packScope: 'only-project', destination: separate }, true)).rejects.toThrow('different pack destination')
   } finally {
     release?.()
     await gateway.close()

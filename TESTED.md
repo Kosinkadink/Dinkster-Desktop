@@ -64,3 +64,19 @@ and all 185 unit tests pass, plus typecheck, lint and build. The unit suite used
 the counted host launcher. This is client orchestration evidence, not real
 backend switching, a published tool pin, project-aware Apply or changed-screen
 acceptance.
+
+## Real backend project opening
+
+X570 Linux CPU, Electron 37.10.3 and locally extracted Xvfb 21.1.12-1ubuntu1.9:
+Desktop opening runs against two installed, restorable environments built from
+landed backend 2f5805415e599484e11d8ef1f35cf6e2608f9f28, with separate managed
+identities and one retained library. A controlled command wrapper reports a
+failure only after the real replacement starts. Desktop stops that replacement
+and recovers the original snapshot, observed port and sandbox selection. The
+observed port differs from Desktop's saved port. A subsequent successful switch
+leaves only the replacement ready, opens the authoritative project query and
+revokes native folder capability after navigation to another project. Both
+engines stop during cleanup. This proves the CPU source-stack path, not GPU
+assignment preservation, installed-package behavior, published tools, visible
+opening controls or project-aware Apply. The backend status contract must expose
+the observed GPU assignment before that recovery boundary is accepted.

@@ -341,6 +341,14 @@ describe('Desktop dinkster-env command client', () => {
       '--root', root, 'packs-plan', 'dinkster-text@1.2.3rc1', 'dinkster-image@2.0.4', '--output', inputs, '--progress', progress, '--json',
     ])
     await expect(client.run(request, true)).rejects.toThrow('unconfirmed')
+    expect(await client.run({ ...request, libraryProject: 'film', projectRevision: 7 })).toEqual(response)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+      '--root', root, 'packs-plan', 'dinkster-text@1.2.3rc1', 'dinkster-image@2.0.4', '--output', inputs,
+      '--project', 'film', '--revision', '7', '--progress', progress, '--json',
+    ])
+    for (const binding of [{ libraryProject: 'film' }, { projectRevision: 7 }, { libraryProject: '../film', projectRevision: 7 }, { libraryProject: 'film', projectRevision: 0 }]) {
+      await expect(client.run({ ...request, ...binding })).rejects.toThrow('authoritative project and observed revision')
+    }
     const applied = { ...response, operation: 'packs-apply', status: 'applied', current: 3, plan: [], engines: [{ name: 'main', generation: 3, state: 'ready', url: 'http://127.0.0.1:44003' }] }
     await writeFile(script, `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(join(root, 'arguments.json'))}, JSON.stringify(process.argv.slice(2))); console.log(${JSON.stringify(JSON.stringify(applied))});`)
     const apply = { root, operation: 'packs-apply' as const, inputs, approval }
@@ -349,6 +357,12 @@ describe('Desktop dinkster-env command client', () => {
     expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
       '--root', root, 'packs-apply', '--input', inputs, '--approval', approval, '--json',
     ])
+    expect(await client.run({ ...apply, packScope: 'every-project' }, true)).toEqual(applied)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+      '--root', root, 'packs-apply', '--input', inputs, '--approval', approval, '--scope', 'every-project', '--json',
+    ])
+    await expect(client.run({ ...request, packScope: 'every-project' })).rejects.toThrow('pack scope requires packs-apply')
+    await expect(client.run({ ...apply, packScope: 'only-project' } as unknown as EnvironmentRequest, true)).rejects.toThrow('unsupported pack scope')
     await rm(join(root, 'arguments.json'))
     for (const packs of [[{ pack: '--help', version: '1.0.0' }], [{ pack: 'dinkster-text', version: '1.0.0 --yes' }], [request.packs[0]!, request.packs[0]!]]) {
       await expect(client.run({ ...request, packs })).rejects.toThrow('invalid or repeated')

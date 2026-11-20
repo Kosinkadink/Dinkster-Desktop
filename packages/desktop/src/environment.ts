@@ -72,6 +72,7 @@ export interface EnvironmentRequest {
   readonly packs?: readonly { readonly pack: string; readonly version: string }[]
   readonly inputs?: string
   readonly approval?: string
+  readonly packScope?: 'every-project'
   readonly progress?: string
   readonly automaticCleanup?: boolean
   readonly keepPreviousGenerations?: number
@@ -253,7 +254,8 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     return ['--root', request.root, request.operation, request.libraryProject,
       ...(selecting ? ['--revision', String(request.projectRevision), confirmed ? '--yes' : '--plan'] : []), '--json']
   }
-  if (request.projectRevision !== undefined) throw new Error('project revision requires project-select')
+  if (request.projectRevision !== undefined && request.operation !== 'packs-plan') throw new Error('project revision requires project-select or packs-plan')
+  if (request.packScope !== undefined && request.operation !== 'packs-apply') throw new Error('pack scope requires packs-apply')
   if (request.operation === 'library-list') {
     if (confirmed || Object.keys(request).some((key) => !['root', 'operation', 'channel', 'libraryKind', 'libraryProject', 'libraryCursor', 'libraryLimit'].includes(key))) throw new Error('library browsing is read-only')
     if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
@@ -263,7 +265,7 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     if (request.libraryLimit !== undefined && (!Number.isInteger(request.libraryLimit) || request.libraryLimit < 1 || request.libraryLimit > 200)) throw new Error('invalid library page size')
     return ['--root', request.root, 'library-list', request.libraryKind, '--project', request.libraryProject ?? 'default', '--limit', String(request.libraryLimit ?? 50), ...(request.libraryCursor === undefined ? [] : [`--cursor=${request.libraryCursor}`]), '--json']
   }
-  if (['libraryKind', 'libraryProject', 'libraryCursor', 'libraryLimit'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) throw new Error('library filters require library-list')
+  if (['libraryKind', 'libraryCursor', 'libraryLimit', ...(request.operation === 'packs-plan' ? [] : ['libraryProject'])].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) throw new Error('library filters require library-list')
   if (!['develop', 'source', 'restore', 'setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'start', 'stop', 'status', 'catalog', 'space', 'packs-plan', 'packs-apply'].includes(request.operation)) throw new Error('unsupported environment operation')
   if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
   const args = ['--root', request.root, request.operation]
@@ -361,6 +363,11 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
         args.push(`${pack}@${version}`)
       }
       args.push('--output', request.inputs)
+      if (request.libraryProject !== undefined || request.projectRevision !== undefined) {
+        if (typeof request.libraryProject !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(request.libraryProject)
+          || !Number.isSafeInteger(request.projectRevision) || request.projectRevision! < 1) throw new Error('pack planning requires an authoritative project and observed revision')
+        args.push('--project', request.libraryProject, '--revision', String(request.projectRevision))
+      }
       if (request.progress !== undefined) {
         if (!isAbsolute(request.progress)) throw new Error('pack progress needs an absolute host-owned path')
         args.push('--progress', request.progress)
@@ -368,6 +375,10 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     } else {
       if (!confirmed || request.progress !== undefined || request.packs !== undefined || !request.approval || !/^sha256:[a-f0-9]{64}$/.test(request.approval)) throw new Error('pack apply needs the confirmed supervisor approval digest')
       args.push('--input', request.inputs, '--approval', request.approval)
+      if (request.packScope !== undefined) {
+        if (request.packScope !== 'every-project') throw new Error('unsupported pack scope')
+        args.push('--scope', request.packScope)
+      }
     }
     return [...args, '--json']
   }

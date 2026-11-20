@@ -4,9 +4,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { tmpdir } from 'node:os'
+import { isDeepStrictEqual } from 'node:util'
 import { join } from 'node:path'
 import httpProxy from 'http-proxy'
-import type { EnvironmentRequest, EnvironmentResult } from './environment.js'
+import type { EnvironmentRequest, EnvironmentResult, LibraryProject } from './environment.js'
 import { wslLocation, wslWindowsPath } from './wsl.js'
 
 export const PROJECT_INSTALL_HEADER = 'x-dinkster-desktop-install'
@@ -39,6 +40,7 @@ interface GatewayOptions {
   readonly run: (request: EnvironmentRequest, confirmed?: boolean) => Promise<EnvironmentResult>
   /** Return an immutable top-level document identity, or reject a changed binding. */
   readonly owner: () => Promise<string>
+  readonly project?: () => Promise<LibraryProject>
   readonly activate: (result: EnvironmentResult, added: readonly string[]) => Promise<Record<string, unknown>>
 }
 
@@ -56,7 +58,7 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
   let closing: Promise<void> | undefined
   let busy: Promise<void> | undefined
   let executing: Promise<void> | undefined
-  let pending: { token: string; owner: string; directory: string; inputs: string; approval: string; expires: number; added: string[] } | undefined
+  let pending: { token: string; owner: string; directory: string; inputs: string; approval: string; expires: number; added: string[]; project?: LibraryProject; scope?: 'every-project' } | undefined
   let expiry: ReturnType<typeof setTimeout> | undefined
   let preparation: Preparation | undefined
   const capability = randomBytes(32).toString('hex')
@@ -136,7 +138,9 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
     } catch { reply(response, 400, { error: 'bad-request' }); return }
     // Another request can enter while this request is reading its body.
     if (closed || (busy && !observing)) { reply(response, 409, { error: 'install-in-progress' }); return }
-    const owner = await options.owner()
+    let owner: string
+    try { owner = await options.owner() }
+    catch { reply(response, 409, { error: 'plan-stale' }); return }
     if (observing) {
       const current = preparation
       if (Object.keys(raw).length !== 1 || !current || current.owner !== owner || raw['preparation'] !== current.token) {
@@ -151,7 +155,8 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
     const packs: { pack: string; version: string }[] = []
     const names = new Set<string>()
     if (action === 'plan' || action === 'prepare') {
-      if (Object.keys(raw).length !== 1 || !Array.isArray(raw['packs']) || raw['packs'].length < 1 || raw['packs'].length > 64) {
+      if (Object.keys(raw).length !== (options.project ? 2 : 1) || (options.project && raw['scope'] !== 'every-project')
+        || !Array.isArray(raw['packs']) || raw['packs'].length < 1 || raw['packs'].length > 64) {
         reply(response, 400, { error: 'bad-request' }); return
       }
       for (const item of raw['packs'] as unknown[]) {
@@ -203,7 +208,10 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
             }, 1000)
             observer.unref()
           }
+          const project = await options.project?.()
+          if (closed || owner !== await options.owner()) throw new Error('plan-stale')
           const result = await options.run({ root: options.root, operation: 'packs-plan', packs, inputs,
+            ...(project ? { libraryProject: project.id, projectRevision: project.revision } : {}),
             ...(preparing ? { progress: preparing.file! } : {}) })
           if (preparing) {
             await snapshot(preparing)
@@ -212,12 +220,16 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
           if (!result.packPlan || !result.approval || result.expiresInSeconds !== 900) throw new Error('invalid pack review')
           if (closed || owner !== await options.owner()) throw new Error('plan-stale')
           const token = randomBytes(32).toString('hex')
-          pending = { token, owner, directory, inputs, approval: result.approval, expires: Date.now() + 900_000, added: [...names] }
+          const projectReview = result.packPlan['projectReview'] as Record<string, unknown> | undefined
+          if (project && (!isDeepStrictEqual(projectReview?.['project'], project)
+            || projectReview?.['environment'] !== project.environment?.id)) throw new Error('plan-stale')
+          pending = { token, owner, directory, inputs, approval: result.approval, expires: Date.now() + 900_000, added: [...names],
+            ...(project ? { project, scope: 'every-project' } : {}) }
           directory = undefined
           expiry = setTimeout(() => { if (!busy) void discard().catch(() => undefined) }, 900_000)
           expiry.unref()
           let publicPlan = JSON.stringify({ plan: result.packPlan, review: result.plan })
-          for (const [path, label] of [[result.packPlan['root'], '<project>'], [result.packPlan['store'], '<store>'],
+          for (const [path, label] of [[projectReview?.['library'], '<library>'], [result.packPlan['root'], '<environment>'], [result.packPlan['store'], '<store>'],
             [pending.directory, '<temporary>'], [wslLocation(pending.directory)?.path, '<temporary>'], [tmpdir(), '<temporary>']] as const) {
             if (typeof path === 'string' && path) publicPlan = publicPlan.split(JSON.stringify(path).slice(1, -1)).join(label)
           }
@@ -234,7 +246,10 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
           pending = undefined
           clearTimeout(expiry)
           directory = approved.directory
-          const result = await options.run({ root: options.root, operation: 'packs-apply', inputs: approved.inputs, approval: approved.approval }, true)
+          if (approved.project && !isDeepStrictEqual(await options.project?.(), approved.project)) throw new Error('plan-stale')
+          if (closed || owner !== await options.owner()) throw new Error('plan-stale')
+          const result = await options.run({ root: options.root, operation: 'packs-apply', inputs: approved.inputs, approval: approved.approval,
+            ...(approved.scope ? { packScope: approved.scope } : {}) }, true)
           installedGeneration = result.current
           const activation = await options.activate(result, approved.added)
           await deliver(200, { generation: result.current, activation })

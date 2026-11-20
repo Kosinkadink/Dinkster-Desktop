@@ -74,21 +74,24 @@ assignment different from the empty saved selection. A failed replacement
 recovers that assignment, and tools without the assignment refuse before
 stopping the old owner. Existing compatibility, partial-start, uncertain-stop,
 successful-switch and native capability controls pass. The unit suite used the
-host counted-suite launcher. This is client orchestration evidence, not actual
-GPU execution, landed-tool real-stack validation or installed-package acceptance.
+host counted-suite launcher. This is client orchestration evidence; the real
+CPU stack is checked separately below. Actual GPU execution and installed-package
+acceptance are not covered.
 
 ## Real backend project opening
 
 X570 Linux CPU, Electron 37.10.3 and locally extracted Xvfb 21.1.12-1ubuntu1.9:
-Desktop opening runs against two installed, restorable environments built from
-landed backend 2f5805415e599484e11d8ef1f35cf6e2608f9f28, with separate managed
-identities and one retained library. A controlled command wrapper reports a
-failure only after the real replacement starts. Desktop stops that replacement
-and recovers the original snapshot, observed port and sandbox selection. The
-observed port differs from Desktop's saved port. A subsequent successful switch
-leaves only the replacement ready, opens the authoritative project query and
-revokes native folder capability after navigation to another project. Both
-engines stop during cleanup. This proves the CPU source-stack path, not GPU
-assignment preservation, installed-package behavior, published tools, visible
-opening controls or project-aware Apply. The backend status contract must expose
-the observed GPU assignment before that recovery boundary is accepted.
+Desktop opening uses tools from landed backend
+67d25946f935780763b22551be5a4235977a4078 against two installed, restorable
+environments with separate managed identities and one retained library. The
+editable tools resolve from that clean exact-head checkout; the engine snapshots
+retain their recorded software from 2f5805415e599484e11d8ef1f35cf6e2608f9f28.
+A controlled command wrapper reports a failure only after the real replacement
+starts. Desktop stops that replacement and recovers the original
+snapshot, observed port, CPU assignment and sandbox selection. The observed port
+differs from Desktop's saved port. A subsequent successful switch leaves only
+the replacement ready, opens the authoritative project query and revokes native
+folder capability after navigation to another project. Both engines stop during
+cleanup. This proves the CPU source-stack path with the landed status contract,
+not GPU execution, installed-package behavior, published tools, visible opening
+controls or project-aware Apply.

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { realpath, rm } from 'node:fs/promises'
-import { delimiter, dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, relative, toNamespacedPath } from 'node:path'
 import { isIP } from 'node:net'
 import { setTimeout } from 'node:timers/promises'
 import { promisify } from 'node:util'
@@ -72,7 +72,7 @@ export interface EnvironmentRequest {
   readonly packs?: readonly { readonly pack: string; readonly version: string }[]
   readonly inputs?: string
   readonly approval?: string
-  readonly packScope?: 'every-project'
+  readonly packScope?: 'every-project' | 'only-project'
   readonly progress?: string
   readonly automaticCleanup?: boolean
   readonly keepPreviousGenerations?: number
@@ -170,6 +170,7 @@ export interface EnvironmentResult {
   readonly sourceApproval?: string
   readonly frontendApproval?: string
   readonly restoredFrom?: number
+  readonly destination?: string
   readonly source?: string
   readonly published?: boolean
   readonly reproducible?: boolean
@@ -351,8 +352,12 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
   }
   if (request.operation === 'packs-plan' || request.operation === 'packs-apply') {
     if (!request.inputs || !isAbsolute(request.inputs)) throw new Error('pack installation needs an absolute host-owned review directory')
-    if (['channel', 'variant', 'mirrors', 'data', 'port', 'destination', 'repair', 'engine', 'gpus', 'automaticCleanup', 'keepPreviousGenerations'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) {
+    if (['channel', 'variant', 'mirrors', 'data', 'port', 'repair', 'engine', 'gpus', 'automaticCleanup', 'keepPreviousGenerations'].some((key) => request[key as keyof EnvironmentRequest] !== undefined)) {
       throw new Error('pack installation retains the current project software settings')
+    }
+    if (request.destination !== undefined && (!isAbsolute(request.destination)
+      || (request.operation === 'packs-plan' ? request.libraryProject === undefined : request.packScope !== 'only-project'))) {
+      throw new Error('a separate environment requires an absolute reviewed project destination')
     }
     if (request.operation === 'packs-plan') {
       if (confirmed || request.approval !== undefined || !request.packs || request.packs.length < 1 || request.packs.length > 64) throw new Error('pack planning needs unconfirmed exact selections')
@@ -368,6 +373,7 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
           || !Number.isSafeInteger(request.projectRevision) || request.projectRevision! < 1) throw new Error('pack planning requires an authoritative project and observed revision')
         args.push('--project', request.libraryProject, '--revision', String(request.projectRevision))
       }
+      if (request.destination !== undefined) args.push('--destination', request.destination)
       if (request.progress !== undefined) {
         if (!isAbsolute(request.progress)) throw new Error('pack progress needs an absolute host-owned path')
         args.push('--progress', request.progress)
@@ -376,7 +382,8 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
       if (!confirmed || request.progress !== undefined || request.packs !== undefined || !request.approval || !/^sha256:[a-f0-9]{64}$/.test(request.approval)) throw new Error('pack apply needs the confirmed supervisor approval digest')
       args.push('--input', request.inputs, '--approval', request.approval)
       if (request.packScope !== undefined) {
-        if (request.packScope !== 'every-project') throw new Error('unsupported pack scope')
+        if (request.packScope !== 'every-project' && request.packScope !== 'only-project') throw new Error('unsupported pack scope')
+        if (request.packScope === 'only-project' && request.destination === undefined) throw new Error('a separate environment requires its retained destination')
         args.push('--scope', request.packScope)
       }
     }
@@ -503,10 +510,16 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
   if (distribution) {
     const hostPath = (path: unknown): unknown => typeof path === 'string' ? wslWindowsPath(distribution, path) : path
     row['root'] = hostPath(row['root'])
+    if (row['destination'] !== undefined) row['destination'] = hostPath(row['destination'])
     const packPlan = row['packPlan']
     if (packPlan && typeof packPlan === 'object') {
       const plan = packPlan as Record<string, unknown>
       plan['root'] = hostPath(plan['root'])
+      const fork = plan['fork']
+      if (fork && typeof fork === 'object') {
+        const candidate = fork as Record<string, unknown>
+        candidate['destination'] = hostPath(candidate['destination'])
+      }
     }
     const space = row['space']
     if (space && typeof space === 'object') {
@@ -638,7 +651,20 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
       || typeof row['approval'] !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(row['approval']) || row['expiresInSeconds'] !== 900) {
       throw new Error('unsupported dinkster-env pack plan response')
     }
+    const fork = plan['fork'] as Record<string, unknown> | undefined
+    if (request.destination === undefined ? fork !== undefined
+      : !fork || typeof fork['destination'] !== 'string' || !isAbsolute(fork['destination']) || (distribution
+        ? wslLinuxPath(distribution, fork['destination']) !== wslLinuxPath(distribution, request.destination)
+        : relative(request.destination, fork['destination']) !== '')) {
+      throw new Error('dinkster-env returned a different pack destination')
+    }
   }
+  if (operation === 'packs-apply' && row['status'] !== 'error'
+    && (request.packScope === 'only-project'
+      ? typeof row['destination'] !== 'string' || !isAbsolute(row['destination']) || (distribution
+        ? wslLinuxPath(distribution, row['destination']) !== wslLinuxPath(distribution, request.destination!)
+        : relative(request.destination!, row['destination']) !== '')
+      : row['destination'] !== undefined)) throw new Error('dinkster-env returned a different pack destination')
   if (operation === 'packs-apply' && row['status'] !== 'error'
     && (row['status'] !== 'applied' || row['current'] === null || !Array.isArray(row['engines']))) {
     throw new Error('unsupported dinkster-env pack activation response')

@@ -1,3 +1,16 @@
+## Pack activation waits for composition
+
+X570 Linux CPU, Node 26.12.0 and Electron 37, November 20, 2026: all 194
+counted unit tests, workspace typecheck, formatting and Linux build pass.
+Progressive composition and unfinished composition regressions fail against
+the prior single-read activation check and pass with the bounded wait. Terminal
+failed, missing-pack, unhealthy and mismatched-epoch controls refuse activation.
+The private-Xvfb Electron client harness passes its success scenario with
+pending-to-announced composition in both shared and separate-project handoff.
+These are supervisor/engine response fixtures, not real backend assembly or
+whole-frontend acceptance. Real shared Apply validation and independent review
+remain tracked on the [project-model issue](https://github.com/Kosinkadink/comfy-vibe-station/issues/1057).
+
 ## Separate-project native activation
 
 X570 Linux CPU, Node 26.12.0 and Electron 37, November 20, 2026:

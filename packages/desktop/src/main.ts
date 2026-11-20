@@ -27,6 +27,7 @@ import {
   RemoteWorkerLifecycle,
 } from './remote-workers.js'
 import { desktopTitle, engineServices, parseDesktopServices } from './services.js'
+import { packActivation } from './pack-activation.js'
 import { ShellUpdater } from './shell-updater.js'
 import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
 import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult, type LibraryProject } from './environment.js'
@@ -529,19 +530,6 @@ function localEngineUrl(project: DesktopProject, engineId: string, result: Envir
   return address
 }
 
-async function packActivation(project: DesktopProject, engine: string, result: EnvironmentResult, added: readonly string[]): Promise<Record<string, unknown>> {
-  const next = localEngineUrl(project, engine, result)
-  if (await engineServices(next) !== services) throw new Error('activation-failed')
-  const health = await fetch(`${next}/api/health`, { signal: AbortSignal.timeout(10_000) })
-  const body = await health.json() as { ok?: boolean; compositionState?: { epoch?: number; failed?: number } }
-  const epoch = body.compositionState?.epoch
-  if (!health.ok || body.ok !== true || body.compositionState?.failed !== 0 || !Number.isSafeInteger(epoch) || epoch! < 1) throw new Error('activation-failed')
-  const composition = await fetch(`${next}/api/composition`, { signal: AbortSignal.timeout(10_000) })
-  const catalog = await composition.json() as { packs?: Record<string, { state?: string }> }
-  if (!composition.ok || !catalog.packs || !added.every((pack) => catalog.packs![pack]?.state === 'announced')) throw new Error('activation-failed')
-  return { generation: result.current, epoch, added, removed: [], reloaded: [], unchanged: Object.keys(catalog.packs).filter((pack) => !added.includes(pack)).sort(), failed: {}, diagnostics: [], rolledBack: false }
-}
-
 async function handoffProject(project: DesktopProject, result: EnvironmentResult, preserve = false): Promise<void> {
   const status = await environmentClient.run({ root: project.root!, operation: 'status' })
   for (const [managed, binding] of remoteWindows) {
@@ -797,7 +785,7 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
             if (!target || !binding.libraryProject) throw new Error('activation-failed')
             try {
               await openLibraryProject(target.id, binding.libraryProject, trusted, { window: remote,
-                ready: async (project, started) => { activation = await packActivation(project, 'main', started, added) } })
+                ready: async (project, started) => { activation = await packActivation(localEngineUrl(project, 'main', started), started.current, services, added) } })
             } catch (error) {
               await shellLog.append(redactDiagnosticText(`Separate project activation: ${error instanceof Error ? error.message : String(error)}`))
               throw error
@@ -805,7 +793,7 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
           } else {
             const project = (await readProjects(dataDirectory)).projects.find((entry) => entry.id === binding.projectId)
             if (!project) throw new Error('activation-failed')
-            activation = await packActivation(project, binding.engineId, result, added)
+            activation = await packActivation(localEngineUrl(project, binding.engineId, result), result.current, services, added)
             trusted()
             for (const [managed, other] of remoteWindows) {
               if (other.projectId !== binding.projectId || managed.isDestroyed() || !other.gateway) continue

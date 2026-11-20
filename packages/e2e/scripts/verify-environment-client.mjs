@@ -62,6 +62,7 @@ if (artifacts) await mkdir(artifacts, { recursive: true })
 const servers = []
 const locationRequests = []
 let activationFailure
+let compositionPending = false
 let revisionChangeAtHealth = false
 let applyReady
 let releaseApply
@@ -97,6 +98,9 @@ try {
             JSON.stringify({ ...current, revision: current.revision + 1 }),
           )
         }
+        const composing =
+          request.url === '/api/composition' && compositionPending
+        if (composing) compositionPending = false
         response.setHeader('Content-Type', 'application/json')
         response.end(
           JSON.stringify(
@@ -109,12 +113,16 @@ try {
                   },
                 }
               : {
+                  epoch: 2,
+                  ...(composing ? { composing: true } : {}),
                   packs: {
                     'dinkster-text': {
                       state:
                         activationFailure === 'composition'
                           ? 'failed'
-                          : 'announced',
+                          : composing
+                            ? 'pending'
+                            : 'announced',
                     },
                   },
                 },
@@ -780,6 +788,7 @@ console.log(JSON.stringify(row));
     )
   }
   activationFailure = undefined
+  compositionPending = true
   const healthyReview = await postInstall('plan', selection)
   assert.equal(healthyReview.status, 200)
   const packApplied = await postInstall('apply', {
@@ -1536,6 +1545,7 @@ console.log(JSON.stringify(row));
     isolatedReview.body.plan.fork.destination,
     '<separate environment>',
   )
+  compositionPending = true
   revisionChangeAtHealth = isolatedScenario === 'revision-changed'
   if (isolatedScenario === 'health-failure') activationFailure = 'health'
   if (isolatedScenario === 'composition-failure')

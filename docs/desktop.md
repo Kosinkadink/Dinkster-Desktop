@@ -346,7 +346,11 @@ These routes use the same top-level capability checks as plan/apply and never
 accept paths or executable choices from the renderer.
 
 Successful pack installation switches the gateway to the supervisor's ready
-engine URLs after checking health and pack composition. The window is not
+engine URLs after pack composition finishes and final health confirms the same
+schema epoch with the added packs announced. Startup may expose a healthy
+diagnostic host before composition finishes; activation waits up to two minutes
+for composition instead of repeating the installation. Failed or unfinished
+composition refuses gateway handoff. The window is not
 navigated or re-imported, preserving its unsaved document. WebSockets reconnect
 to the new engine. Whole-project operations retain their existing window reload.
 The gateway port is saved per project/engine in Desktop's data directory so its

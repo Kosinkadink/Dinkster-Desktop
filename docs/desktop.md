@@ -267,6 +267,15 @@ Setup passes the selected engine name, port and assigned devices to dinkster-env
 so it starts only that binding. Changing a running binding's devices or port
 requires stopping it first; the environment tools enforce that rule.
 
+The environment client accepts engine-free `project-get`, `project-check` and
+revision-reviewed `project-select` requests. Reads carry no activation flags;
+selection carries `--plan` unless explicitly confirmed with `--yes`. Returned
+project IDs must match the request, nullable run fields must be paired, and a
+candidate identity/snapshot must agree with the active snapshot. Preflight
+requires an existing candidate and refuses a conflicting project binding.
+Selection responses must match the reviewed revision and confirmed candidate.
+This command bridge alone does not open a project or switch a running engine.
+
 The client consumes `dinkster.environment-result/1`. An update may start a new
 supervisor on a different port, so open local engine windows follow the ready
 URL returned by the command rather than reconstructing it from saved ports.

@@ -24,3 +24,15 @@
 | Pack preparation reports real progress past metadata deadlines and cannot confirm cancelled or failed work                                                                                                                                                                                                            | X570 AORUS ULTRA, Linux CPU, Electron                  | 2026-11-11 | [Real gateway Review beyond 30 seconds, retained document and managed terminal-authority control](https://github.com/Kosinkadink/comfy-vibe-station/issues/747#issuecomment-6815385870)                      |
 | Local runtime settings remain editable and persist across packaged app restart                                                                                                                                                                                                                                        | X570 AORUS ULTRA, Linux CPU, Electron 37.10.3          | 2026-11-11 | [Packaged Backends edit, app restart, plain-server refusal and local gates](https://github.com/Kosinkadink/comfy-vibe-station/issues/778#issuecomment-6798743895)                                            |
 | #214 independent Desktop project, R2 mirror, and supervisor swap boundaries                                                                                                                                                                                                                                           | kosin-X570-AORUS-ULTRA, Linux x64                      | 2026-09-22 | [Dinkster-Desktop PR 3](https://github.com/Kosinkadink/Dinkster-Desktop/pull/3), exact head `826fc3e3169a13e2afc3ad6b5f27ee6e75975122`, local lint/typecheck/test/build PASS                                 |
+
+## Authoritative project command bridge
+
+X570 Linux CPU, Node 26.12.0: all 173 Desktop unit tests, workspace typecheck,
+Prettier and the Desktop build pass. The command regression checks read-only
+flags, explicit revision/confirmation for selection, paired nullable run fields,
+project/root/candidate identity validation and incompatible response refusal.
+A direct call to the real backend contributor environment reads and preflights
+`default`, plans selection and confirms that the project record is unchanged.
+The first direct invocation could not resolve tsx from the workspace root;
+running from its declared Desktop package succeeds. This validates the command
+bridge only, not a published tool pin, project opening, engine switching or UI.

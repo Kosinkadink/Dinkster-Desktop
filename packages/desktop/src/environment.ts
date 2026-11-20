@@ -12,7 +12,7 @@ import { wslLinuxPath, wslLocation, wslWindowsPath, type WslHost } from './wsl.j
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply' | 'source' | 'restore' | 'library-list'
+export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply' | 'source' | 'restore' | 'library-list' | 'project-get' | 'project-check' | 'project-select'
 export type EnvironmentChannel = 'stable' | 'nightly'
 
 export interface DevelopmentSources {
@@ -36,7 +36,21 @@ export interface LibraryPage {
   readonly assets?: readonly Readonly<Record<string, unknown>>[]
 }
 
+export interface LibraryProject {
+  readonly id: string
+  readonly uid: string
+  readonly name: string
+  readonly revision: number
+  readonly deleted: false
+  readonly environment: {
+    readonly id: string
+    readonly lastSnapshot: string | null
+    readonly lastRunAt: string | null
+  } | null
+}
+
 export interface EnvironmentRequest {
+  readonly projectRevision?: number
   readonly libraryKind?: LibraryListKind
   readonly libraryProject?: string
   readonly libraryCursor?: string
@@ -129,6 +143,8 @@ export interface SandboxReadiness {
 
 /** Validated command response; WSL filesystem paths use the native host spelling. */
 export interface EnvironmentResult {
+  readonly project?: LibraryProject
+  readonly environment?: { readonly id: string; readonly snapshot: string } | null
   readonly library?: LibraryPage
   readonly sandbox?: SandboxReadiness
   readonly format: 'dinkster.environment-result/1'
@@ -226,6 +242,17 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
+  if (['project-get', 'project-check', 'project-select'].includes(request.operation)) {
+    const selecting = request.operation === 'project-select'
+    if (Object.keys(request).some((key) => !['root', 'operation', 'channel', 'libraryProject', ...(selecting ? ['projectRevision'] : [])].includes(key))
+      || (confirmed && !selecting)) throw new Error('project queries accept only an authoritative project selection')
+    if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
+    if (typeof request.libraryProject !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(request.libraryProject)) throw new Error('invalid library project')
+    if (selecting && (!Number.isSafeInteger(request.projectRevision) || request.projectRevision! < 1)) throw new Error('project selection requires its observed revision')
+    return ['--root', request.root, request.operation, request.libraryProject,
+      ...(selecting ? ['--revision', String(request.projectRevision), confirmed ? '--yes' : '--plan'] : []), '--json']
+  }
+  if (request.projectRevision !== undefined) throw new Error('project revision requires project-select')
   if (request.operation === 'library-list') {
     if (confirmed || Object.keys(request).some((key) => !['root', 'operation', 'channel', 'libraryKind', 'libraryProject', 'libraryCursor', 'libraryLimit'].includes(key))) throw new Error('library browsing is read-only')
     if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
@@ -456,7 +483,8 @@ function validSpace(value: unknown, root: string): boolean {
     })
 }
 
-function resultFrom(text: string, operation: EnvironmentOperation, distribution?: string): EnvironmentResult {
+function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolean, distribution?: string): EnvironmentResult {
+  const { operation } = request
   const value: unknown = JSON.parse(text)
   if (!value || typeof value !== 'object') throw new Error('invalid dinkster-env response')
   const row = value as Record<string, unknown>
@@ -507,6 +535,24 @@ function resultFrom(text: string, operation: EnvironmentOperation, distribution?
     })))
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')
+  }
+  if (['project-get', 'project-check', 'project-select'].includes(operation) && row['status'] !== 'error') {
+    const project = row['project'] as Record<string, unknown> | null | undefined
+    const candidate = row['environment'] as Record<string, unknown> | null | undefined
+    const binding = project?.['environment'] as Record<string, unknown> | null | undefined
+    const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+    const expected = operation === 'project-select' ? confirmed ? 'applied' : 'planned' : 'clean'
+    if (row['status'] !== expected || !project || Array.isArray(project) || project['id'] !== request.libraryProject
+      || !text(project['uid']) || !text(project['name']) || !Number.isSafeInteger(project['revision']) || Number(project['revision']) < 1
+      || project['deleted'] !== false || (binding !== null && (!binding || Array.isArray(binding) || !text(binding['id'])
+        || !((binding['lastSnapshot'] === null && binding['lastRunAt'] === null) || (text(binding['lastSnapshot']) && text(binding['lastRunAt'])))))
+      || (candidate !== null && (!candidate || Array.isArray(candidate) || typeof candidate['id'] !== 'string' || !/^[a-f0-9]{32}$/.test(candidate['id'])
+        || typeof candidate['snapshot'] !== 'string' || !/^[1-9][0-9]*$/.test(candidate['snapshot']) || candidate['snapshot'] !== String(row['current'])))
+      || (operation !== 'project-get' && candidate === null)
+      || (operation === 'project-check' && binding !== null && binding?.['id'] !== candidate?.['id'])
+      || (operation === 'project-select' && (confirmed
+        ? binding?.['id'] !== candidate?.['id'] || ![request.projectRevision, request.projectRevision! + 1].includes(Number(project['revision']))
+        : project['revision'] !== request.projectRevision))) throw new Error('unsupported project selection response')
   }
   if (operation === 'library-list' && row['status'] !== 'error') {
     const page = row['library'] as Record<string, unknown> | undefined
@@ -648,12 +694,12 @@ export class EnvironmentClient {
       catch (error) {
         const output = (error as { stdout?: string }).stdout
         if (output) {
-          const result = resultFrom(output, request.operation, this.wsl.distribution)
+          const result = resultFrom(output, request, confirmed, this.wsl.distribution)
           throw new Error(result.error ?? result.plan.join('\n'))
         }
         throw error
       }
-      const result = resultFrom(stdout, request.operation, this.wsl.distribution)
+      const result = resultFrom(stdout, request, confirmed, this.wsl.distribution)
       if (wslLinuxPath(this.wsl.distribution, result.root) !== location.path) throw new Error('dinkster-env returned a different project root')
       if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))
       return { ...result, root: request.root,
@@ -697,7 +743,7 @@ export class EnvironmentClient {
       } catch (error) {
         const failure = error as NodeJS.ErrnoException & { stdout?: string }
         if (failure.stdout) {
-          const result = resultFrom(failure.stdout, request.operation)
+          const result = resultFrom(failure.stdout, request, confirmed)
           // Start rechecks its assignment; sandbox readiness is read-only and
           // can meet a concurrent runtime inspection. Never replay a mutation.
           const retryRoot = confirmed && request.operation === 'start' ? request.root
@@ -715,8 +761,8 @@ export class EnvironmentClient {
         throw new Error(`dinkster-env ${request.operation} did not complete; inspect the project journal.`)
       }
     }
-    const result = resultFrom(stdout, request.operation)
-    if (request.operation === 'library-list' && result.root !== request.root) throw new Error('dinkster-env returned a different project root')
+    const result = resultFrom(stdout, request, confirmed)
+    if (['library-list', 'project-get', 'project-check', 'project-select'].includes(request.operation) && result.root !== request.root) throw new Error('dinkster-env returned a different project root')
     if (['packs-plan', 'packs-apply', 'source', 'restore'].includes(request.operation)
       && await realpath(result.root) !== await realpath(request.root)) throw new Error('dinkster-env returned a different project root')
     if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))

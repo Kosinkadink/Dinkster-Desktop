@@ -36,3 +36,16 @@ A direct call to the real backend contributor environment reads and preflights
 The first direct invocation could not resolve tsx from the workspace root;
 running from its declared Desktop package succeeds. This validates the command
 bridge only, not a published tool pin, project opening, engine switching or UI.
+
+## Saved environment resolution
+
+X570 Linux CPU, Node 26.12.0: 44 command/library tests and all 185 Desktop unit
+tests pass, plus workspace typecheck, Prettier and Desktop build. Opening
+preparation uses saved roots and authoritative project uid/revision, defaults
+unbound projects to the selected environment, and preflights without activation.
+Command-process controls reject missing/duplicate managed identities, a matching
+local project ID in another library, stale project/snapshot/source readbacks,
+incompatible tools and changed saved installations. Missing unrelated projects
+are ignored; other tool failures are not. The full suite used the host counted
+suite launcher. This validates read-only preparation, not the main-process open
+callback, a running-engine replacement, published tools or screens.

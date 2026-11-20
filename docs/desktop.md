@@ -282,8 +282,15 @@ and rereads the source project and saved installations. Missing or ambiguous
 bindings, changed records and incompatible tools refuse without activation.
 This preparation is read-only and does not reserve a library or environment;
 an opening caller must repeat it immediately before stopping an owner.
-The command bridge and preparation alone do not open a project or switch a
-running engine.
+The library-only preload exposes opening by saved installation and project IDs.
+Main inspects saved local roots, repeats preparation before stopping a previous
+owner, and opens the target with its authoritative library-project query. A
+failed replacement is stopped before the previous snapshot is restarted; an
+uncertain stop refuses automatic restart and preserves saved records for recovery.
+Native file access rechecks the project uid, managed identity and document scope.
+The environment-wide pack installer is not exposed to these library-bound
+windows; project-aware Apply and the visible opening controls are not yet
+validated by this command boundary.
 
 The client consumes `dinkster.environment-result/1`. An update may start a new
 supervisor on a different port, so open local engine windows follow the ready

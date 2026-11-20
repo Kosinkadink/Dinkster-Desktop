@@ -70,6 +70,7 @@ const bridge: DesktopBridge = {
 const localFilesOnly = process.argv.includes('--dinkster-local-files')
 const libraryOnly = process.argv.includes('--dinkster-library')
 const library: DesktopLibraryBridge = {
+  open: (installation, project) => ipcRenderer.invoke('desktop:library-open', installation, project),
   installations: () => ipcRenderer.invoke('desktop:library-installations'),
   projects: (installation, cursor) => ipcRenderer.invoke('desktop:library-projects', installation, cursor),
   workflows: (installation, project, cursor) => ipcRenderer.invoke('desktop:library-workflows', installation, project, cursor),

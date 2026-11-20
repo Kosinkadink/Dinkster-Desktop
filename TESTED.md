@@ -49,3 +49,18 @@ incompatible tools and changed saved installations. Missing unrelated projects
 are ignored; other tool failures are not. The full suite used the host counted
 suite launcher. This validates read-only preparation, not the main-process open
 callback, a running-engine replacement, published tools or screens.
+
+## Authoritative library opening client
+
+X570 Linux CPU, Node 26.12.0, pnpm 11.28.8 and locally extracted Xvfb
+21.1.12-1ubuntu1.9: the actual Electron preload/main/gateway client harness
+passes with command-process fixtures. It discovers an already-running saved
+root after a fresh Desktop launch, preserves it on compatibility refusal,
+stops a partially started replacement before restarting the previous owner,
+refuses recovery when replacement shutdown is uncertain, and opens the selected
+project through the target gateway. Native folder capability uses that project
+and is revoked after navigation to another project. Existing client controls
+and all 185 unit tests pass, plus typecheck, lint and build. The unit suite used
+the counted host launcher. This is client orchestration evidence, not real
+backend switching, a published tool pin, project-aware Apply or changed-screen
+acceptance.

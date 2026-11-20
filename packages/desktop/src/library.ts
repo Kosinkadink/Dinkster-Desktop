@@ -13,6 +13,7 @@ export interface LibraryDisplayPage {
 }
 
 export interface DesktopLibraryBridge {
+  open(installation: string, project: string): Promise<void>
   installations(): Promise<readonly LibraryEntry[]>
   projects(installation: string, cursor: string | null): Promise<LibraryDisplayPage>
   workflows(installation: string, project: string, cursor: string | null): Promise<LibraryDisplayPage>
@@ -22,7 +23,7 @@ export interface DesktopLibraryBridge {
 const unavailable = 'By the way, these projects and files cannot be shown with the installed tools.'
 
 /** Resolve only saved installations; renderer inputs never choose filesystem paths. */
-export class DesktopLibrary implements DesktopLibraryBridge {
+export class DesktopLibrary {
   constructor(private readonly directory: string, private readonly tools: Pick<EnvironmentClient, 'run'>) {}
 
   async installations(): Promise<readonly LibraryEntry[]> {

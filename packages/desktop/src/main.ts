@@ -69,7 +69,7 @@ process.env['DINKSTER_SERVICES'] = services
 let window: BrowserWindow | undefined
 let projectWindow: BrowserWindow | undefined
 let libraryWindow: BrowserWindow | undefined
-const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean }>()
+const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; libraryProject?: string; libraryUid?: string; environmentId?: string; folderProject: string | undefined; document: number; development: boolean }>()
 const localEngines = new Map<string, { root: string; engine: string }>()
 const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirectory()
 const wslHost = new WslHost(dataDirectory, {
@@ -253,6 +253,11 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
       if (saved?.root !== root || saved.engines.find((entry) => entry.id === engineId)?.kind !== 'local') {
         throw new Error('The local project binding changed')
       }
+      if (binding.libraryProject !== undefined) {
+        const selected = await environmentClient.run({ root, operation: 'project-get', libraryProject: binding.libraryProject })
+        if (!selected.project || selected.project.uid !== binding.libraryUid || selected.environment?.id !== binding.environmentId
+          || (selected.project.environment !== null && selected.project.environment.id !== binding.environmentId)) throw new Error('The library project binding changed')
+      }
       trusted()
     }
     const revalidate = async (): Promise<void> => {
@@ -302,6 +307,82 @@ async function createLibraryWindow(): Promise<void> {
   panel.on('closed', () => { if (libraryWindow === panel) libraryWindow = undefined })
   await panel.loadFile(libraryPath)
 }
+
+ipcMain.handle('desktop:library-open', (event, installation: string, identifier: string) => serializeLifecycle(async () => {
+  trustedLibraryIpc(event)
+  const prepared = await library.prepareOpen(installation, identifier)
+  const target = prepared.installation
+  const engines = target.engines.filter((engine) => engine.kind === 'local')
+  const engine = engines.find((entry) => entry.id === 'main') ?? (engines.length === 1 ? engines[0] : undefined)
+  if (!engine) throw new Error('project environment has no unambiguous local engine')
+  await requirePackSandbox(target, true)
+  const saved = await readProjects(dataDirectory)
+  const previous: { project: DesktopProject; engine: string; snapshot: number; request: EnvironmentRequest }[] = []
+  for (const owner of saved.projects) {
+    if (!owner.root || owner.root === target.root) continue
+    const status = await environmentClient.run({ root: owner.root, operation: 'status' })
+    for (const running of status.engines ?? []) {
+      if (running.state === 'stopped') continue
+      if (running.state !== 'ready') throw new Error('the previous environment requires recovery before switching')
+      const binding = owner.engines.find((entry) => entry.id === running.name)
+      if (binding?.kind !== 'local' || status.current !== running.generation || !running.url) throw new Error('the running environment binding changed')
+      if (running.gpus === undefined) throw new Error('The installed tools cannot report the running GPU assignment. Update the environment tools before switching.')
+      const url = new URL(localEngineUrl(owner, running.name, status))
+      previous.push({ project: owner, engine: running.name, snapshot: running.generation, request: {
+        root: owner.root, operation: 'start', engine: running.name, gpus: running.gpus,
+        sandboxPacks: running.sandboxPacks === true, port: Number(url.port),
+      } })
+    }
+  }
+  const targetStatus = await environmentClient.run({ root: target.root!, operation: 'status' })
+  const targetWasRunning = targetStatus.engines?.some((entry) => entry.state !== 'stopped') === true
+  if (new Set(previous.map((owner) => owner.project.root)).size + Number(targetWasRunning) > 1) throw new Error('multiple environments are running; stop them before opening a project')
+  const checked = await library.prepareOpen(installation, identifier)
+  if (JSON.stringify(checked) !== JSON.stringify(prepared)) throw new Error('project or environment changed; open it again')
+  trustedLibraryIpc(event)
+  const stopped: typeof previous = []
+  let starting = false
+  try {
+    for (const owner of previous) {
+      // Retain the previous owner before issuing a command whose result may be lost.
+      stopped.push(owner)
+      const result = await environmentClient.run({ root: owner.project.root!, operation: 'stop', engine: owner.engine }, true)
+      if (result.status !== 'applied' || result.engines?.some((entry) => entry.name === owner.engine && entry.state !== 'stopped')) throw new Error('previous environment did not stop')
+    }
+    starting = true
+    localEngines.set(`${target.id}/${engine.id}`, { root: target.root!, engine: engine.id })
+    await openManagedProject(target.id, engine.id, prepared)
+  } catch (error) {
+    const failures: unknown[] = [error]
+    let targetStopped = !starting
+    if (starting && !targetWasRunning) {
+      try {
+        const result = await environmentClient.run({ root: target.root!, operation: 'stop', engine: engine.id }, true)
+        targetStopped = result.status === 'applied' && !result.engines?.some((entry) => entry.name === engine.id && entry.state !== 'stopped')
+        if (!targetStopped) throw new Error('replacement environment did not stop')
+        localEngines.delete(`${target.id}/${engine.id}`)
+      } catch (failure) { failures.push(failure) }
+    }
+    // Never restart the old owner while a replacement may still hold the library.
+    if (targetStopped) {
+      for (const owner of stopped) {
+        try {
+          const status = await environmentClient.run({ root: owner.project.root!, operation: 'status' })
+          if (status.current !== owner.snapshot) throw new Error('the previous snapshot changed; restore it before restarting')
+          const result = await environmentClient.run(owner.request, true)
+          if (result.status !== 'applied') throw new Error('previous environment did not restart')
+          localEngines.set(`${owner.project.id}/${owner.engine}`, { root: owner.project.root!, engine: owner.engine })
+        } catch (failure) { failures.push(failure) }
+      }
+      for (const owner of new Set(stopped.map((entry) => entry.project))) {
+        try { await handoffProject(owner, await environmentClient.run({ root: owner.root!, operation: 'status' })) }
+        catch (failure) { failures.push(failure) }
+      }
+    }
+    if (failures.length > 1) throw new AggregateError(failures, 'Project opening failed; saved environments are retained for recovery. Inspect environment status before restarting.')
+    throw error
+  }
+}))
 
 ipcMain.handle('desktop:library-installations', async (event) => {
   trustedLibraryIpc(event)
@@ -446,7 +527,7 @@ async function handoffProject(project: DesktopProject, result: EnvironmentResult
     binding.development = status.sourceDescription !== undefined
     if (binding.gateway) binding.gateway.setTarget(url)
     else binding.url = url
-    await managed.loadURL(binding.url)
+    await managed.loadURL(projectAddress(binding.url, binding.libraryProject))
   }
 }
 
@@ -518,8 +599,21 @@ ipcMain.handle('desktop:projects-apply', (event, token: unknown) => serializeLif
 }))
 ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: unknown) => serializeLifecycle(async () => {
   trustedProjectIpc(event)
+  await openManagedProject(projectId, engineId)
+}))
+
+function projectAddress(address: string, identifier?: string): string {
+  if (identifier === undefined) return address
+  const url = new URL(address)
+  url.searchParams.set('dinksterProject', identifier)
+  return url.href
+}
+
+async function openManagedProject(projectId: unknown, engineId: unknown, prepared?: Awaited<ReturnType<DesktopLibrary['prepareOpen']>>): Promise<void> {
   if (!validProjectId(projectId) || !validProjectId(engineId)) throw new Error('invalid engine binding')
+  const libraryProject = prepared?.project.id
   const project = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === projectId)
+  if (prepared && JSON.stringify(project) !== JSON.stringify(prepared.installation)) throw new Error('saved environment changed; open the project again')
   const engine = project?.engines.find((candidate) => candidate.id === engineId)
   if (!engine) throw new Error('engine binding not found')
   let url: string
@@ -545,13 +639,18 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
     localEngines.set(`${projectId}/${engineId}`, { root, engine: engine.id })
     development = (await environmentClient.run({ root, operation: 'status' })).sourceDescription !== undefined
   }
-  const existing = [...remoteWindows].find(([managed, binding]) => !managed.isDestroyed() && binding.projectId === projectId && binding.engineId === engineId)
+  if (prepared && JSON.stringify(await library.prepareOpen(prepared.installation.id, prepared.project.id)) !== JSON.stringify(prepared)) {
+    throw new Error('project or environment changed during startup')
+  }
+  const existing = [...remoteWindows].find(([managed, binding]) => !managed.isDestroyed() && binding.projectId === projectId && binding.engineId === engineId && binding.libraryProject === libraryProject && binding.libraryUid === prepared?.project.uid && binding.environmentId === prepared?.environment.id)
   if (existing) {
+    existing[1].folderProject = undefined
+    existing[1].document++
     existing[1].backendUrl = url
     existing[1].development = development
     if (existing[1].gateway) existing[1].gateway.setTarget(url)
     else existing[1].url = url
-    await existing[0].loadURL(existing[1].url)
+    await existing[0].loadURL(projectAddress(existing[1].url, libraryProject))
     existing[0].show()
     return
   }
@@ -565,14 +664,15 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   })
   installWindowChrome(remote, () => binding.development, services)
   remote.on('page-title-updated', (event) => event.preventDefault())
-  const binding: { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; folderProject: string | undefined; document: number; development: boolean } = {
+  const binding: { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; libraryProject?: string; libraryUid?: string; environmentId?: string; folderProject: string | undefined; document: number; development: boolean } = {
     projectId, engineId, url, backendUrl: url, folderProject: undefined, document: 0, development,
+    ...(prepared === undefined ? {} : { libraryProject: prepared.project.id, libraryUid: prepared.project.uid, environmentId: prepared.environment.id }),
   }
   remoteWindows.set(remote, binding)
   if (engine.kind === 'local') {
     try {
       const portFile = join('project-gateways', projectId, `${engineId}.json`)
-      binding.gateway = await createProjectGateway({ get root() { return localEngines.get(`${projectId}/${engineId}`)!.root }, target: url, allowPackInstall: true, preferredPort: await readPersistedPort(portFile),
+      binding.gateway = await createProjectGateway({ get root() { return localEngines.get(`${projectId}/${engineId}`)!.root }, target: url, allowPackInstall: libraryProject === undefined, preferredPort: await readPersistedPort(portFile),
         serialize: serializeLifecycle,
         run: (request, confirmed) => environmentClient.run(request, confirmed),
         owner: async () => {
@@ -616,7 +716,7 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
   remote.webContents.on('did-navigate', (_event, address) => {
     // Match the frontend's immutable document scope, not later history.replaceState edits.
     const project = new URL(address).searchParams.get('dinksterProject') ?? 'default'
-    binding.folderProject = validProjectId(project) ? project : undefined
+    binding.folderProject = validProjectId(project) && (binding.libraryProject === undefined || project === binding.libraryProject) ? project : undefined
     binding.document++
   })
   denyRendererPermissions(remote.webContents.session)
@@ -628,9 +728,9 @@ ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: un
     remoteWindows.delete(remote)
     void binding.gateway?.close().catch(() => undefined)
   })
-  try { await remote.loadURL(binding.url) }
+  try { await remote.loadURL(projectAddress(binding.url, binding.libraryProject)) }
   catch (error) { remote.destroy(); throw error }
-}))
+}
 
 async function gpuCheck(): Promise<SystemCheck['gpu']> {
   try {

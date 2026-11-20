@@ -97,6 +97,53 @@ describe('Desktop dinkster-env command client', () => {
     await client.dispose()
   })
 
+  it('reads authoritative project candidates and requires reviewed selection before mutation', async () => {
+    const { root, client } = await commandFixture()
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    const project = { id: 'film', uid: 'film-global', name: 'Film', revision: 7, deleted: false,
+      environment: { id: 'a'.repeat(32), lastSnapshot: null, lastRunAt: null } }
+    const response = original.replace("status:error ? 'error' :", "status:['project-get','project-check'].includes(operation) ? 'clean' : error ? 'error' :")
+      .replace('root, current: 2,', `root, current: 2, project: ${JSON.stringify(project)}, environment:{id:'${'a'.repeat(32)}',snapshot:'2'},`)
+    await writeFile(script, response)
+    for (const operation of ['project-get', 'project-check'] as const) {
+      expect((await client.run({ root, operation, libraryProject: 'film' })).project).toEqual(project)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, operation, 'film', '--json'])
+      await expect(client.run({ root, operation, libraryProject: 'film' }, true)).rejects.toThrow('project queries')
+    }
+    const request = { root, operation: 'project-select' as const, libraryProject: 'film', projectRevision: 7 }
+    expect((await client.run(request)).status).toBe('planned')
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'project-select', 'film', '--revision', '7', '--plan', '--json'])
+    expect((await client.run(request, true)).project).toEqual(project)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'project-select', 'film', '--revision', '7', '--yes', '--json'])
+    await expect(client.run({ root, operation: 'project-select', libraryProject: 'film' }, true)).rejects.toThrow('observed revision')
+    await expect(client.run({ root, operation: 'project-get', libraryProject: '../film' })).rejects.toThrow('invalid library project')
+    await expect(client.run({ ...request, port: 9999 }, true)).rejects.toThrow('project queries')
+    await expect(client.run({ root, operation: 'start', projectRevision: 7 }, true)).rejects.toThrow('requires project-select')
+    for (const invalid of [
+      { ...project, id: 'other' }, { ...project, uid: '' }, { ...project, deleted: true },
+      { ...project, revision: 0 }, { ...project, environment: { ...project.environment, lastSnapshot: '1' } },
+    ]) {
+      await writeFile(script, response.replace(JSON.stringify(project), JSON.stringify(invalid)))
+      await expect(client.run({ root, operation: 'project-get', libraryProject: 'film' })).rejects.toThrow('project selection response')
+    }
+    const recorded = { ...project, environment: { ...project.environment, lastSnapshot: '1', lastRunAt: '2026-11-19T20:00:00Z' } }
+    await writeFile(script, response.replace(JSON.stringify(project), JSON.stringify(recorded)))
+    expect((await client.run({ root, operation: 'project-get', libraryProject: 'film' })).project).toEqual(recorded)
+    await writeFile(script, response.replace(JSON.stringify(project), JSON.stringify({ ...project, revision: 9 })))
+    await expect(client.run(request, true)).rejects.toThrow('project selection response')
+    await writeFile(script, response.replace(`environment:{id:'${'a'.repeat(32)}'`, `environment:{id:'${'b'.repeat(32)}'`))
+    await expect(client.run({ root, operation: 'project-check', libraryProject: 'film' })).rejects.toThrow('project selection response')
+    await writeFile(script, response.replace("snapshot:'2'", "snapshot:'3'"))
+    await expect(client.run({ root, operation: 'project-check', libraryProject: 'film' })).rejects.toThrow('project selection response')
+    await writeFile(script, response.replace(`environment:{id:'${'a'.repeat(32)}',snapshot:'2'}`, 'environment:null'))
+    expect((await client.run({ root, operation: 'project-get', libraryProject: 'film' })).environment).toBeNull()
+    await expect(client.run({ root, operation: 'project-check', libraryProject: 'film' })).rejects.toThrow('project selection response')
+    await writeFile(script, response.replace('root, current: 2,', "root:root+'/other', current: 2,"))
+    await expect(client.run({ root, operation: 'project-get', libraryProject: 'film' })).rejects.toThrow('different project root')
+    await client.dispose()
+  })
+
   it.each(['production', 'qa'] as const)('keeps the validated %s selection for tools descendants', async (services) => {
     vi.stubEnv('DINKSTER_SERVICES', services)
     const { root, client } = await commandFixture()
@@ -741,6 +788,16 @@ describe('Desktop dinkster-env command client', () => {
     expect(stopped.engines?.[0]?.state).toBe('stopped')
     await expect(client.run({ root, operation: 'start', engine: '--other' }, true)).rejects.toThrow('invalid engine name')
     await expect(client.run({ root, operation: 'start', gpus: ['display adapter'] }, true)).rejects.toThrow('invalid GPU device')
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    for (const [gpus, valid] of [[[], true], [['GPU-ab12', '3'], true], [null, false], ['0', false], [[false], false], [['display adapter'], false]] as const) {
+      await writeFile(script, original.replace("engines: [{name:'main',", `engines: [{gpus:${JSON.stringify(gpus)},name:'main',`))
+      if (valid) {
+        expect((await client.run({ root, operation: 'status' })).engines?.[0]?.gpus).toEqual(gpus)
+      } else {
+        await expect(client.run({ root, operation: 'status' })).rejects.toThrow('unsupported dinkster-env response')
+      }
+    }
   })
 
   it('waits for a transient project writer only when confirming an idempotent start', async () => {

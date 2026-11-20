@@ -24,3 +24,74 @@
 | Pack preparation reports real progress past metadata deadlines and cannot confirm cancelled or failed work                                                                                                                                                                                                            | X570 AORUS ULTRA, Linux CPU, Electron                  | 2026-11-11 | [Real gateway Review beyond 30 seconds, retained document and managed terminal-authority control](https://github.com/Kosinkadink/comfy-vibe-station/issues/747#issuecomment-6815385870)                      |
 | Local runtime settings remain editable and persist across packaged app restart                                                                                                                                                                                                                                        | X570 AORUS ULTRA, Linux CPU, Electron 37.10.3          | 2026-11-11 | [Packaged Backends edit, app restart, plain-server refusal and local gates](https://github.com/Kosinkadink/comfy-vibe-station/issues/778#issuecomment-6798743895)                                            |
 | #214 independent Desktop project, R2 mirror, and supervisor swap boundaries                                                                                                                                                                                                                                           | kosin-X570-AORUS-ULTRA, Linux x64                      | 2026-09-22 | [Dinkster-Desktop PR 3](https://github.com/Kosinkadink/Dinkster-Desktop/pull/3), exact head `826fc3e3169a13e2afc3ad6b5f27ee6e75975122`, local lint/typecheck/test/build PASS                                 |
+
+## Authoritative project command bridge
+
+X570 Linux CPU, Node 26.12.0: all 173 Desktop unit tests, workspace typecheck,
+Prettier and the Desktop build pass. The command regression checks read-only
+flags, explicit revision/confirmation for selection, paired nullable run fields,
+project/root/candidate identity validation and incompatible response refusal.
+A direct call to the real backend contributor environment reads and preflights
+`default`, plans selection and confirms that the project record is unchanged.
+The first direct invocation could not resolve tsx from the workspace root;
+running from its declared Desktop package succeeds. This validates the command
+bridge only, not a published tool pin, project opening, engine switching or UI.
+
+## Saved environment resolution
+
+X570 Linux CPU, Node 26.12.0: 44 command/library tests and all 185 Desktop unit
+tests pass, plus workspace typecheck, Prettier and Desktop build. Opening
+preparation uses saved roots and authoritative project uid/revision, defaults
+unbound projects to the selected environment, and preflights without activation.
+Command-process controls reject missing/duplicate managed identities, a matching
+local project ID in another library, stale project/snapshot/source readbacks,
+incompatible tools and changed saved installations. Missing unrelated projects
+are ignored; other tool failures are not. The full suite used the host counted
+suite launcher. This validates read-only preparation, not the main-process open
+callback, a running-engine replacement, published tools or screens.
+
+## Authoritative library opening client
+
+X570 Linux CPU, Node 26.12.0, pnpm 11.28.8 and locally extracted Xvfb
+21.1.12-1ubuntu1.9: the actual Electron preload/main/gateway client harness
+passes with command-process fixtures. It discovers an already-running saved
+root after a fresh Desktop launch, preserves it on compatibility refusal,
+stops a partially started replacement before restarting the previous owner,
+refuses recovery when replacement shutdown is uncertain, and opens the selected
+project through the target gateway. Native folder capability uses that project
+and is revoked after navigation to another project. Existing client controls
+and all 185 unit tests pass, plus typecheck, lint and build. The unit suite used
+the counted host launcher. This is client orchestration evidence, not real
+backend switching, a published tool pin, project-aware Apply or changed-screen
+acceptance.
+
+## Observed runtime assignment recovery
+
+X570 Linux CPU, Node 26.12.0, Electron 37.10.3 and locally extracted Xvfb
+21.1.12-1ubuntu1.9: all 185 unit tests, workspace typecheck, Prettier and build
+pass. The Electron command-process harness starts with an observed ordered GPU
+assignment different from the empty saved selection. A failed replacement
+recovers that assignment, and tools without the assignment refuse before
+stopping the old owner. Existing compatibility, partial-start, uncertain-stop,
+successful-switch and native capability controls pass. The unit suite used the
+host counted-suite launcher. This is client orchestration evidence; the real
+CPU stack is checked separately below. Actual GPU execution and installed-package
+acceptance are not covered.
+
+## Real backend project opening
+
+X570 Linux CPU, Electron 37.10.3 and locally extracted Xvfb 21.1.12-1ubuntu1.9:
+Desktop opening uses tools from landed backend
+67d25946f935780763b22551be5a4235977a4078 against two installed, restorable
+environments with separate managed identities and one retained library. The
+editable tools resolve from that clean exact-head checkout; the engine snapshots
+retain their recorded software from 2f5805415e599484e11d8ef1f35cf6e2608f9f28.
+A controlled command wrapper reports a failure only after the real replacement
+starts. Desktop stops that replacement and recovers the original
+snapshot, observed port, CPU assignment and sandbox selection. The observed port
+differs from Desktop's saved port. A subsequent successful switch leaves only
+the replacement ready, opens the authoritative project query and revokes native
+folder capability after navigation to another project. Both engines stop during
+cleanup. This proves the CPU source-stack path with the landed status contract,
+not GPU execution, installed-package behavior, published tools, visible opening
+controls or project-aware Apply.

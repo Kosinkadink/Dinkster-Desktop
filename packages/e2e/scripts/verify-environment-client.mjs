@@ -114,6 +114,36 @@ const root = args[args.indexOf('--root') + 1];
 const operation = args[args.indexOf('--root') + 2];
 const planned = args.includes('--plan');
 const observed = ${JSON.stringify(join(scratch, 'observed.json'))};
+if (operation === 'project-get' || operation === 'project-check') {
+  const selection=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8'));
+  const project={id:args[3],uid:'565e7ba1-c262-401d-83b1-7026465b6c39',name:'Opening project',revision:1,deleted:false,
+    environment:{id:'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
+  const error=selection.refuse && operation==='project-check' ? 'library compatibility refused' : undefined;
+  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:error?'error':'clean',root,current:1,plan:[],
+    ...(error?{error}:{project,environment:{id:root===selection.target?'b'.repeat(32):'a'.repeat(32),snapshot:'1'}})}));
+  process.exit(0);
+}
+if (root === ${JSON.stringify(join(scratch, 'second-installation'))}) {
+  const state=${JSON.stringify(join(scratch, 'second-state.json'))};
+  const running=fs.existsSync(state) && fs.readFileSync(state,'utf8')==='ready';
+  const row={format:'dinkster.environment-result/1',operation,status:operation==='status'||operation==='doctor'?'clean':'applied',root,current:1,plan:[],
+    engines:[{name:'main',generation:1,state:operation==='stop'?'stopped':operation==='start'||running?'ready':'stopped',url:${JSON.stringify(urls[1])},gpus:[]}]};
+  if(operation==='doctor') row.sandbox={format:'dinkster.sandbox-readiness/1',available:true,detail:'available'};
+  if(operation==='start') {
+    if(JSON.parse(fs.readFileSync(observed,'utf8')).engines.some(row=>row.state==='ready')) {
+      console.log(JSON.stringify({...row,status:'error',error:'previous environment still running'}));process.exit(0);
+    }
+    const selection=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8'));
+    fs.writeFileSync(state,'ready');
+    if(selection.failStart) { console.log(JSON.stringify({...row,status:'error',error:'replacement failed'}));process.exit(0); }
+  }
+  if(operation==='stop') {
+    const selection=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8'));
+    if(selection.failStop) {console.log(JSON.stringify({...row,status:'error',error:'replacement stop uncertain'}));process.exit(0);}
+    fs.writeFileSync(state,'stopped');
+  }
+  console.log(JSON.stringify(row));process.exit(0);
+}
 const cleanup = {
   policy:{automatic:false,previousSuccessfulActivations:2,minimumAgeSeconds:0},
   generations:[{generation:7,status:'retained',reasons:['current snapshot']}],
@@ -157,6 +187,10 @@ if (operation === 'packs-plan') {
     approval:'sha256:'+'c'.repeat(64),expiresInSeconds:900}));
   process.exit(0);
 }
+const replacementState=${JSON.stringify(join(scratch, 'second-state.json'))};
+if(operation==='start' && fs.existsSync(replacementState) && fs.readFileSync(replacementState,'utf8')==='ready') {
+  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'error',root,current:1,plan:[],error:'replacement still running'}));process.exit(0);
+}
 const updated = operation === 'update' || operation === 'packs-apply';
 const url = ${JSON.stringify(urls)}[updated ? 1 : 0];
 const row = {format:'dinkster.environment-result/1',operation,
@@ -172,7 +206,8 @@ status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,c
 plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current',
   ...(args.includes('--frontend-dev') ? ['proxy frontend dev server '+args[args.indexOf('--frontend-dev')+1]] : []),
   ...(args.includes('--allow-frontend-dev-remote') ? ['explicitly allow a non-loopback frontend dev server'] : [])],url,
-engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]};
+engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url,
+  gpus:args.flatMap((value,index)=>value==='--gpu'?[args[index+1]]:[])}]};
 if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
 console.log(JSON.stringify(row));
 `,
@@ -1153,8 +1188,186 @@ console.log(JSON.stringify(row));
       'stop',
     ],
   )
+  await app.close()
+  app = undefined
+  const opening = join(scratch, 'project-opening.json')
+  const firstRoot = join(scratch, 'installation')
+  const secondRoot = join(scratch, 'second-installation')
+  await mkdir(secondRoot)
+  await writeFile(
+    join(env.DINKSTER_DESKTOP_DATA, 'projects.json'),
+    JSON.stringify({
+      version: 1,
+      projects: [firstRoot, secondRoot].map((root, index) => ({
+        id: index ? 'second' : 'first',
+        name: index ? 'Second environment' : 'First environment',
+        root,
+        channel: 'stable',
+        engines: [{ id: 'main', name: 'Main', kind: 'local', gpus: [] }],
+      })),
+    }),
+  )
+  await writeFile(
+    join(scratch, 'observed.json'),
+    JSON.stringify({
+      format: 'dinkster.environment-result/1',
+      root: firstRoot,
+      current: 1,
+      plan: [],
+      engines: [
+        {
+          name: 'main',
+          generation: 1,
+          state: 'ready',
+          url: urls[0],
+          gpus: ['GPU-ab12', '3'],
+        },
+      ],
+    }),
+  )
+  await writeFile(opening, JSON.stringify({ target: secondRoot }))
+  app = await electron.launch({
+    executablePath:
+      process.env.DINKSTER_ELECTRON_EXECUTABLE ??
+      createRequire(join(root, 'packages/desktop/package.json'))('electron'),
+    args: [
+      '--no-sandbox',
+      `--user-data-dir=${join(scratch, 'opening-chromium')}`,
+      join(root, 'packages/desktop'),
+    ],
+    env,
+  })
+  await installationManager(app)
+  const library = app
+    .windows()
+    .find((page) => page.url().endsWith('/desktop-library.html'))
+  assert.ok(library, 'the engine-free library window is present')
+  await library.waitForFunction(
+    () => typeof window.dinksterLibrary?.open === 'function',
+  )
+  const oldOwner = await readFile(join(scratch, 'observed.json'), 'utf8')
+  const legacyOwner = JSON.parse(oldOwner)
+  delete legacyOwner.engines[0].gpus
+  await writeFile(join(scratch, 'observed.json'), JSON.stringify(legacyOwner))
+  await assert.rejects(
+    library.evaluate(() => window.dinksterLibrary.open('first', 'beta')),
+    /cannot report the running GPU assignment/,
+  )
+  assert.equal(
+    await readFile(join(scratch, 'observed.json'), 'utf8'),
+    JSON.stringify(legacyOwner),
+  )
+  await writeFile(join(scratch, 'observed.json'), oldOwner)
+  await writeFile(opening, JSON.stringify({ target: secondRoot, refuse: true }))
+  await assert.rejects(
+    library.evaluate(() => window.dinksterLibrary.open('first', 'beta')),
+    /library compatibility refused/,
+  )
+  assert.equal(
+    await readFile(join(scratch, 'observed.json'), 'utf8'),
+    oldOwner,
+    'preflight refusal preserves the running owner',
+  )
+  await writeFile(
+    opening,
+    JSON.stringify({ target: secondRoot, failStart: true }),
+  )
+  await assert.rejects(
+    library.evaluate(() => window.dinksterLibrary.open('first', 'beta')),
+    /replacement failed/,
+  )
+  assert.equal(
+    await readFile(join(scratch, 'second-state.json'), 'utf8'),
+    'stopped',
+    'a partially started replacement is stopped before recovery',
+  )
+  assert.equal(
+    JSON.parse(await readFile(join(scratch, 'observed.json'), 'utf8'))
+      .engines[0].state,
+    'ready',
+  )
+  assert.deepEqual(
+    JSON.parse(await readFile(join(scratch, 'observed.json'), 'utf8'))
+      .engines[0].gpus,
+    ['GPU-ab12', '3'],
+    'recovery retains the observed ordered assignment rather than the empty saved selection',
+  )
+  await writeFile(
+    opening,
+    JSON.stringify({ target: secondRoot, failStart: true, failStop: true }),
+  )
+  await assert.rejects(
+    library.evaluate(() => window.dinksterLibrary.open('first', 'beta')),
+    /saved environments are retained for recovery/,
+  )
+  assert.equal(
+    JSON.parse(await readFile(join(scratch, 'observed.json'), 'utf8'))
+      .engines[0].state,
+    'stopped',
+    'an uncertain replacement stop must not restart the old environment',
+  )
+  assert.equal(
+    await readFile(join(scratch, 'second-state.json'), 'utf8'),
+    'ready',
+  )
+  // Independent successful-switch control after the explicit recovery refusal.
+  await writeFile(join(scratch, 'observed.json'), oldOwner)
+  await writeFile(join(scratch, 'second-state.json'), 'stopped')
+  await writeFile(opening, JSON.stringify({ target: secondRoot }))
+  await library.evaluate(() => window.dinksterLibrary.open('first', 'beta'))
+  assert.equal(
+    JSON.parse(await readFile(join(scratch, 'observed.json'), 'utf8'))
+      .engines[0].state,
+    'stopped',
+  )
+  assert.equal(
+    await readFile(join(scratch, 'second-state.json'), 'utf8'),
+    'ready',
+  )
+  const projectPage = app
+    .windows()
+    .find(
+      (page) =>
+        new URL(page.url()).searchParams.get('dinksterProject') === 'beta',
+    )
+  assert.ok(
+    projectPage,
+    'the target window carries the authoritative library project',
+  )
+  await projectPage.waitForLoadState()
+  await expect(
+    projectPage.getByRole('heading', { name: 'Updated supervisor' }),
+  ).toBeVisible()
+  assert.equal(
+    await projectPage.evaluate(() => typeof window.dinksterLibrary),
+    'undefined',
+  )
+  const projectOrigin = new URL(projectPage.url()).origin
+  assert.equal(
+    await projectPage.evaluate(
+      (url) =>
+        window.dinksterDesktop
+          .fileCapabilities(url)
+          .then((value) => value.nativeFolderChoice),
+      projectOrigin,
+    ),
+    true,
+  )
+  assert.equal(locationRequests.at(-1).searchParams.get('project'), 'beta')
+  await projectPage.goto(`${projectOrigin}/?dinksterProject=other`)
+  assert.deepEqual(
+    await projectPage.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      projectOrigin,
+    ),
+    {
+      nativeFolderChoice: false,
+      reveal: false,
+      resolvePath: false,
+    },
+  )
   console.log(
-    'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, top-frame-only pack install, retained document, replay refusal, remote-only routing, identity-checked stop delegation.',
+    'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, retained document, replay refusal, remote-only routing, identity-checked stop, authoritative library opening, preflight-before-stop, failed replacement recovery and project-scoped navigation.',
   )
 } catch (error) {
   const manager = app?.windows()[0]

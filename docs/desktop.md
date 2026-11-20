@@ -267,6 +267,35 @@ Setup passes the selected engine name, port and assigned devices to dinkster-env
 so it starts only that binding. Changing a running binding's devices or port
 requires stopping it first; the environment tools enforce that rule.
 
+The environment client accepts engine-free `project-get`, `project-check` and
+revision-reviewed `project-select` requests. Reads carry no activation flags;
+selection carries `--plan` unless explicitly confirmed with `--yes`. Returned
+project IDs must match the request, nullable run fields must be paired, and a
+candidate identity/snapshot must agree with the active snapshot. Preflight
+requires an existing candidate and refuses a conflicting project binding.
+Selection responses must match the reviewed revision and confirmed candidate.
+Desktop library opening preparation accepts only a saved installation ID and
+library project ID. Bound projects resolve to exactly one saved managed
+environment; unbound projects use the selected shared environment. Resolution
+checks project uid and revision across libraries, preflights compatibility,
+and rereads the source project and saved installations. Missing or ambiguous
+bindings, changed records and incompatible tools refuse without activation.
+This preparation is read-only and does not reserve a library or environment;
+an opening caller must repeat it immediately before stopping an owner.
+The library-only preload exposes opening by saved installation and project IDs.
+Main inspects saved local roots, repeats preparation before stopping a previous
+owner, and opens the target with its authoritative library-project query. A
+failed replacement is stopped before the previous snapshot is restarted; an
+uncertain stop refuses automatic restart and preserves saved records for recovery.
+Recovery retains the previous engine's observed ordered GPU assignment, port and
+sandbox selection, rather than assuming its saved Desktop settings match the
+running process. Tools that omit the assignment refuse opening before any owner
+is stopped; ordinary read-only status remains compatible with those tools.
+Native file access rechecks the project uid, managed identity and document scope.
+The environment-wide pack installer is not exposed to these library-bound
+windows; project-aware Apply and the visible opening controls are not yet
+validated by this command boundary.
+
 The client consumes `dinkster.environment-result/1`. An update may start a new
 supervisor on a different port, so open local engine windows follow the ready
 URL returned by the command rather than reconstructing it from saved ports.

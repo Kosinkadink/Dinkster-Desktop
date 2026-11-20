@@ -326,9 +326,10 @@ ipcMain.handle('desktop:library-open', (event, installation: string, identifier:
       if (running.state !== 'ready') throw new Error('the previous environment requires recovery before switching')
       const binding = owner.engines.find((entry) => entry.id === running.name)
       if (binding?.kind !== 'local' || status.current !== running.generation || !running.url) throw new Error('the running environment binding changed')
+      if (running.gpus === undefined) throw new Error('The installed tools cannot report the running GPU assignment. Update the environment tools before switching.')
       const url = new URL(localEngineUrl(owner, running.name, status))
       previous.push({ project: owner, engine: running.name, snapshot: running.generation, request: {
-        root: owner.root, operation: 'start', engine: running.name, gpus: binding.gpus,
+        root: owner.root, operation: 'start', engine: running.name, gpus: running.gpus,
         sandboxPacks: running.sandboxPacks === true, port: Number(url.port),
       } })
     }

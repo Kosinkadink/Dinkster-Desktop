@@ -127,7 +127,7 @@ if (root === ${JSON.stringify(join(scratch, 'second-installation'))}) {
   const state=${JSON.stringify(join(scratch, 'second-state.json'))};
   const running=fs.existsSync(state) && fs.readFileSync(state,'utf8')==='ready';
   const row={format:'dinkster.environment-result/1',operation,status:operation==='status'||operation==='doctor'?'clean':'applied',root,current:1,plan:[],
-    engines:[{name:'main',generation:1,state:operation==='stop'?'stopped':operation==='start'||running?'ready':'stopped',url:${JSON.stringify(urls[1])}}]};
+    engines:[{name:'main',generation:1,state:operation==='stop'?'stopped':operation==='start'||running?'ready':'stopped',url:${JSON.stringify(urls[1])},gpus:[]}]};
   if(operation==='doctor') row.sandbox={format:'dinkster.sandbox-readiness/1',available:true,detail:'available'};
   if(operation==='start') {
     if(JSON.parse(fs.readFileSync(observed,'utf8')).engines.some(row=>row.state==='ready')) {
@@ -206,7 +206,8 @@ status:operation === 'doctor' ? 'clean' : planned ? 'planned' : 'applied',root,c
 plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switching current',
   ...(args.includes('--frontend-dev') ? ['proxy frontend dev server '+args[args.indexOf('--frontend-dev')+1]] : []),
   ...(args.includes('--allow-frontend-dev-remote') ? ['explicitly allow a non-loopback frontend dev server'] : [])],url,
-engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url}]};
+engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url,
+  gpus:args.flatMap((value,index)=>value==='--gpu'?[args[index+1]]:[])}]};
 if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
 console.log(JSON.stringify(row));
 `,
@@ -1213,7 +1214,15 @@ console.log(JSON.stringify(row));
       root: firstRoot,
       current: 1,
       plan: [],
-      engines: [{ name: 'main', generation: 1, state: 'ready', url: urls[0] }],
+      engines: [
+        {
+          name: 'main',
+          generation: 1,
+          state: 'ready',
+          url: urls[0],
+          gpus: ['GPU-ab12', '3'],
+        },
+      ],
     }),
   )
   await writeFile(opening, JSON.stringify({ target: secondRoot }))
@@ -1237,6 +1246,18 @@ console.log(JSON.stringify(row));
     () => typeof window.dinksterLibrary?.open === 'function',
   )
   const oldOwner = await readFile(join(scratch, 'observed.json'), 'utf8')
+  const legacyOwner = JSON.parse(oldOwner)
+  delete legacyOwner.engines[0].gpus
+  await writeFile(join(scratch, 'observed.json'), JSON.stringify(legacyOwner))
+  await assert.rejects(
+    library.evaluate(() => window.dinksterLibrary.open('first', 'beta')),
+    /cannot report the running GPU assignment/,
+  )
+  assert.equal(
+    await readFile(join(scratch, 'observed.json'), 'utf8'),
+    JSON.stringify(legacyOwner),
+  )
+  await writeFile(join(scratch, 'observed.json'), oldOwner)
   await writeFile(opening, JSON.stringify({ target: secondRoot, refuse: true }))
   await assert.rejects(
     library.evaluate(() => window.dinksterLibrary.open('first', 'beta')),
@@ -1264,6 +1285,12 @@ console.log(JSON.stringify(row));
     JSON.parse(await readFile(join(scratch, 'observed.json'), 'utf8'))
       .engines[0].state,
     'ready',
+  )
+  assert.deepEqual(
+    JSON.parse(await readFile(join(scratch, 'observed.json'), 'utf8'))
+      .engines[0].gpus,
+    ['GPU-ab12', '3'],
+    'recovery retains the observed ordered assignment rather than the empty saved selection',
   )
   await writeFile(
     opening,

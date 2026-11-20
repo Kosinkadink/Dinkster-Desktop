@@ -89,6 +89,7 @@ export interface EnvironmentRequest {
 }
 
 export interface EnvironmentEngine {
+  readonly gpus?: readonly string[]
   readonly sandboxPacks?: boolean
   readonly name: string
   readonly generation: number
@@ -532,6 +533,7 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
         && ['starting', 'ready', 'failed', 'stopped'].includes(String(entry['state']))
         && (entry['url'] === undefined || typeof entry['url'] === 'string')
         && (entry['sandboxPacks'] === undefined || typeof entry['sandboxPacks'] === 'boolean')
+        && (entry['gpus'] === undefined || (Array.isArray(entry['gpus']) && entry['gpus'].every((gpu: unknown) => typeof gpu === 'string' && /^(?:\d+|GPU-[a-fA-F0-9-]+)$/.test(gpu))))
     })))
     || (row['error'] !== undefined && typeof row['error'] !== 'string')) {
     throw new Error('unsupported dinkster-env response')

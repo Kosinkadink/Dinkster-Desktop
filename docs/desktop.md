@@ -287,6 +287,10 @@ Main inspects saved local roots, repeats preparation before stopping a previous
 owner, and opens the target with its authoritative library-project query. A
 failed replacement is stopped before the previous snapshot is restarted; an
 uncertain stop refuses automatic restart and preserves saved records for recovery.
+Recovery retains the previous engine's observed ordered GPU assignment, port and
+sandbox selection, rather than assuming its saved Desktop settings match the
+running process. Tools that omit the assignment refuse opening before any owner
+is stopped; ordinary read-only status remains compatible with those tools.
 Native file access rechecks the project uid, managed identity and document scope.
 The environment-wide pack installer is not exposed to these library-bound
 windows; project-aware Apply and the visible opening controls are not yet

@@ -788,6 +788,16 @@ describe('Desktop dinkster-env command client', () => {
     expect(stopped.engines?.[0]?.state).toBe('stopped')
     await expect(client.run({ root, operation: 'start', engine: '--other' }, true)).rejects.toThrow('invalid engine name')
     await expect(client.run({ root, operation: 'start', gpus: ['display adapter'] }, true)).rejects.toThrow('invalid GPU device')
+    const script = join(root, 'command.cjs')
+    const original = await readFile(script, 'utf8')
+    for (const [gpus, valid] of [[[], true], [['GPU-ab12', '3'], true], [null, false], ['0', false], [[false], false], [['display adapter'], false]] as const) {
+      await writeFile(script, original.replace("engines: [{name:'main',", `engines: [{gpus:${JSON.stringify(gpus)},name:'main',`))
+      if (valid) {
+        expect((await client.run({ root, operation: 'status' })).engines?.[0]?.gpus).toEqual(gpus)
+      } else {
+        await expect(client.run({ root, operation: 'status' })).rejects.toThrow('unsupported dinkster-env response')
+      }
+    }
   })
 
   it('waits for a transient project writer only when confirming an idempotent start', async () => {

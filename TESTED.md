@@ -65,6 +65,18 @@ the counted host launcher. This is client orchestration evidence, not real
 backend switching, a published tool pin, project-aware Apply or changed-screen
 acceptance.
 
+## Observed runtime assignment recovery
+
+X570 Linux CPU, Node 26.12.0, Electron 37.10.3 and locally extracted Xvfb
+21.1.12-1ubuntu1.9: all 185 unit tests, workspace typecheck, Prettier and build
+pass. The Electron command-process harness starts with an observed ordered GPU
+assignment different from the empty saved selection. A failed replacement
+recovers that assignment, and tools without the assignment refuse before
+stopping the old owner. Existing compatibility, partial-start, uncertain-stop,
+successful-switch and native capability controls pass. The unit suite used the
+host counted-suite launcher. This is client orchestration evidence, not actual
+GPU execution, landed-tool real-stack validation or installed-package acceptance.
+
 ## Real backend project opening
 
 X570 Linux CPU, Electron 37.10.3 and locally extracted Xvfb 21.1.12-1ubuntu1.9:

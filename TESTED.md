@@ -1,3 +1,38 @@
+## Separate-project native activation
+
+X570 Linux CPU, Node 26.12.0 and Electron 37, November 20, 2026:
+188 counted unit tests, workspace typecheck, formatting and build pass. The
+expanded private-Xvfb Electron harness passes separate-project planning and
+Apply, native metadata retention before construction, source stop before
+replacement start, unchanged window origin/document, and subsequent commands
+following the new saved root. The HTTP control refuses renderer destinations,
+retains Only this project consent, redacts the destination, and refuses replay.
+
+The Electron harness runs isolated controls by default: successful handoff,
+partial startup failure, uncertain replacement stop, lost construction response,
+compatibility change before shutdown, failed health/composition checks, and
+project revision or document replacement during activation. Each control can be
+selected with DINKSTER_ISOLATED_SCENARIO. The assertions check source and
+replacement state, retained native bindings, stale-association refusal and
+whether any source shutdown or unsafe restart occurred.
+
+These are native command/gateway contracts using supervisor response fixtures,
+not real snapshot construction or whole-frontend Apply acceptance. Real backend
+construction evidence and independent verification are recorded on the
+project-model issue.
+
+## Separate-project command destination
+
+X570 Linux CPU, Node 26.12.0, November 20, 2026: all 187 counted unit tests,
+workspace typecheck, lint and the Desktop build pass. The 47 command/gateway
+controls include absolute project-bound destination forwarding during planning,
+retained Only this project scope during Apply, missing/changed/unexpected
+response-destination refusal and unchanged source-root validation. The WSL disk
+fixture checks UNC/Linux destination translation and refuses Linux paths that
+differ only in case, even with Windows case-insensitive path comparison enabled.
+These are command-process and private-WSL fixtures, not isolated native activation,
+real snapshot construction or frontend Apply acceptance.
+
 ## Shared project software review gateway
 
 X570 Linux CPU, Node 26.12.0 and Electron 37, November 20, 2026: typecheck, lint, all 186 unit tests and the Linux build pass. The targeted command-client and real HTTP gateway controls pass all 46 cases, including authoritative project/revision forwarding, explicit scope, affected-project review with native paths removed, stale revision/identity refusal and single-use confirmation. The real Electron client harness also passes shared library-project planning, stale-revision refusal, retained-scope Apply and origin/document preservation alongside its existing opening/recovery, credential-header and file-access controls. After checking the asynchronous helper read, native review also refuses navigation to a different project; the expanded Electron harness passes again. Xvfb 21.1.12 runs privately from an extracted package, without changing the host installation.

@@ -32,12 +32,13 @@ async function backend(label: string): Promise<string> {
   return `http://127.0.0.1:${address.port}`
 }
 
-async function fixture(allowPackInstall = true, initialProject?: LibraryProject) {
+async function fixture(allowPackInstall = true, initialProject?: LibraryProject, separate = false) {
   const calls: EnvironmentRequest[] = []
   let owner = 'document-1'
   let failure = ''
   let project = initialProject
   let ownerFailure = false
+  let retained = false
   let hold: (() => Promise<void>) | undefined
   const target = await backend('old')
   const next = await backend('new')
@@ -48,6 +49,7 @@ async function fixture(allowPackInstall = true, initialProject?: LibraryProject)
     serialize: (action) => { submitted(); return queue.run(action) },
     owner: async () => { if (ownerFailure) throw new Error('private /library binding changed'); return owner },
     ...(initialProject ? { project: async () => project! } : {}),
+    ...(separate ? { fork: async () => ({ destination: '/private/separate', retain: async () => { retained = true } }) } : {}),
     run: async (request, confirmed) => {
       calls.push(request)
       await hold?.()
@@ -59,10 +61,12 @@ async function fixture(allowPackInstall = true, initialProject?: LibraryProject)
         await writeFile(join(request.inputs!, 'plan.json'), 'retained verified inputs')
         if (project && (request.libraryProject !== project.id || request.projectRevision !== project.revision)) throw new Error('missing authoritative project review')
         return { ...result, packPlan: { root: '/project', store: '/store', current: 1, wheelBytes: 12345,
+          ...(request.destination ? { fork: { destination: request.destination } } : {}),
           ...(project ? { projectReview: { library: '/private/library', environment: project.environment?.id, project,
             projects: [{ project, needs: { packs: ['dinkster-text'] } }] } } : {}) }, approval: `sha256:${'a'.repeat(64)}`, expiresInSeconds: 900 }
       }
-      if (project && request.packScope !== 'every-project') throw new Error('explicit scope required')
+      if (project && request.packScope !== (separate ? 'only-project' : 'every-project')) throw new Error('explicit scope required')
+      if (separate && (!retained || request.destination !== '/private/separate')) throw new Error('missing saved separate environment')
       expect(confirmed).toBe(true)
       expect(request.approval).toBe(`sha256:${'a'.repeat(64)}`)
       return result
@@ -179,6 +183,24 @@ it('binds shared approvals to the native project and refuses stale or substitute
   expect(await unavailable.json()).toEqual({ error: 'plan-stale' })
 })
 
+it('retains a native-only separate destination with one-use project consent and hides it from the renderer', async () => {
+  const project: LibraryProject = { id: 'film', uid: 'film-global', name: 'Film', revision: 7, deleted: false,
+    environment: { id: 'a'.repeat(32), lastSnapshot: null, lastRunAt: null } }
+  const f = await fixture(true, project, true)
+  const body = { packs: [{ pack: 'dinkster-text', version: '1.0.0' }], scope: 'only-project' }
+  expect((await f.post('plan', { ...body, destination: '/renderer-choice' })).status).toBe(400)
+  const response = await f.post('plan', body)
+  expect(response.status).toBe(200)
+  const review = await response.json() as { confirmation: string; review: string }
+  expect(review.review).toContain('<separate environment>')
+  expect(JSON.stringify(review)).not.toContain('/private/separate')
+  const changed = { ...body, scope: 'every-project', confirmation: review.confirmation }
+  expect((await f.post('apply', changed)).status).toBe(400)
+  expect((await f.post('apply', { confirmation: review.confirmation })).status).toBe(200)
+  expect(await (await fetch(f.gateway.url)).text()).toBe('new:no-capability')
+  expect((await f.post('apply', { confirmation: review.confirmation })).status).toBe(409)
+})
+
 it('reviews, observes, cancels and applies packs on the current private WSL disk without exposing review paths', async () => {
   const distribution = 'Dinkster-Desktop-abcdef123456'
   let root = '/native-project'
@@ -188,6 +210,7 @@ it('reviews, observes, cancels and applies packs on the current private WSL disk
   const nativeJoin = paths.join
   vi.spyOn(paths, 'join').mockImplementation((...parts) => parts[0]?.startsWith('\\\\') ? paths.win32.join(...parts) : nativeJoin(...parts))
   vi.spyOn(paths, 'isAbsolute').mockImplementation(paths.win32.isAbsolute)
+  vi.spyOn(paths, 'relative').mockImplementation(paths.win32.relative)
   let allocation = 0
   vi.spyOn(files, 'mkdtemp').mockImplementation(async (prefix) => {
     const path = wslLinuxPath(distribution, String(prefix)) + ++allocation
@@ -208,8 +231,11 @@ it('reviews, observes, cancels and applies packs on the current private WSL disk
   let release: (() => void) | undefined
   let progress = ''
   let inputs = ''
+  let forkDestination: string | undefined
   const host = { distribution, run: async (args: readonly string[]) => {
     const planning = args.includes('packs-plan')
+    if (planning) forkDestination = args.includes('--destination') ? args[args.indexOf('--destination') + 1] : undefined
+    else if (forkDestination) expect(args).toContain('only-project')
     inputs = args[args.indexOf(planning ? '--output' : '--input') + 1]!
     expect(inputs).toMatch(/^\/tmp\/dinkster-desktop-pack-review-[^/]+\/inputs$/)
     expect(disk.has(paths.posix.dirname(inputs))).toBe(true)
@@ -224,7 +250,9 @@ it('reviews, observes, cancels and applies packs on the current private WSL disk
     return JSON.stringify({ format: 'dinkster.environment-result/1', operation: planning ? 'packs-plan' : 'packs-apply',
       root: '/home/dinkster/projects/test', current: planning ? 1 : 2, status: planning ? 'planned' : 'applied', engines: [],
       plan: [`review ${inputs}`, `host ${wslWindowsPath(distribution, inputs)}`],
+      ...(!planning && forkDestination ? { destination: forkDestination } : {}),
       ...(planning ? { packPlan: { format: 'dinkster.project-pack-plan/1', root: '/home/dinkster/projects/test', current: 1,
+        ...(forkDestination ? { fork: { destination: forkDestination } } : {}),
         inputs, hostInputs: wslWindowsPath(distribution, inputs) }, approval: `sha256:${'a'.repeat(64)}`, expiresInSeconds: 900 } : {}) })
   } } as unknown as WslHost
   const client = new EnvironmentClient('unused', [], undefined, undefined, undefined, host)
@@ -257,6 +285,19 @@ it('reviews, observes, cancels and applies packs on the current private WSL disk
     await queue.run(async () => {})
     expect(disk.size).toBe(0)
     expect(await (await post('preparation/status', identity)).json()).toMatchObject({ state: 'cancelled' })
+    const separate = wslWindowsPath(distribution, '/home/dinkster/projects/separate')
+    const retained = wslWindowsPath(distribution, '/tmp/dinkster-desktop-pack-review-direct/inputs')
+    disk.set('/tmp/dinkster-desktop-pack-review-direct', '')
+    const plannedSeparate = await client.run({ root, operation: 'packs-plan', packs: packs.packs, inputs: retained,
+      libraryProject: 'film', projectRevision: 3, destination: separate })
+    expect(plannedSeparate.packPlan?.['fork']).toEqual({ destination: separate })
+    const appliedSeparate = await client.run({ root, operation: 'packs-apply', inputs: retained,
+      approval: plannedSeparate.approval!, packScope: 'only-project', destination: separate }, true)
+    expect(appliedSeparate.destination).toBe(separate)
+    expect(appliedSeparate.root).toBe(root)
+    forkDestination = '/home/dinkster/projects/Separate'
+    await expect(client.run({ root, operation: 'packs-apply', inputs: retained,
+      approval: plannedSeparate.approval!, packScope: 'only-project', destination: separate }, true)).rejects.toThrow('different pack destination')
   } finally {
     release?.()
     await gateway.close()

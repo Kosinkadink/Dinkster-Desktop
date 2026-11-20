@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { installationManager } from './installation-manager.mjs'
 import { createServer } from 'node:http'
 import {
@@ -17,6 +18,43 @@ import { _electron as electron, expect } from '@playwright/test'
 
 // This exercises Electron's client boundary, not generation assembly. The real
 // shared-mirror fixture remains the environment command owner's responsibility.
+if (process.env.DINKSTER_ISOLATED_SCENARIO === undefined) {
+  for (const scenario of [
+    'success',
+    'start-failure',
+    'stop-uncertain',
+    'lost-response',
+    'compatibility-changed',
+    'health-failure',
+    'composition-failure',
+    'revision-changed',
+    'document-changed',
+    'selection-changed',
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(import.meta.url)],
+      {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          DINKSTER_ISOLATED_SCENARIO: scenario,
+          ...(process.env.DINKSTER_SMOKE_ARTIFACTS
+            ? {
+                DINKSTER_SMOKE_ARTIFACTS: join(
+                  process.env.DINKSTER_SMOKE_ARTIFACTS,
+                  scenario,
+                ),
+              }
+            : {}),
+        },
+      },
+    )
+    assert.ifError(result.error)
+    assert.equal(result.status, 0, `Electron project activation: ${scenario}`)
+  }
+  process.exit(0)
+}
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const scratch = await mkdtemp(join(tmpdir(), 'dinkster-desktop-client-'))
 const artifacts = process.env.DINKSTER_SMOKE_ARTIFACTS
@@ -24,10 +62,24 @@ if (artifacts) await mkdir(artifacts, { recursive: true })
 const servers = []
 const locationRequests = []
 let activationFailure
+let revisionChangeAtHealth = false
+let applyReady
+let releaseApply
+const applyHeld = new Promise((resolve) => {
+  applyReady = resolve
+})
 let app
 try {
   for (const heading of ['Original supervisor', 'Updated supervisor']) {
-    const server = createServer((request, response) => {
+    const server = createServer(async (request, response) => {
+      if (request.url === '/test/apply-held') {
+        releaseApply = () => {
+          releaseApply = undefined
+          response.end('continue')
+        }
+        applyReady()
+        return
+      }
       if (request.url === '/api/nodes?wire=1') {
         response.setHeader('Content-Type', 'application/json')
         response.end(
@@ -36,6 +88,15 @@ try {
         return
       }
       if (request.url === '/api/health' || request.url === '/api/composition') {
+        if (request.url === '/api/health' && revisionChangeAtHealth) {
+          revisionChangeAtHealth = false
+          const file = join(scratch, 'project-opening.json')
+          const current = JSON.parse(await readFile(file, 'utf8'))
+          await writeFile(
+            file,
+            JSON.stringify({ ...current, revision: current.revision + 1 }),
+          )
+        }
         response.setHeader('Content-Type', 'application/json')
         response.end(
           JSON.stringify(
@@ -114,13 +175,33 @@ const root = args[args.indexOf('--root') + 1];
 const operation = args[args.indexOf('--root') + 2];
 const planned = args.includes('--plan');
 const observed = ${JSON.stringify(join(scratch, 'observed.json'))};
+const isolatedFile = ${JSON.stringify(join(scratch, 'isolated.json'))};
+const isolated = fs.existsSync(isolatedFile) ? JSON.parse(fs.readFileSync(isolatedFile, 'utf8')) : undefined;
+if (isolated && root === isolated.destination && !['project-get','project-check','packs-plan','packs-apply'].includes(operation)) {
+  const row={format:'dinkster.environment-result/1',operation,status:['status','doctor'].includes(operation)?'clean':'applied',root,current:3,plan:[],
+    engines:[{name:'main',generation:3,state:operation==='start'?'ready':operation==='stop'?'stopped':isolated.state,url:${JSON.stringify(urls[0])},gpus:[]}]};
+  if(operation==='doctor') row.sandbox={format:'dinkster.sandbox-readiness/1',available:true,detail:'available'};
+  if(operation==='start') {
+    if(fs.readFileSync(${JSON.stringify(join(scratch, 'second-state.json'))},'utf8')!=='stopped') throw new Error('source still running');
+    if(['start-failure','stop-uncertain'].includes(isolated.scenario)) {
+      fs.writeFileSync(isolatedFile,JSON.stringify({...isolated,state:'ready'}));
+      console.log(JSON.stringify({...row,status:'error',error:'isolated startup failed'}));process.exit(0);
+    }
+  }
+  if(operation==='stop' && isolated.scenario==='stop-uncertain') {
+    console.log(JSON.stringify({...row,status:'error',error:'isolated stop uncertain'}));process.exit(0);
+  }
+  if(operation==='start'||operation==='stop') fs.writeFileSync(isolatedFile,JSON.stringify({...isolated,state:row.engines[0].state}));
+  console.log(JSON.stringify(row));process.exit(0);
+}
 if (operation === 'project-get' || operation === 'project-check') {
   const selection=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8'));
   const project={id:args[3],uid:'565e7ba1-c262-401d-83b1-7026465b6c39',name:'Opening project',revision:selection.revision ?? 1,deleted:false,
-    environment:{id:'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
-  const error=selection.refuse && operation==='project-check' ? 'library compatibility refused' : undefined;
-  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:error?'error':'clean',root,current:1,plan:[],
-    ...(error?{error}:{project,environment:{id:root===selection.target?'b'.repeat(32):'a'.repeat(32),snapshot:'1'}})}));
+    environment:{id:isolated && isolated.scenario!=='selection-changed'?'c'.repeat(32):'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
+  if(isolated && operation==='project-check') fs.writeFileSync(isolatedFile,JSON.stringify({...isolated,checks:(isolated.checks ?? 0)+1}));
+  const error=(selection.refuse || (isolated?.scenario==='compatibility-changed' && isolated.checks>=1)) && operation==='project-check' ? 'library compatibility refused' : undefined;
+  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:error?'error':'clean',root,current:root===isolated?.destination?3:1,plan:[],
+    ...(error?{error}:{project,environment:{id:root===isolated?.destination?'c'.repeat(32):root===selection.target?'b'.repeat(32):'a'.repeat(32),snapshot:root===isolated?.destination?'3':'1'}})}));
   process.exit(0);
 }
 if (root === ${JSON.stringify(join(scratch, 'second-installation'))} && !['packs-plan','packs-apply'].includes(operation)) {
@@ -186,14 +267,28 @@ if (operation === 'packs-plan') {
   if(args.includes('--project')) {
     const selection=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8'));
     const project={id:args[args.indexOf('--project')+1],uid:'565e7ba1-c262-401d-83b1-7026465b6c39',name:'Opening project',revision:selection.revision ?? 1,deleted:false,
-      environment:{id:'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
+      environment:{id:isolated && isolated.scenario!=='selection-changed'?'c'.repeat(32):'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
     if(args[args.indexOf('--revision')+1]!==String(project.revision)) throw new Error('project revision mismatch');
-    projectReview={library:root+'/private-library',environment:'b'.repeat(32),project,projects:[{project,needs:{packs:['dinkster-text']}}]};
+    projectReview={library:root+'/private-library',environment:project.environment.id,project,projects:[{project,needs:{packs:['dinkster-text']}}]};
   }
+  const destination=args.includes('--destination')?args[args.indexOf('--destination')+1]:undefined;
+  if(destination) fs.writeFileSync(require('node:path').join(output,'fork.json'),JSON.stringify({destination}));
   console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'planned',root,current:1,
-    plan:['Add dinkster-text 1.0.0'],packPlan:{format:'dinkster.project-pack-plan/1',root,current:1,...(projectReview?{projectReview}:{})},
+    plan:['Add dinkster-text 1.0.0'],packPlan:{format:'dinkster.project-pack-plan/1',root,current:1,...(projectReview?{projectReview}:{}),...(destination?{fork:{destination}}:{})},
     approval:'sha256:'+'c'.repeat(64),expiresInSeconds:900}));
   process.exit(0);
+}
+if(operation==='packs-apply' && args[args.indexOf('--scope')+1]==='only-project') {
+  const fork=JSON.parse(fs.readFileSync(require('node:path').join(args[args.indexOf('--input')+1],'fork.json'),'utf8'));
+  const metadata=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'desktop', 'projects.json'))},'utf8'));
+  if(!metadata.projects.some(row=>row.root===fork.destination)) throw new Error('destination has no saved native binding');
+  fs.mkdirSync(fork.destination);
+  const scenario=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8')).isolatedScenario;
+  fs.writeFileSync(isolatedFile,JSON.stringify({...fork,state:'stopped',scenario}));
+  if(scenario==='lost-response') {console.log('lost construction response');process.exit(0);}
+  const complete=()=>{console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'applied',root,current:3,plan:[],engines:[],destination:fork.destination}));process.exit(0);};
+  if(scenario==='document-changed') {fetch(${JSON.stringify(`${urls[0]}/test/apply-held`)}).then(complete);return;}
+  complete();
 }
 const replacementState=${JSON.stringify(join(scratch, 'second-state.json'))};
 if(operation==='start' && fs.existsSync(replacementState) && fs.readFileSync(replacementState,'utf8')==='ready') {
@@ -216,7 +311,7 @@ plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switchi
   ...(args.includes('--allow-frontend-dev-remote') ? ['explicitly allow a non-loopback frontend dev server'] : [])],url,
 engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url,
   gpus:args.flatMap((value,index)=>value==='--gpu'?[args[index+1]]:[])}]};
-if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
+if (!planned && root !== ${JSON.stringify(join(scratch, 'second-installation'))}) fs.writeFileSync(observed, JSON.stringify(row));
 console.log(JSON.stringify(row));
 `,
     { mode: 0o755 },
@@ -1413,6 +1508,156 @@ console.log(JSON.stringify(row));
   assert.equal(lastPlan[lastPlan.indexOf('--revision') + 1], '2')
   const lastApply = projectCalls.findLast((args) => args[2] === 'packs-apply')
   assert.equal(lastApply[lastApply.indexOf('--scope') + 1], 'every-project')
+  const isolatedScenario = process.env.DINKSTER_ISOLATED_SCENARIO ?? 'success'
+  assert.ok(
+    [
+      'success',
+      'start-failure',
+      'stop-uncertain',
+      'lost-response',
+      'compatibility-changed',
+      'health-failure',
+      'composition-failure',
+      'revision-changed',
+      'document-changed',
+      'selection-changed',
+    ].includes(isolatedScenario),
+  )
+  await writeFile(
+    opening,
+    JSON.stringify({ target: secondRoot, revision: 2, isolatedScenario }),
+  )
+  const isolatedReview = await projectInstall('plan', {
+    ...selection,
+    scope: 'only-project',
+  })
+  assert.equal(isolatedReview.status, 200, JSON.stringify(isolatedReview))
+  assert.equal(
+    isolatedReview.body.plan.fork.destination,
+    '<separate environment>',
+  )
+  revisionChangeAtHealth = isolatedScenario === 'revision-changed'
+  if (isolatedScenario === 'health-failure') activationFailure = 'health'
+  if (isolatedScenario === 'composition-failure')
+    activationFailure = 'composition'
+  const beforeIsolatedApply = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n').length
+  const applying = projectInstall('apply', {
+    confirmation: isolatedReview.body.confirmation,
+  }).catch((error) => {
+    if (isolatedScenario !== 'document-changed') throw error
+    return { navigationError: error }
+  })
+  if (isolatedScenario === 'document-changed') {
+    await applyHeld
+    await projectPage.reload()
+    await projectPage.waitForLoadState()
+    releaseApply()
+  }
+  const isolatedApplied = await applying
+  if (isolatedScenario === 'document-changed') {
+    assert.match(
+      String(isolatedApplied.navigationError),
+      /context was destroyed|navigation|Target.*closed|Failed to fetch/i,
+    )
+    await expect
+      .poll(
+        async () => (await projectInstall('plan', sharedSelection)).body.error,
+      )
+      .toBe('plan-stale')
+  } else {
+    assert.equal(
+      isolatedApplied.status,
+      isolatedScenario === 'success'
+        ? 200
+        : isolatedScenario === 'lost-response'
+          ? 422
+          : 409,
+      JSON.stringify(isolatedApplied),
+    )
+    if (isolatedScenario !== 'success')
+      assert.deepEqual(
+        isolatedApplied.body,
+        isolatedScenario === 'lost-response'
+          ? { error: 'apply-failed' }
+          : { error: 'activation-failed', generation: 3 },
+      )
+  }
+  assert.equal(
+    await projectPage.evaluate(() => window.retainedLibraryDocument),
+    isolatedScenario === 'document-changed' ? undefined : 'unchanged',
+  )
+  assert.equal(new URL(projectPage.url()).origin, projectOrigin)
+  await expect(
+    projectPage.getByRole('heading', { name: 'Updated supervisor' }),
+  ).toBeVisible()
+  assert.equal(
+    await readFile(join(scratch, 'second-state.json'), 'utf8'),
+    !['success', 'stop-uncertain'].includes(isolatedScenario)
+      ? 'ready'
+      : 'stopped',
+  )
+  const forked = JSON.parse(
+    await readFile(join(scratch, 'isolated.json'), 'utf8'),
+  )
+  assert.equal(
+    forked.state,
+    ['success', 'stop-uncertain'].includes(isolatedScenario)
+      ? 'ready'
+      : 'stopped',
+  )
+  const savedFork = JSON.parse(
+    await readFile(projectsFile, 'utf8'),
+  ).projects.find((entry) => entry.root === forked.destination)
+  assert.ok(
+    savedFork,
+    'the separate environment remains resolvable by its saved native binding',
+  )
+  const subsequent = await projectInstall('plan', sharedSelection)
+  assert.equal(
+    subsequent.status,
+    ['success', 'selection-changed'].includes(isolatedScenario) ? 200 : 409,
+    JSON.stringify(subsequent),
+  )
+  const isolatedCalls = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+  const handoffCalls = isolatedCalls.slice(beforeIsolatedApply)
+  if (
+    [
+      'compatibility-changed',
+      'lost-response',
+      'document-changed',
+      'selection-changed',
+    ].includes(isolatedScenario)
+  ) {
+    assert.ok(
+      !handoffCalls.some((args) => ['start', 'stop'].includes(args[2])),
+      'a missing construction response or failed compatibility preflight never stops the source',
+    )
+  }
+  if (isolatedScenario === 'stop-uncertain') {
+    assert.ok(
+      handoffCalls.some(
+        (args) => args[1] === forked.destination && args[2] === 'stop',
+      ),
+    )
+    assert.ok(
+      !handoffCalls.some(
+        (args) => args[1] === secondRoot && args[2] === 'start',
+      ),
+      'an uncertain replacement stop must not restart the source',
+    )
+  }
+  const nextPlan = isolatedCalls.findLast((args) => args[2] === 'packs-plan')
+  assert.equal(
+    nextPlan[1],
+    isolatedScenario === 'success' ? forked.destination : secondRoot,
+    'later commands follow the new native binding or refuse the recovered stale selection',
+  )
+  assert.equal(nextPlan[nextPlan.indexOf('--project') + 1], 'beta')
   await projectPage.goto(`${projectOrigin}/?dinksterProject=other`)
   assert.deepEqual(
     await projectPage.evaluate(
@@ -1430,10 +1675,22 @@ console.log(JSON.stringify(row));
     body: { error: 'plan-stale' },
   })
   console.log(
-    'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, retained document, replay refusal, remote-only routing, identity-checked stop, authoritative library opening, preflight-before-stop, failed replacement recovery and project-scoped navigation.',
+    `Electron client boundary passed (${isolatedScenario}): plan/confirm, startup, new-port update, rollback, retained document, replay refusal, remote-only routing, identity-checked stop, authoritative library opening, preflight-before-stop, failed replacement recovery and project-scoped navigation.`,
   )
 } catch (error) {
-  const manager = app?.windows()[0]
+  console.error(error)
+  console.error(
+    await readFile(join(scratch, 'desktop/logs/desktop.log'), 'utf8').catch(
+      () => 'No Desktop log',
+    ),
+  )
+  console.error(await readFile(join(scratch, 'calls.jsonl'), 'utf8'))
+  const manager = app
+    ?.windows()
+    .find(
+      (page) =>
+        page.url().startsWith('file:') && page.url().includes('projects'),
+    )
   if (manager && !manager.isClosed()) {
     console.error(
       'Project manager status:',
@@ -1447,6 +1704,7 @@ console.log(JSON.stringify(row));
   }
   throw error
 } finally {
+  releaseApply?.()
   if (app) await app.close().catch(() => {})
   await Promise.all(
     servers.map((server) => new Promise((done) => server.close(done))),

@@ -312,7 +312,14 @@ and the supervisor's `sha256:` approval digest, not a renderer-supplied plan.
 These operations retain the current project's software settings and do not
 accept channel, variant, store, engine or device overrides. Successful reviews
 must identify the same project and current snapshot; successful apply results
-must name the resulting snapshot and engine states.
+must name the resulting snapshot and engine states. The command client also
+supports project-bound separate-environment planning with a native absolute
+destination. Only-this-project application retains that destination locally,
+passes only the approved scope to the supervisor, and checks the returned
+`destination` without weakening the original source-root check. WSL paths are
+translated through the installation's private distribution; destination checks
+retain the Linux filesystem's case sensitivity. This command support does not
+expose isolated activation in a project window.
 
 Local project windows use a Desktop-owned loopback gateway for HTTP and
 WebSocket connections. Desktop opts that gateway into the shared

@@ -1,7 +1,8 @@
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { createServer } from 'node:net'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, session, shell, Tray } from 'electron'
@@ -28,7 +29,7 @@ import {
 import { desktopTitle, engineServices, parseDesktopServices } from './services.js'
 import { ShellUpdater } from './shell-updater.js'
 import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
-import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult } from './environment.js'
+import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult, type LibraryProject } from './environment.js'
 import { DesktopLibrary } from './library.js'
 import { WslHost, wslLinuxPath, wslLocation } from './wsl.js'
 import toolsRelease from './environment-tools-release.json' with { type: 'json' }
@@ -309,8 +310,18 @@ async function createLibraryWindow(): Promise<void> {
 }
 
 ipcMain.handle('desktop:library-open', (event, installation: string, identifier: string) => serializeLifecycle(async () => {
-  trustedLibraryIpc(event)
+  await openLibraryProject(installation, identifier, () => trustedLibraryIpc(event))
+}))
+
+async function openLibraryProject(installation: string, identifier: string, trusted: () => void,
+  reuse?: { readonly window: BrowserWindow; readonly ready: (project: DesktopProject, result: EnvironmentResult) => Promise<void> }): Promise<void> {
+  trusted()
   const prepared = await library.prepareOpen(installation, identifier)
+  if (reuse) {
+    const binding = remoteWindows.get(reuse.window)
+    if (prepared.installation.id !== installation || binding?.libraryUid !== prepared.project.uid
+      || binding.libraryProject !== prepared.project.id) throw new Error('plan-stale')
+  }
   const target = prepared.installation
   const engines = target.engines.filter((engine) => engine.kind === 'local')
   const engine = engines.find((entry) => entry.id === 'main') ?? (engines.length === 1 ? engines[0] : undefined)
@@ -339,19 +350,21 @@ ipcMain.handle('desktop:library-open', (event, installation: string, identifier:
   if (new Set(previous.map((owner) => owner.project.root)).size + Number(targetWasRunning) > 1) throw new Error('multiple environments are running; stop them before opening a project')
   const checked = await library.prepareOpen(installation, identifier)
   if (JSON.stringify(checked) !== JSON.stringify(prepared)) throw new Error('project or environment changed; open it again')
-  trustedLibraryIpc(event)
+  trusted()
   const stopped: typeof previous = []
   let starting = false
   try {
     for (const owner of previous) {
+      trusted()
       // Retain the previous owner before issuing a command whose result may be lost.
       stopped.push(owner)
       const result = await environmentClient.run({ root: owner.project.root!, operation: 'stop', engine: owner.engine }, true)
       if (result.status !== 'applied' || result.engines?.some((entry) => entry.name === owner.engine && entry.state !== 'stopped')) throw new Error('previous environment did not stop')
     }
+    trusted()
     starting = true
     localEngines.set(`${target.id}/${engine.id}`, { root: target.root!, engine: engine.id })
-    await openManagedProject(target.id, engine.id, prepared)
+    await openManagedProject(target.id, engine.id, prepared, reuse && { ...reuse, trusted })
   } catch (error) {
     const failures: unknown[] = [error]
     let targetStopped = !starting
@@ -375,14 +388,14 @@ ipcMain.handle('desktop:library-open', (event, installation: string, identifier:
         } catch (failure) { failures.push(failure) }
       }
       for (const owner of new Set(stopped.map((entry) => entry.project))) {
-        try { await handoffProject(owner, await environmentClient.run({ root: owner.root!, operation: 'status' })) }
+        try { await handoffProject(owner, await environmentClient.run({ root: owner.root!, operation: 'status' }), reuse !== undefined) }
         catch (failure) { failures.push(failure) }
       }
     }
     if (failures.length > 1) throw new AggregateError(failures, 'Project opening failed; saved environments are retained for recovery. Inspect environment status before restarting.')
     throw error
   }
-}))
+}
 
 ipcMain.handle('desktop:library-installations', async (event) => {
   trustedLibraryIpc(event)
@@ -516,7 +529,20 @@ function localEngineUrl(project: DesktopProject, engineId: string, result: Envir
   return address
 }
 
-async function handoffProject(project: DesktopProject, result: EnvironmentResult): Promise<void> {
+async function packActivation(project: DesktopProject, engine: string, result: EnvironmentResult, added: readonly string[]): Promise<Record<string, unknown>> {
+  const next = localEngineUrl(project, engine, result)
+  if (await engineServices(next) !== services) throw new Error('activation-failed')
+  const health = await fetch(`${next}/api/health`, { signal: AbortSignal.timeout(10_000) })
+  const body = await health.json() as { ok?: boolean; compositionState?: { epoch?: number; failed?: number } }
+  const epoch = body.compositionState?.epoch
+  if (!health.ok || body.ok !== true || body.compositionState?.failed !== 0 || !Number.isSafeInteger(epoch) || epoch! < 1) throw new Error('activation-failed')
+  const composition = await fetch(`${next}/api/composition`, { signal: AbortSignal.timeout(10_000) })
+  const catalog = await composition.json() as { packs?: Record<string, { state?: string }> }
+  if (!composition.ok || !catalog.packs || !added.every((pack) => catalog.packs![pack]?.state === 'announced')) throw new Error('activation-failed')
+  return { generation: result.current, epoch, added, removed: [], reloaded: [], unchanged: Object.keys(catalog.packs).filter((pack) => !added.includes(pack)).sort(), failed: {}, diagnostics: [], rolledBack: false }
+}
+
+async function handoffProject(project: DesktopProject, result: EnvironmentResult, preserve = false): Promise<void> {
   const status = await environmentClient.run({ root: project.root!, operation: 'status' })
   for (const [managed, binding] of remoteWindows) {
     if (binding.projectId !== project.id || managed.isDestroyed()) continue
@@ -527,7 +553,7 @@ async function handoffProject(project: DesktopProject, result: EnvironmentResult
     binding.development = status.sourceDescription !== undefined
     if (binding.gateway) binding.gateway.setTarget(url)
     else binding.url = url
-    await managed.loadURL(projectAddress(binding.url, binding.libraryProject))
+    if (!preserve) await managed.loadURL(projectAddress(binding.url, binding.libraryProject))
   }
 }
 
@@ -609,7 +635,8 @@ function projectAddress(address: string, identifier?: string): string {
   return url.href
 }
 
-async function openManagedProject(projectId: unknown, engineId: unknown, prepared?: Awaited<ReturnType<DesktopLibrary['prepareOpen']>>): Promise<void> {
+async function openManagedProject(projectId: unknown, engineId: unknown, prepared?: Awaited<ReturnType<DesktopLibrary['prepareOpen']>>,
+  reuse?: { readonly window: BrowserWindow; readonly trusted: () => void; readonly ready: (project: DesktopProject, result: EnvironmentResult) => Promise<void> }): Promise<void> {
   if (!validProjectId(projectId) || !validProjectId(engineId)) throw new Error('invalid engine binding')
   const libraryProject = prepared?.project.id
   const project = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === projectId)
@@ -618,6 +645,7 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
   if (!engine) throw new Error('engine binding not found')
   let url: string
   let development = false
+  let started: EnvironmentResult | undefined
   if (engine.kind === 'remote') url = engine.url
   else {
     const root = project!.root!
@@ -638,9 +666,35 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
     }
     localEngines.set(`${projectId}/${engineId}`, { root, engine: engine.id })
     development = (await environmentClient.run({ root, operation: 'status' })).sourceDescription !== undefined
+    started = result
   }
   if (prepared && JSON.stringify(await library.prepareOpen(prepared.installation.id, prepared.project.id)) !== JSON.stringify(prepared)) {
     throw new Error('project or environment changed during startup')
+  }
+  if (reuse) {
+    const binding = remoteWindows.get(reuse.window)
+    if (!prepared || !started || !binding?.gateway) throw new Error('plan-stale')
+    await reuse.ready(project!, started)
+    reuse.trusted()
+    await writeFileAtomic(join(dataDirectory, 'project-gateways', projectId, `${engineId}.json`), `${JSON.stringify({ port: Number(new URL(binding.url).port) })}\n`)
+    reuse.trusted()
+    const previousPortFile = join('project-gateways', binding.projectId, `${binding.engineId}.json`)
+    if (await readPersistedPort(previousPortFile) === Number(new URL(binding.url).port)) {
+      reuse.trusted()
+      await rm(join(dataDirectory, previousPortFile), { force: true })
+    }
+    if (JSON.stringify(await library.prepareOpen(prepared.installation.id, prepared.project.id)) !== JSON.stringify(prepared)) {
+      throw new Error('project or environment changed during activation')
+    }
+    reuse.trusted()
+    binding.projectId = projectId
+    binding.engineId = engineId
+    binding.libraryUid = prepared.project.uid
+    binding.environmentId = prepared.environment.id
+    binding.backendUrl = url
+    binding.development = development
+    binding.gateway.setTarget(url)
+    return
   }
   const existing = [...remoteWindows].find(([managed, binding]) => !managed.isDestroyed() && binding.projectId === projectId && binding.engineId === engineId && binding.libraryProject === libraryProject && binding.libraryUid === prepared?.project.uid && binding.environmentId === prepared?.environment.id)
   if (existing) {
@@ -672,48 +726,96 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
   if (engine.kind === 'local') {
     try {
       const portFile = join('project-gateways', projectId, `${engineId}.json`)
+      let applyDocument = binding.document
       const readProject = async () => {
-        const root = localEngines.get(`${projectId}/${engineId}`)?.root
+        const root = localEngines.get(`${binding.projectId}/${binding.engineId}`)?.root
         if (!root || binding.libraryProject === undefined) throw new Error('plan-stale')
         const selected = await environmentClient.run({ root, operation: 'project-get', libraryProject: binding.libraryProject })
         if (!selected.project || selected.project.uid !== binding.libraryUid || selected.environment?.id !== binding.environmentId
           || selected.project.environment?.id !== binding.environmentId) throw new Error('plan-stale')
         return selected.project
       }
-      binding.gateway = await createProjectGateway({ get root() { return localEngines.get(`${projectId}/${engineId}`)!.root }, target: url, allowPackInstall: true, preferredPort: await readPersistedPort(portFile),
-        ...(libraryProject === undefined ? {} : { project: readProject }),
+      const trustedDocument = (document: number) => {
+        if (quitting || remote.isDestroyed() || remoteWindows.get(remote) !== binding || binding.document !== document
+          || (binding.libraryProject !== undefined && binding.folderProject !== binding.libraryProject)
+          || !isTrustedDesktopIpc(remote.webContents, remote.webContents.mainFrame, new URL(binding.url).origin, remote.webContents, remote.webContents.mainFrame)) throw new Error('plan-stale')
+      }
+      const preferredPort = await readPersistedPort(portFile)
+      binding.gateway = await createProjectGateway({ get root() { return localEngines.get(`${binding.projectId}/${binding.engineId}`)!.root }, target: url, allowPackInstall: true,
+        preferredPort: [...remoteWindows.values()].some((other) => other.gateway && Number(new URL(other.url).port) === preferredPort) ? undefined : preferredPort,
+        ...(libraryProject === undefined ? {} : { project: readProject, fork: async (selected: LibraryProject) => {
+          const source = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === binding.projectId)
+          const local = source?.engines.find((candidate) => candidate.id === binding.engineId)
+          if (!source?.root || local?.kind !== 'local') throw new Error('plan-stale')
+          const status = await environmentClient.run({ root: source.root, operation: 'status' })
+          const running = status.engines?.find((entry) => entry.name === local.id && entry.state === 'ready')
+          if (running && running.gpus === undefined) throw new Error('plan-stale')
+          const id = randomUUID()
+          const destination = join(dirname(source.root), `dinkster-environment-${id}`)
+          // A different backend port keeps stopped source windows from reaching the replacement.
+          const port = await new Promise<number>((resolve, reject) => {
+            const server = createServer()
+            server.once('error', reject)
+            server.listen(0, '127.0.0.1', () => {
+              const address = server.address()
+              if (!address || typeof address === 'string') { server.close(); reject(new Error('no separate environment port')); return }
+              server.close((error) => { if (error) reject(error); else resolve(address.port) })
+            })
+          })
+          const candidate = parseProject({ ...source, id, root: destination, name: `${selected.name} environment`.slice(0, 128),
+            engines: [{ ...local, id: 'main', name: 'Main', port, gpus: running?.gpus ?? local.gpus }] })
+          return { destination, retain: async () => {
+            const saved = await readProjects(dataDirectory)
+            if (JSON.stringify(saved.projects.find((entry) => entry.id === source.id)) !== JSON.stringify(source)
+              || saved.projects.some((entry) => entry.id === id)) throw new Error('plan-stale')
+            await writeProjects(dataDirectory, saveProject(saved, candidate))
+          } }
+        } }),
         serialize: serializeLifecycle,
-        run: (request, confirmed) => environmentClient.run(request, confirmed),
+        run: (request, confirmed) => {
+          if (request.operation === 'packs-apply') applyDocument = binding.document
+          return environmentClient.run(request, confirmed)
+        },
         owner: async () => {
           const document = binding.document
-          const saved = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === projectId)
-          if (quitting || remote.isDestroyed() || remoteWindows.get(remote) !== binding || binding.document !== document
-            || (libraryProject !== undefined && binding.folderProject !== libraryProject)
-            || !saved || saved.root !== localEngines.get(`${projectId}/${engineId}`)?.root || saved.engines.find((candidate) => candidate.id === engineId)?.kind !== 'local'
-            || !isTrustedDesktopIpc(remote.webContents, remote.webContents.mainFrame, new URL(binding.url).origin, remote.webContents, remote.webContents.mainFrame)) {
-            throw new Error('plan-stale')
-          }
-          const selected = libraryProject === undefined ? undefined : await readProject()
-          if (quitting || remote.isDestroyed() || remoteWindows.get(remote) !== binding || binding.document !== document) throw new Error('plan-stale')
-          return `${projectId}/${engineId}/${document}/${saved.root}/${selected?.uid ?? ''}/${selected?.revision ?? ''}`
+          const saved = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === binding.projectId)
+          trustedDocument(document)
+          if (!saved || saved.root !== localEngines.get(`${binding.projectId}/${binding.engineId}`)?.root
+            || saved.engines.find((candidate) => candidate.id === binding.engineId)?.kind !== 'local') throw new Error('plan-stale')
+          const selected = binding.libraryProject === undefined ? undefined : await readProject()
+          trustedDocument(document)
+          return `${binding.projectId}/${binding.engineId}/${document}/${saved.root}/${selected?.uid ?? ''}/${selected?.revision ?? ''}`
         },
         activate: async (result, added) => {
-          const next = localEngineUrl(project!, engineId, result)
-          if (await engineServices(next) !== services) throw new Error('activation-failed')
-          const health = await fetch(`${next}/api/health`, { signal: AbortSignal.timeout(10_000) })
-          const body = await health.json() as { ok?: boolean; compositionState?: { epoch?: number; failed?: number } }
-          const epoch = body.compositionState?.epoch
-          if (!health.ok || body.ok !== true || body.compositionState?.failed !== 0 || !Number.isSafeInteger(epoch) || epoch! < 1) throw new Error('activation-failed')
-          const composition = await fetch(`${next}/api/composition`, { signal: AbortSignal.timeout(10_000) })
-          const catalog = await composition.json() as { packs?: Record<string, { state?: string }> }
-          if (!composition.ok || !catalog.packs || !added.every((pack) => catalog.packs![pack]?.state === 'announced')) throw new Error('activation-failed')
-          for (const [managed, other] of remoteWindows) {
-            if (other.projectId !== projectId || managed.isDestroyed() || !other.gateway) continue
-            const target = localEngineUrl(project!, other.engineId, result)
-            other.backendUrl = target
-            other.gateway.setTarget(target)
+          const document = applyDocument
+          const trusted = () => trustedDocument(document)
+          trusted()
+          let activation: Record<string, unknown> | undefined
+          if (result.destination !== undefined) {
+            const saved = await readProjects(dataDirectory)
+            const target = saved.projects.find((entry) => entry.root === result.destination)
+            if (!target || !binding.libraryProject) throw new Error('activation-failed')
+            try {
+              await openLibraryProject(target.id, binding.libraryProject, trusted, { window: remote,
+                ready: async (project, started) => { activation = await packActivation(project, 'main', started, added) } })
+            } catch (error) {
+              await shellLog.append(redactDiagnosticText(`Separate project activation: ${error instanceof Error ? error.message : String(error)}`))
+              throw error
+            }
+          } else {
+            const project = (await readProjects(dataDirectory)).projects.find((entry) => entry.id === binding.projectId)
+            if (!project) throw new Error('activation-failed')
+            activation = await packActivation(project, binding.engineId, result, added)
+            trusted()
+            for (const [managed, other] of remoteWindows) {
+              if (other.projectId !== binding.projectId || managed.isDestroyed() || !other.gateway) continue
+              const target = localEngineUrl(project, other.engineId, result)
+              other.backendUrl = target
+              other.gateway.setTarget(target)
+            }
           }
-          return { generation: result.current, epoch, added, removed: [], reloaded: [], unchanged: Object.keys(catalog.packs).filter((pack) => !added.includes(pack)).sort(), failed: {}, diagnostics: [], rolledBack: false }
+          if (!activation) throw new Error('activation-failed')
+          return activation
         },
       })
       binding.url = binding.gateway.url

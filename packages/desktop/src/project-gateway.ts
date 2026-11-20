@@ -41,6 +41,7 @@ interface GatewayOptions {
   /** Return an immutable top-level document identity, or reject a changed binding. */
   readonly owner: () => Promise<string>
   readonly project?: () => Promise<LibraryProject>
+  readonly fork?: (project: LibraryProject) => Promise<{ readonly destination: string; readonly retain: () => Promise<void> }>
   readonly activate: (result: EnvironmentResult, added: readonly string[]) => Promise<Record<string, unknown>>
 }
 
@@ -58,7 +59,7 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
   let closing: Promise<void> | undefined
   let busy: Promise<void> | undefined
   let executing: Promise<void> | undefined
-  let pending: { token: string; owner: string; directory: string; inputs: string; approval: string; expires: number; added: string[]; project?: LibraryProject; scope?: 'every-project' } | undefined
+  let pending: { token: string; owner: string; directory: string; inputs: string; approval: string; expires: number; added: string[]; project?: LibraryProject; scope?: 'every-project' | 'only-project'; fork?: Awaited<ReturnType<NonNullable<GatewayOptions['fork']>>> } | undefined
   let expiry: ReturnType<typeof setTimeout> | undefined
   let preparation: Preparation | undefined
   const capability = randomBytes(32).toString('hex')
@@ -155,7 +156,7 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
     const packs: { pack: string; version: string }[] = []
     const names = new Set<string>()
     if (action === 'plan' || action === 'prepare') {
-      if (Object.keys(raw).length !== (options.project ? 2 : 1) || (options.project && raw['scope'] !== 'every-project')
+      if (Object.keys(raw).length !== (options.project ? 2 : 1) || (options.project && raw['scope'] !== 'every-project' && !(raw['scope'] === 'only-project' && options.fork))
         || !Array.isArray(raw['packs']) || raw['packs'].length < 1 || raw['packs'].length > 64) {
         reply(response, 400, { error: 'bad-request' }); return
       }
@@ -209,8 +210,10 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
             observer.unref()
           }
           const project = await options.project?.()
+          const fork = project && raw['scope'] === 'only-project' ? await options.fork!(project) : undefined
           if (closed || owner !== await options.owner()) throw new Error('plan-stale')
           const result = await options.run({ root: options.root, operation: 'packs-plan', packs, inputs,
+            ...(fork ? { destination: fork.destination } : {}),
             ...(project ? { libraryProject: project.id, projectRevision: project.revision } : {}),
             ...(preparing ? { progress: preparing.file! } : {}) })
           if (preparing) {
@@ -224,12 +227,13 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
           if (project && (!isDeepStrictEqual(projectReview?.['project'], project)
             || projectReview?.['environment'] !== project.environment?.id)) throw new Error('plan-stale')
           pending = { token, owner, directory, inputs, approval: result.approval, expires: Date.now() + 900_000, added: [...names],
-            ...(project ? { project, scope: 'every-project' } : {}) }
+            ...(project ? { project, scope: fork ? 'only-project' : 'every-project' } : {}), ...(fork ? { fork } : {}) }
           directory = undefined
           expiry = setTimeout(() => { if (!busy) void discard().catch(() => undefined) }, 900_000)
           expiry.unref()
           let publicPlan = JSON.stringify({ plan: result.packPlan, review: result.plan })
-          for (const [path, label] of [[projectReview?.['library'], '<library>'], [result.packPlan['root'], '<environment>'], [result.packPlan['store'], '<store>'],
+          for (const [path, label] of [[fork?.destination, '<separate environment>'], [fork ? wslLocation(fork.destination)?.path : undefined, '<separate environment>'],
+            [projectReview?.['library'], '<library>'], [result.packPlan['root'], '<environment>'], [result.packPlan['store'], '<store>'],
             [pending.directory, '<temporary>'], [wslLocation(pending.directory)?.path, '<temporary>'], [tmpdir(), '<temporary>']] as const) {
             if (typeof path === 'string' && path) publicPlan = publicPlan.split(JSON.stringify(path).slice(1, -1)).join(label)
           }
@@ -248,7 +252,10 @@ export async function createProjectGateway(options: GatewayOptions): Promise<Pro
           directory = approved.directory
           if (approved.project && !isDeepStrictEqual(await options.project?.(), approved.project)) throw new Error('plan-stale')
           if (closed || owner !== await options.owner()) throw new Error('plan-stale')
+          await approved.fork?.retain()
+          if (closed || owner !== await options.owner()) throw new Error('plan-stale')
           const result = await options.run({ root: options.root, operation: 'packs-apply', inputs: approved.inputs, approval: approved.approval,
+            ...(approved.fork ? { destination: approved.fork.destination } : {}),
             ...(approved.scope ? { packScope: approved.scope } : {}) }, true)
           installedGeneration = result.current
           const activation = await options.activate(result, approved.added)

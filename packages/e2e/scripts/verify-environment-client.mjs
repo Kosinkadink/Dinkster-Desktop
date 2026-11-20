@@ -114,13 +114,26 @@ const root = args[args.indexOf('--root') + 1];
 const operation = args[args.indexOf('--root') + 2];
 const planned = args.includes('--plan');
 const observed = ${JSON.stringify(join(scratch, 'observed.json'))};
+const isolatedFile = ${JSON.stringify(join(scratch, 'isolated.json'))};
+const isolated = fs.existsSync(isolatedFile) ? JSON.parse(fs.readFileSync(isolatedFile, 'utf8')) : undefined;
+if (isolated && root === isolated.destination && !['project-get','project-check','packs-plan','packs-apply'].includes(operation)) {
+  const row={format:'dinkster.environment-result/1',operation,status:['status','doctor'].includes(operation)?'clean':'applied',root,current:3,plan:[],
+    engines:[{name:'main',generation:3,state:operation==='start'?'ready':operation==='stop'?'stopped':isolated.state,url:${JSON.stringify(urls[0])},gpus:[]}]};
+  if(operation==='doctor') row.sandbox={format:'dinkster.sandbox-readiness/1',available:true,detail:'available'};
+  if(operation==='start') {
+    if(fs.readFileSync(${JSON.stringify(join(scratch, 'second-state.json'))},'utf8')!=='stopped') throw new Error('source still running');
+    if(isolated.failStart) {console.log(JSON.stringify({...row,status:'error',error:'isolated startup failed'}));process.exit(0);}
+  }
+  if(operation==='start'||operation==='stop') fs.writeFileSync(isolatedFile,JSON.stringify({...isolated,state:row.engines[0].state}));
+  console.log(JSON.stringify(row));process.exit(0);
+}
 if (operation === 'project-get' || operation === 'project-check') {
   const selection=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8'));
   const project={id:args[3],uid:'565e7ba1-c262-401d-83b1-7026465b6c39',name:'Opening project',revision:selection.revision ?? 1,deleted:false,
-    environment:{id:'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
+    environment:{id:isolated?'c'.repeat(32):'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
   const error=selection.refuse && operation==='project-check' ? 'library compatibility refused' : undefined;
-  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:error?'error':'clean',root,current:1,plan:[],
-    ...(error?{error}:{project,environment:{id:root===selection.target?'b'.repeat(32):'a'.repeat(32),snapshot:'1'}})}));
+  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:error?'error':'clean',root,current:root===isolated?.destination?3:1,plan:[],
+    ...(error?{error}:{project,environment:{id:root===isolated?.destination?'c'.repeat(32):root===selection.target?'b'.repeat(32):'a'.repeat(32),snapshot:root===isolated?.destination?'3':'1'}})}));
   process.exit(0);
 }
 if (root === ${JSON.stringify(join(scratch, 'second-installation'))} && !['packs-plan','packs-apply'].includes(operation)) {
@@ -186,14 +199,24 @@ if (operation === 'packs-plan') {
   if(args.includes('--project')) {
     const selection=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8'));
     const project={id:args[args.indexOf('--project')+1],uid:'565e7ba1-c262-401d-83b1-7026465b6c39',name:'Opening project',revision:selection.revision ?? 1,deleted:false,
-      environment:{id:'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
+      environment:{id:isolated?'c'.repeat(32):'b'.repeat(32),lastSnapshot:null,lastRunAt:null}};
     if(args[args.indexOf('--revision')+1]!==String(project.revision)) throw new Error('project revision mismatch');
-    projectReview={library:root+'/private-library',environment:'b'.repeat(32),project,projects:[{project,needs:{packs:['dinkster-text']}}]};
+    projectReview={library:root+'/private-library',environment:project.environment.id,project,projects:[{project,needs:{packs:['dinkster-text']}}]};
   }
+  const destination=args.includes('--destination')?args[args.indexOf('--destination')+1]:undefined;
+  if(destination) fs.writeFileSync(require('node:path').join(output,'fork.json'),JSON.stringify({destination}));
   console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'planned',root,current:1,
-    plan:['Add dinkster-text 1.0.0'],packPlan:{format:'dinkster.project-pack-plan/1',root,current:1,...(projectReview?{projectReview}:{})},
+    plan:['Add dinkster-text 1.0.0'],packPlan:{format:'dinkster.project-pack-plan/1',root,current:1,...(projectReview?{projectReview}:{}),...(destination?{fork:{destination}}:{})},
     approval:'sha256:'+'c'.repeat(64),expiresInSeconds:900}));
   process.exit(0);
+}
+if(operation==='packs-apply' && args[args.indexOf('--scope')+1]==='only-project') {
+  const fork=JSON.parse(fs.readFileSync(require('node:path').join(args[args.indexOf('--input')+1],'fork.json'),'utf8'));
+  const metadata=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'desktop', 'projects.json'))},'utf8'));
+  if(!metadata.projects.some(row=>row.root===fork.destination)) throw new Error('destination has no saved native binding');
+  fs.mkdirSync(fork.destination);
+  fs.writeFileSync(isolatedFile,JSON.stringify({...fork,state:'stopped',failStart:JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8')).failIsolatedStart===true}));
+  console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'applied',root,current:3,plan:[],engines:[],destination:fork.destination}));process.exit(0);
 }
 const replacementState=${JSON.stringify(join(scratch, 'second-state.json'))};
 if(operation==='start' && fs.existsSync(replacementState) && fs.readFileSync(replacementState,'utf8')==='ready') {
@@ -216,7 +239,7 @@ plan:['Reuse the shared wheel store', 'Start a healthy supervisor before switchi
   ...(args.includes('--allow-frontend-dev-remote') ? ['explicitly allow a non-loopback frontend dev server'] : [])],url,
 engines:[{name:'main',generation:updated ? 2 : 1,state:operation === 'stop' ? 'stopped' : 'ready',url,
   gpus:args.flatMap((value,index)=>value==='--gpu'?[args[index+1]]:[])}]};
-if (!planned) fs.writeFileSync(observed, JSON.stringify(row));
+if (!planned && root !== ${JSON.stringify(join(scratch, 'second-installation'))}) fs.writeFileSync(observed, JSON.stringify(row));
 console.log(JSON.stringify(row));
 `,
     { mode: 0o755 },
@@ -1413,6 +1436,79 @@ console.log(JSON.stringify(row));
   assert.equal(lastPlan[lastPlan.indexOf('--revision') + 1], '2')
   const lastApply = projectCalls.findLast((args) => args[2] === 'packs-apply')
   assert.equal(lastApply[lastApply.indexOf('--scope') + 1], 'every-project')
+  const isolatedStartFailure =
+    process.env.DINKSTER_ISOLATED_START_FAILURE === '1'
+  if (isolatedStartFailure)
+    await writeFile(
+      opening,
+      JSON.stringify({
+        target: secondRoot,
+        revision: 2,
+        failIsolatedStart: true,
+      }),
+    )
+  const isolatedReview = await projectInstall('plan', {
+    ...selection,
+    scope: 'only-project',
+  })
+  assert.equal(isolatedReview.status, 200, JSON.stringify(isolatedReview))
+  assert.equal(
+    isolatedReview.body.plan.fork.destination,
+    '<separate environment>',
+  )
+  const isolatedApplied = await projectInstall('apply', {
+    confirmation: isolatedReview.body.confirmation,
+  })
+  assert.equal(
+    isolatedApplied.status,
+    isolatedStartFailure ? 409 : 200,
+    JSON.stringify(isolatedApplied),
+  )
+  if (isolatedStartFailure)
+    assert.deepEqual(isolatedApplied.body, {
+      error: 'activation-failed',
+      generation: 3,
+    })
+  assert.equal(
+    await projectPage.evaluate(() => window.retainedLibraryDocument),
+    'unchanged',
+  )
+  assert.equal(new URL(projectPage.url()).origin, projectOrigin)
+  await expect(
+    projectPage.getByRole('heading', { name: 'Updated supervisor' }),
+  ).toBeVisible()
+  assert.equal(
+    await readFile(join(scratch, 'second-state.json'), 'utf8'),
+    isolatedStartFailure ? 'ready' : 'stopped',
+  )
+  const forked = JSON.parse(
+    await readFile(join(scratch, 'isolated.json'), 'utf8'),
+  )
+  assert.equal(forked.state, isolatedStartFailure ? 'stopped' : 'ready')
+  const savedFork = JSON.parse(
+    await readFile(projectsFile, 'utf8'),
+  ).projects.find((entry) => entry.root === forked.destination)
+  assert.ok(
+    savedFork,
+    'the separate environment remains resolvable by its saved native binding',
+  )
+  const subsequent = await projectInstall('plan', sharedSelection)
+  assert.equal(
+    subsequent.status,
+    isolatedStartFailure ? 409 : 200,
+    JSON.stringify(subsequent),
+  )
+  const isolatedCalls = (await readFile(calls, 'utf8'))
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+  const nextPlan = isolatedCalls.findLast((args) => args[2] === 'packs-plan')
+  assert.equal(
+    nextPlan[1],
+    isolatedStartFailure ? secondRoot : forked.destination,
+    'later commands follow the new native binding or refuse the recovered stale selection',
+  )
+  assert.equal(nextPlan[nextPlan.indexOf('--project') + 1], 'beta')
   await projectPage.goto(`${projectOrigin}/?dinksterProject=other`)
   assert.deepEqual(
     await projectPage.evaluate(
@@ -1433,7 +1529,19 @@ console.log(JSON.stringify(row));
     'Electron client boundary passed: plan/confirm, startup, new-port update, rollback, retained document, replay refusal, remote-only routing, identity-checked stop, authoritative library opening, preflight-before-stop, failed replacement recovery and project-scoped navigation.',
   )
 } catch (error) {
-  const manager = app?.windows()[0]
+  console.error(error)
+  console.error(
+    await readFile(join(scratch, 'desktop/logs/desktop.log'), 'utf8').catch(
+      () => 'No Desktop log',
+    ),
+  )
+  console.error(await readFile(join(scratch, 'calls.jsonl'), 'utf8'))
+  const manager = app
+    ?.windows()
+    .find(
+      (page) =>
+        page.url().startsWith('file:') && page.url().includes('projects'),
+    )
   if (manager && !manager.isClosed()) {
     console.error(
       'Project manager status:',

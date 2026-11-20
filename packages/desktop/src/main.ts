@@ -319,7 +319,8 @@ async function openLibraryProject(installation: string, identifier: string, trus
   const prepared = await library.prepareOpen(installation, identifier)
   if (reuse) {
     const binding = remoteWindows.get(reuse.window)
-    if (binding?.libraryUid !== prepared.project.uid || binding.libraryProject !== prepared.project.id) throw new Error('plan-stale')
+    if (prepared.installation.id !== installation || binding?.libraryUid !== prepared.project.uid
+      || binding.libraryProject !== prepared.project.id) throw new Error('plan-stale')
   }
   const target = prepared.installation
   const engines = target.engines.filter((engine) => engine.kind === 'local')
@@ -354,11 +355,13 @@ async function openLibraryProject(installation: string, identifier: string, trus
   let starting = false
   try {
     for (const owner of previous) {
+      trusted()
       // Retain the previous owner before issuing a command whose result may be lost.
       stopped.push(owner)
       const result = await environmentClient.run({ root: owner.project.root!, operation: 'stop', engine: owner.engine }, true)
       if (result.status !== 'applied' || result.engines?.some((entry) => entry.name === owner.engine && entry.state !== 'stopped')) throw new Error('previous environment did not stop')
     }
+    trusted()
     starting = true
     localEngines.set(`${target.id}/${engine.id}`, { root: target.root!, engine: engine.id })
     await openManagedProject(target.id, engine.id, prepared, reuse && { ...reuse, trusted })
@@ -680,6 +683,9 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
       reuse.trusted()
       await rm(join(dataDirectory, previousPortFile), { force: true })
     }
+    if (JSON.stringify(await library.prepareOpen(prepared.installation.id, prepared.project.id)) !== JSON.stringify(prepared)) {
+      throw new Error('project or environment changed during activation')
+    }
     reuse.trusted()
     binding.projectId = projectId
     binding.engineId = engineId
@@ -720,6 +726,7 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
   if (engine.kind === 'local') {
     try {
       const portFile = join('project-gateways', projectId, `${engineId}.json`)
+      let applyDocument = binding.document
       const readProject = async () => {
         const root = localEngines.get(`${binding.projectId}/${binding.engineId}`)?.root
         if (!root || binding.libraryProject === undefined) throw new Error('plan-stale')
@@ -765,7 +772,10 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
           } }
         } }),
         serialize: serializeLifecycle,
-        run: (request, confirmed) => environmentClient.run(request, confirmed),
+        run: (request, confirmed) => {
+          if (request.operation === 'packs-apply') applyDocument = binding.document
+          return environmentClient.run(request, confirmed)
+        },
         owner: async () => {
           const document = binding.document
           const saved = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === binding.projectId)
@@ -777,7 +787,7 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
           return `${binding.projectId}/${binding.engineId}/${document}/${saved.root}/${selected?.uid ?? ''}/${selected?.revision ?? ''}`
         },
         activate: async (result, added) => {
-          const document = binding.document
+          const document = applyDocument
           const trusted = () => trustedDocument(document)
           trusted()
           let activation: Record<string, unknown> | undefined

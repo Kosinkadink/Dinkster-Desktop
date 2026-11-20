@@ -8,16 +8,18 @@ replacement start, unchanged window origin/document, and subsequent commands
 following the new saved root. The HTTP control refuses renderer destinations,
 retains Only this project consent, redacts the destination, and refuses replay.
 
-The same Electron harness with DINKSTER_ISOLATED_START_FAILURE=1 also passes:
-the failed replacement is stopped, the previous observed owner restarts, its
-window/document survives, and the separate saved binding remains available for
-recovery. Later review refuses the stale source association rather than
-silently applying there.
+The Electron harness runs isolated controls by default: successful handoff,
+partial startup failure, uncertain replacement stop, lost construction response,
+compatibility change before shutdown, failed health/composition checks, and
+project revision or document replacement during activation. Each control can be
+selected with DINKSTER_ISOLATED_SCENARIO. The assertions check source and
+replacement state, retained native bindings, stale-association refusal and
+whether any source shutdown or unsafe restart occurred.
 
-This is development evidence using supervisor response fixtures, not real
-snapshot construction or whole-frontend Apply acceptance. Lost construction
-responses, uncertain replacement stops, compatibility changes during handoff
-and fresh whole-PR verification remain required before a landing claim.
+These are native command/gateway contracts using supervisor response fixtures,
+not real snapshot construction or whole-frontend Apply acceptance. Real backend
+construction evidence and independent verification are recorded on the
+project-model issue.
 
 ## Separate-project command destination
 

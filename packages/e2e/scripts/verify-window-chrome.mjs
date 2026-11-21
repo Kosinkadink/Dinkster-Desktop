@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { createServer } from 'node:http'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { _electron as electron, expect } from '@playwright/test'
@@ -51,31 +52,60 @@ Object.assign(env, {
   XDG_DATA_HOME: join(root, 'xdg-data'),
   XDG_CACHE_HOME: join(root, 'xdg-cache'),
 })
-const app = await electron.launch({
-  executablePath: require('electron'),
-  args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`, entry],
-  env,
+const policy =
+  "default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; font-src 'self'; connect-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+const font = await readFile(join(site, 'assets/NotoSans-Regular.woff2'))
+const requests = []
+const server = createServer((request, response) => {
+  requests.push(request.url)
+  response.setHeader('Content-Security-Policy', policy)
+  if (request.url === '/font.woff2') {
+    response.setHeader('Content-Type', 'font/woff2')
+    response.end(font)
+  } else if (request.url === '/page.css') {
+    response.setHeader('Content-Type', 'text/css')
+    response.end(
+      '@font-face{font-family:"Noto Sans";src:url(/font.woff2)}body{margin:0;font-family:"Noto Sans"}main{padding:24px}#toast{position:fixed;right:24px;bottom:24px}',
+    )
+  } else if (request.url === '/page.js') {
+    response.setHeader('Content-Type', 'text/javascript')
+    response.end(`document.querySelector('#toast').onclick=e=>e.target.remove();
+      document.querySelector('#control')?.addEventListener('click',e=>e.target.textContent='Control works')`)
+  } else if (request.url === '/existing' || request.url === '/fallback') {
+    response.setHeader('Content-Type', 'text/html')
+    response.end(`<!doctype html><meta charset="utf-8"><title>Untrusted page title</title>
+      <link rel="stylesheet" href="/page.css">
+      ${request.url === '/existing' ? '<header class="topbar"><button id="control">Original control</button></header>' : ''}
+      <main><h1>Engine content</h1><p>Original content remains available.</p></main>
+      <button id="toast">Saved successfully - dismiss</button><script src="/page.js"></script>`)
+  } else {
+    response.writeHead(404).end()
+  }
 })
+await new Promise((resolve, reject) => {
+  server.once('error', reject)
+  server.listen(0, '127.0.0.1', resolve)
+})
+const origin = `http://127.0.0.1:${server.address().port}`
+let app
 const results = []
 try {
+  app = await electron.launch({
+    executablePath: require('electron'),
+    args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`, entry],
+    env,
+  })
   for (const theme of ['dark', 'light']) {
     await app.evaluate(({ nativeTheme }, theme) => {
       nativeTheme.themeSource = theme
     }, theme)
     for (const existing of [true, false]) {
-      const html = `<!doctype html><meta charset="utf-8"><title>Untrusted page title</title>
-        <style>body{margin:0}main{padding:24px}#toast{position:fixed;right:24px;bottom:24px}</style>
-        ${existing ? '<header class="topbar"><button id="control">Original control</button></header>' : ''}
-        <main><h1>Engine content</h1><p>Original content remains available.</p></main>
-        <button id="toast">Saved successfully - dismiss</button>
-        <script>document.querySelector('#toast').onclick=e=>e.target.remove();
-        document.querySelector('#control')?.addEventListener('click',e=>e.target.textContent='Control works')</script>`
       const opened = app.waitForEvent('window')
       await app.evaluate(
         async (_, { url, width }) =>
           globalThis.openChrome(url, true, true, width),
         {
-          url: `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+          url: `${origin}/${existing ? 'existing' : 'fallback'}`,
           width: 390,
         },
       )
@@ -100,6 +130,42 @@ try {
         ]),
         ['undefined', 'undefined', 'undefined', 'undefined'],
       )
+      assert.deepEqual(
+        await page.evaluate(async () => {
+          const script = document.createElement('script')
+          script.textContent = 'globalThis.cspEscaped = true'
+          document.head.append(script)
+          const connectBlocked = await fetch('/unexpected-connect').then(
+            () => false,
+            () => true,
+          )
+          return {
+            inlineBlocked: globalThis.cspEscaped === undefined,
+            connectBlocked,
+          }
+        }),
+        { inlineBlocked: true, connectBlocked: true },
+      )
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            [...document.fonts].some(
+              (face) =>
+                face.family.replaceAll('"', '') === 'Noto Sans' &&
+                face.status === 'loaded',
+            ),
+          ),
+        )
+        .toBe(true)
+      if (!existing) {
+        await expect
+          .poll(() =>
+            page
+              .locator('.dinkster-brand-mark')
+              .evaluate((image) => image.naturalWidth),
+          )
+          .toBeGreaterThan(0)
+      }
       const geometry = await page.evaluate(() => {
         const bar = document.querySelector('[data-desktop-chrome]')
         const bounds = bar.getBoundingClientRect()
@@ -148,7 +214,24 @@ try {
         nativeTheme.themeSource = theme
       }, theme)
       const window = await app.browserWindow(page)
+      await window.evaluate((window) => window.minimize())
+      await expect
+        .poll(() => window.evaluate((window) => window.isMinimized()))
+        .toBe(true)
+      await window.evaluate((window) => window.restore())
+      await expect
+        .poll(() => window.evaluate((window) => window.isMinimized()))
+        .toBe(false)
+      await window.evaluate((window) => window.maximize())
+      await expect
+        .poll(() => window.evaluate((window) => window.isMaximized()))
+        .toBe(true)
+      await window.evaluate((window) => window.unmaximize())
+      await expect
+        .poll(() => window.evaluate((window) => window.isMaximized()))
+        .toBe(false)
       await window.evaluate((window) => window.setSize(1100, 700))
+      await expect.poll(() => page.evaluate(() => innerWidth)).toBe(1100)
       await page.screenshot({
         path: join(
           root,
@@ -162,17 +245,39 @@ try {
         isolated: true,
         themeChanged: true,
         toastDismissed: true,
+        cspEnforced: true,
+        nativeWindowStates: true,
       })
       await window.evaluate((window) => window.destroy())
     }
   }
+  assert.equal(requests.includes('/unexpected-connect'), false)
+  assert(
+    requests.every((url) =>
+      [
+        '/existing',
+        '/fallback',
+        '/page.css',
+        '/page.js',
+        '/font.woff2',
+        '/favicon.ico',
+      ].includes(url),
+    ),
+  )
   await writeFile(
     join(root, 'results.json'),
-    JSON.stringify({ platform: process.platform, results }, null, 2),
+    JSON.stringify(
+      { platform: process.platform, policy, requests, results },
+      null,
+      2,
+    ),
   )
   console.log(
     `Shared chrome passed ${results.length} Electron cases with live theme changes, controls and isolated worlds`,
   )
 } finally {
-  await app.close()
+  await app?.close()
+  await new Promise((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  )
 }

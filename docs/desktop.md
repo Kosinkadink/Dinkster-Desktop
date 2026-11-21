@@ -37,8 +37,8 @@ The frontend wheel supplies the Projects page, shared Product components and
 bundled Noto fonts. Its isolated preload exposes only read-only library
 operations. The main process accepts saved installation IDs, project IDs and
 opaque page cursors, never renderer-selected paths or helper commands. The
-library window retains the native title bar rather than injecting a second
-content stylesheet.
+library window uses the same shared chrome as engine and installation windows;
+its application header keeps its controls and receives the shared window identity.
 
 ## Publishing installers
 
@@ -107,6 +107,19 @@ navigation and new windows, process-local QA labeling and live OS-theme changes.
 The first-run renderer and its installation controls remain Frontend-owned.
 Managed windows retain the native title "Dinkster Desktop" rather than adopting
 the embedded web page's browser title.
+
+Window chrome uses `desktop-chrome.json` and `desktop-chrome.js` from that same
+verified wheel. Preparation verifies every site manifest digest before copying
+assets. Native overlay colors, the 56px height and macOS traffic-light position
+come from the shared metadata, not private Desktop CSS. The DOM-only installer
+runs in an isolated world with no Electron, Node or preload capability. It keeps
+existing header controls, follows late/replaced headers, and supplies a shared
+fallback bar when no header exists. QA and Development labels stay stacked in
+the bar, leaving the bottom-right toast corner clear. Chrome follows live OS
+appearance changes; page content retains its own theme and CSP. The local
+installation page permits only embedded data fonts for the shared bar; remote
+page policies are not broadened. Navigation, window-open and IPC policies do not
+change.
 
 ## Projects and engines
 

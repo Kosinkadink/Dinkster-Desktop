@@ -1,58 +1,55 @@
-import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { BrowserWindow, BrowserWindowConstructorOptions, NativeTheme } from 'electron'
 import { desktopTitle, type DesktopServices } from './services.js'
 
-export function windowChromeOptions(platform: NodeJS.Platform = process.platform): BrowserWindowConstructorOptions {
-  return {
-    titleBarStyle: 'hidden',
-    ...(platform === 'darwin'
-      ? { trafficLightPosition: { x: 14, y: 16 } }
-      : { titleBarOverlay: { color: '#202020', symbolColor: '#ededed', height: 48 } }),
+export interface WindowChrome {
+  readonly css: string
+  readonly script: string
+  readonly native: {
+    readonly overlay: Record<'dark' | 'light', { color: string; symbolColor: string; height: number }>
+    readonly trafficLightPosition: { x: number; y: number }
   }
 }
 
-/** Reserve native controls in the existing bar, including server-served frontends. */
-export function installWindowChrome(window: BrowserWindow, development: () => boolean = () => false, services: DesktopServices = 'production'): void {
-  const left = process.platform === 'darwin' ? '80px' : 'env(titlebar-area-x, 0px)'
-  const css = `
-    .topbar, .dinkster-topbar, body > header {
-      -webkit-app-region: drag;
-      min-height: max(54px, env(titlebar-area-height, 54px));
-      padding-left: calc(${left} + 12px);
-      padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 12px);
-    }
-    .topbar > *, .dinkster-topbar > *, body > header > * { -webkit-app-region: no-drag; }
-    body:not(:has(.topbar, .dinkster-topbar, > header)) { padding-top: 54px; }
-    body:not(:has(.topbar, .dinkster-topbar, > header))::before {
-      content: '${desktopTitle(services)}';
-      position: fixed; top: 0; left: 0; right: 0; height: 54px; z-index: 2147483647;
-      display: flex; align-items: center;
-      padding-left: calc(${left} + 12px);
-      color: #ededed; background: #202020; font: 14px system-ui, sans-serif;
-      -webkit-app-region: drag;
-    }
-  `
-  window.webContents.on('did-finish-load', () => {
-    if (window.isDestroyed()) return
+export function readWindowChrome(directory: string): WindowChrome {
+  const metadata = JSON.parse(readFileSync(join(directory, 'desktop-chrome.json'), 'utf8')) as Omit<WindowChrome, 'script'>
+  return { ...metadata, script: readFileSync(join(directory, 'desktop-chrome.js'), 'utf8') }
+}
+
+export function windowChromeOptions(chrome: WindowChrome, dark: boolean, platform: NodeJS.Platform = process.platform): BrowserWindowConstructorOptions {
+  return {
+    titleBarStyle: 'hidden',
+    ...(platform === 'darwin'
+      ? { trafficLightPosition: chrome.native.trafficLightPosition }
+      : { titleBarOverlay: chrome.native.overlay[dark ? 'dark' : 'light'] }),
+  }
+}
+
+/** The shared DOM installer has no access to Electron or the preload bridge. */
+export function installWindowChrome(window: BrowserWindow, chrome: WindowChrome, appearance: NativeTheme, development: () => boolean = () => false, services: DesktopServices = 'production'): void {
+  let loaded = false
+  const refresh = async (): Promise<void> => {
+    if (!loaded || window.isDestroyed()) return
+    const theme = appearance.shouldUseDarkColors ? 'dark' : 'light'
     const unpublished = development()
     window.setTitle(desktopTitle(services, unpublished))
-    const marking = unpublished ? `
-      body::after {
-        content: 'Development project - unpublished sources';
-        position: fixed; bottom: 8px; right: 12px; z-index: 2147483647;
-        padding: 6px 10px; border: 1px solid #f3cf80; border-radius: 5px;
-        color: #f3cf80; background: #202020; font: 12px system-ui, sans-serif;
-        pointer-events: none; -webkit-app-region: no-drag;
-      }
-    ` : ''
-    const servicesMark = services === 'qa' ? `
-      .topbar > .topbar-group-left::after, .dinkster-topbar > .dinkster-brand::after, body > header::after {
-        content: '[QA]'; flex-shrink: 0; margin-left: 8px;
-        color: #ededed; font: bold 12px system-ui, sans-serif;
-        pointer-events: none; -webkit-app-region: no-drag;
-      }
-    ` : ''
-    void window.webContents.insertCSS(css + marking + servicesMark).catch(() => {
-      if (!window.isDestroyed()) console.warn('Desktop window chrome could not be applied.')
-    })
+    if (process.platform !== 'darwin') window.setTitleBarOverlay(chrome.native.overlay[theme])
+    await window.webContents.executeJavaScriptInIsolatedWorld(1001, [{
+      code: `if (!globalThis.DinksterDesktopChrome) { ${chrome.script} }\nDinksterDesktopChrome.install(${JSON.stringify({
+        title: desktopTitle(services), platform: process.platform, theme,
+        qa: services === 'qa', development: unpublished,
+      })})`,
+    }])
+  }
+  const report = (): void => {
+    if (!window.isDestroyed()) console.warn('Desktop window chrome could not be applied.')
+  }
+  window.webContents.on('did-finish-load', () => {
+    loaded = true
+    void window.webContents.insertCSS(chrome.css).then(refresh).catch(report)
   })
+  const changed = (): void => { void refresh().catch(report) }
+  appearance.on('updated', changed)
+  window.on('closed', () => appearance.removeListener('updated', changed))
 }

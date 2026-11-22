@@ -398,6 +398,12 @@ async function openLibraryProject(installation: string, identifier: string, trus
   }
 }
 
+ipcMain.handle('desktop:library-history', async (event, installation: string, project: string) => {
+  trustedLibraryIpc(event)
+  const result = await library.history(installation, project)
+  trustedLibraryIpc(event)
+  return result
+})
 ipcMain.handle('desktop:library-installations', async (event) => {
   trustedLibraryIpc(event)
   return library.installations()

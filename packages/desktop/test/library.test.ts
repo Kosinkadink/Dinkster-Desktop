@@ -6,6 +6,68 @@ import { EnvironmentClient } from '../src/environment.js'
 import { DesktopLibrary } from '../src/library.js'
 import { writeProjects } from '../src/projects.js'
 
+it.each(['bound', 'empty', 'changed-project', 'changed-identity', 'changed-snapshot', 'changed-settings'] as const)(
+  'reads only authoritative environment software history: %s', async (scenario) => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop-library-history-'))
+    roots.push(root)
+    const first = join(root, 'first'), second = join(root, 'second')
+    await writeProjects(root, { version: 1, projects: [first, second].map((path, index) => ({
+      id: index === 0 ? 'first' : 'second', name: index === 0 ? 'First' : 'Second', root: path,
+      channel: 'stable', engines: [{ id: 'main', name: 'Main', kind: 'local', gpus: [] }],
+    })) })
+    const before = await readFile(join(root, 'projects.json'), 'utf8')
+    const entry = { format: 'dinkster.install-history/1', id: 7, generation: 12,
+      timestamp: '2026-11-22T22:00:00Z', reason: 'update', exact: true, kind: 'activation',
+      snapshot: { engine: { version: '0.2.3', release: 'recorded-release' }, base: { id: 'cpu', variant: 'cpu' } } }
+    const notice = 'Snapshot 12 cannot open the migrated library without library-helper/1.'
+    const script = join(root, 'command.cjs')
+    await writeFile(script, `
+      const fs=require('node:fs');
+      const args=process.argv.slice(2), root=args[1], operation=args[2], scenario=${JSON.stringify(scenario)};
+      if(!['project-get','project-check','history'].includes(operation) || args.includes('--yes') || args.includes('--plan')) process.exit(2);
+      const marker=${JSON.stringify(join(root, 'history-read'))};
+      const changed=fs.existsSync(marker), target=root===${JSON.stringify(second)};
+      const project={id:'beta',uid:'30c30841-e92d-4f49-bbbd-e90a3a3f4140',name:'Beta',revision:7,deleted:false,
+        environment:{id:'${'b'.repeat(32)}',lastSnapshot:null,lastRunAt:null}};
+      if(changed && scenario==='changed-project') project.revision++;
+      if(changed && scenario==='changed-identity') project.uid='b3ec9782-25ea-43f1-9fd7-564a4b577167';
+      const result={format:'dinkster.environment-result/1',operation,status:'clean',root,current:3,plan:[]};
+      if(operation==='history') {
+        if(!target) process.exit(3);
+        fs.writeFileSync(marker,'read');
+        const entry=${JSON.stringify(entry)};
+        entry.snapshot.metadata={'private-state':'not-for-renderer'};
+        result.history=scenario==='empty'?[]:[entry];
+        result.plan=[${JSON.stringify(notice)}];
+        if(scenario==='changed-snapshot') result.current=4;
+        if(scenario==='changed-settings') fs.writeFileSync(${JSON.stringify(join(root, 'projects.json'))},JSON.stringify({version:1,projects:[]}));
+      } else {
+        if(args[3]!=='beta') process.exit(4);
+        result.project=project;
+        result.environment={id:(target?'b':'a').repeat(32),snapshot:'3'};
+      }
+      console.log(JSON.stringify(result));
+    `)
+    const client = new EnvironmentClient(process.execPath, [script])
+    try {
+      const library = new DesktopLibrary(root, client)
+      if (scenario === 'bound' || scenario === 'empty') {
+        expect(await library.history('first', 'beta')).toEqual({
+          installation: { id: 'second', name: 'Second' },
+          project: { id: 'beta', uid: '30c30841-e92d-4f49-bbbd-e90a3a3f4140', name: 'Beta', revision: 7, deleted: false,
+            environment: { id: 'b'.repeat(32), lastSnapshot: null, lastRunAt: null } },
+          environment: { id: 'b'.repeat(32), snapshot: '3' }, entries: scenario === 'empty' ? [] : [entry], notices: [notice],
+        })
+        expect(await readFile(join(root, 'projects.json'), 'utf8')).toBe(before)
+        await expect(library.history(first, 'beta')).rejects.toThrow('no saved local environment')
+        await expect(library.history('first', '../beta')).rejects.toThrow('invalid library selection')
+      } else {
+        await expect(library.history('first', 'beta')).rejects.toThrow(scenario === 'changed-settings' ? 'no saved local environment' : 'changed')
+      }
+    } finally { await client.dispose() }
+  },
+)
+
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
 

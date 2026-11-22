@@ -1,4 +1,4 @@
-import type { EnvironmentClient, EnvironmentResult, LibraryListKind, LibraryProject } from './environment.js'
+import type { EnvironmentClient, EnvironmentHistoryEntry, EnvironmentResult, LibraryListKind, LibraryProject } from './environment.js'
 import { readProjects, type DesktopProject } from './projects.js'
 
 export interface LibraryEntry {
@@ -12,7 +12,16 @@ export interface LibraryDisplayPage {
   readonly cursor: string | null
 }
 
+export interface LibraryHistory {
+  readonly installation: LibraryEntry
+  readonly project: LibraryProject
+  readonly environment: NonNullable<EnvironmentResult['environment']>
+  readonly entries: readonly EnvironmentHistoryEntry[]
+  readonly notices: readonly string[]
+}
+
 export interface DesktopLibraryBridge {
+  history(installation: string, project: string): Promise<LibraryHistory>
   open(installation: string, project: string): Promise<void>
   installations(): Promise<readonly LibraryEntry[]>
   projects(installation: string, cursor: string | null): Promise<LibraryDisplayPage>
@@ -86,6 +95,33 @@ export class DesktopLibrary {
       || reread.project.environment?.id !== project.environment?.id) throw new Error('project library binding changed')
     if (JSON.stringify(await readProjects(this.directory)) !== JSON.stringify(saved)) throw new Error('saved environments changed; open the project again')
     return { installation: target, project: checked.project, environment: checked.environment }
+  }
+
+  async history(installation: string, identifier: string): Promise<LibraryHistory> {
+    const selected = await this.prepareOpen(installation, identifier)
+    const result = await this.tools.run({
+      root: selected.installation.root!, channel: selected.installation.channel, operation: 'history',
+    })
+    if (result.status !== 'clean' || !result.history || String(result.current) !== selected.environment.snapshot) {
+      throw new Error('environment history is unavailable or changed; select the project again')
+    }
+    if (JSON.stringify(await this.prepareOpen(installation, identifier)) !== JSON.stringify(selected)) {
+      throw new Error('project or environment changed; select the project again')
+    }
+    return {
+      installation: { id: selected.installation.id, name: selected.installation.name },
+      project: selected.project, environment: selected.environment, notices: result.plan,
+      // Snapshots contain private recovery metadata; the renderer receives only display facts.
+      entries: result.history.map((entry) => ({
+        format: entry.format, id: entry.id, timestamp: entry.timestamp, reason: entry.reason,
+        generation: entry.generation, exact: entry.exact,
+        ...(entry.kind === undefined ? {} : { kind: entry.kind }),
+        snapshot: {
+          engine: { version: entry.snapshot.engine.version, release: entry.snapshot.engine.release },
+          base: { id: entry.snapshot.base.id, variant: entry.snapshot.base.variant },
+        },
+      })),
+    }
   }
 
   projects(installation: string, cursor: string | null): Promise<LibraryDisplayPage> {

@@ -40,6 +40,7 @@ globalThis.openChrome = async (url, qa, development, width) => {
   const window = new BrowserWindow({ ...windowChromeOptions(chrome, nativeTheme.shouldUseDarkColors),
     width, height: 600, show: false,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } })
+  window.on('closed', () => globalThis.nativeBackdrop?.focus())
   installWindowChrome(window, chrome, nativeTheme, () => development, qa ? 'qa' : 'production')
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   await window.loadURL(url)
@@ -113,7 +114,7 @@ try {
       const backdrop = new BrowserWindow({
         ...screen.getPrimaryDisplay().bounds,
         frame: false,
-        focusable: false,
+        skipTaskbar: true,
         show: false,
         backgroundColor: '#202020',
         webPreferences: {

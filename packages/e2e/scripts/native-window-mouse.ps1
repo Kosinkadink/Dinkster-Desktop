@@ -26,10 +26,15 @@ public static class NativeMouse {
     public uint type;
     public MouseInput mouse;
   }
+  [StructLayout(LayoutKind.Sequential)] struct CursorInfo {
+    public uint size, flags;
+    public IntPtr cursor;
+    public int x, y;
+  }
+  [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CursorInfo info);
   [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
-  [DllImport("user32.dll", SetLastError = true)] static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, Input[] inputs, int size);
   static void Guard(IntPtr window, uint expectedPid) {
     uint pid;
@@ -40,7 +45,13 @@ public static class NativeMouse {
   }
   static void Move(IntPtr window, uint pid, int x, int y) {
     Guard(window, pid);
-    if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    var input = new Input { mouse = new MouseInput {
+      dx = (int)Math.Round((x - GetSystemMetrics(76)) * 65535.0 / (GetSystemMetrics(78) - 1)),
+      dy = (int)Math.Round((y - GetSystemMetrics(77)) * 65535.0 / (GetSystemMetrics(79) - 1)),
+      flags = 0xC001
+    } };
+    if (SendInput(1, new[] { input }, Marshal.SizeOf(typeof(Input))) != 1)
+      throw new Win32Exception(Marshal.GetLastWin32Error());
   }
   static void Button(uint flags) {
     var input = new Input { mouse = new MouseInput { flags = flags } };
@@ -73,6 +84,9 @@ public static class NativeMouse {
       try { Thread.Sleep(60); }
       finally { Button(4); }
     }
+    var cursor = new CursorInfo { size = (uint)Marshal.SizeOf(typeof(CursorInfo)) };
+    if (!GetCursorInfo(ref cursor)) throw new InvalidOperationException("Cannot read native cursor state");
+    Console.WriteLine("{\"cursorFlags\":" + cursor.flags + ",\"x\":" + cursor.x + ",\"y\":" + cursor.y + "}");
   }
 }
 '@

@@ -26,6 +26,8 @@ public static class NativeMouse {
     public uint type;
     public MouseInput mouse;
   }
+  [StructLayout(LayoutKind.Sequential)] struct Rect { public int left, top, right, bottom; }
+  [DllImport("user32.dll", SetLastError = true)] static extern bool GetWindowRect(IntPtr window, out Rect rect);
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
   [DllImport("user32.dll", SetLastError = true)] static extern bool SetCursorPos(int x, int y);
@@ -53,8 +55,23 @@ public static class NativeMouse {
     Button(2);
     try {
       if (action == "Drag") {
+        Rect before, activated;
+        if (!GetWindowRect(window, out before)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        Move(window, pid, x + 12, y + 12);
+        Thread.Sleep(100);
+        Move(window, pid, x + 24, y + 24);
+        Thread.Sleep(100);
+        if (!GetWindowRect(window, out activated)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (activated.left == before.left || activated.top == before.top)
+          throw new InvalidOperationException("Native drag did not activate in both axes");
+        // Windows consumes initial motion when activating its native move loop.
+        // Measure that grab offset so EndX/EndY request window displacement, not cursor displacement.
+        int offsetX = 24 - (activated.left - before.left);
+        int offsetY = 24 - (activated.top - before.top);
+        Console.WriteLine("Native drag activation offset: " + offsetX + "," + offsetY);
         for (int step = 1; step <= 20; step++) {
-          Move(window, pid, x + (endX - x) * step / 20, y + (endY - y) * step / 20);
+          Move(window, pid, x + 24 + (endX + offsetX - x - 24) * step / 20,
+            y + 24 + (endY + offsetY - y - 24) * step / 20);
           Thread.Sleep(20);
         }
       } else Thread.Sleep(60);

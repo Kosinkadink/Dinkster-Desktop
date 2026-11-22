@@ -103,7 +103,31 @@ let recorderLog
 let recorderFinished
 const results = []
 try {
+  app = await electron.launch({
+    executablePath: require('electron'),
+    args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`, entry],
+    env,
+  })
   if (nativeInput) {
+    await app.evaluate(async ({ BrowserWindow, screen }) => {
+      const backdrop = new BrowserWindow({
+        ...screen.getPrimaryDisplay().bounds,
+        frame: false,
+        focusable: false,
+        show: false,
+        backgroundColor: '#202020',
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      })
+      await backdrop.loadURL(
+        'data:text/html,<title>Native window test backdrop</title>',
+      )
+      backdrop.showInactive()
+      globalThis.nativeBackdrop = backdrop
+    })
     recorderLog = createWriteStream(join(root, 'desktop-recording.log'))
     recorder = spawn(
       'ffmpeg',
@@ -157,11 +181,6 @@ try {
       'Desktop recorder exited before input',
     )
   }
-  app = await electron.launch({
-    executablePath: require('electron'),
-    args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`, entry],
-    env,
-  })
   for (const theme of ['dark', 'light']) {
     await app.evaluate(({ nativeTheme }, theme) => {
       nativeTheme.themeSource = theme
@@ -358,19 +377,8 @@ try {
       2,
     ),
   )
-  console.log(
-    `Shared chrome passed ${results.length} Electron cases with live theme changes, controls and isolated worlds`,
-  )
 } finally {
   try {
-    try {
-      await app?.close()
-    } finally {
-      await new Promise((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      )
-    }
-  } finally {
     try {
       if (recorder?.pid) {
         const endedEarly =
@@ -392,5 +400,16 @@ try {
     } finally {
       recorderLog?.end()
     }
+  } finally {
+    try {
+      await app?.close()
+    } finally {
+      await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      )
+    }
   }
 }
+console.log(
+  `Shared chrome passed ${results.length} Electron cases${nativeInput ? ' including native mouse input and desktop recording' : ''}`,
+)

@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { writeFile } from 'node:fs/promises'
+import { appendFile, writeFile } from 'node:fs/promises'
 import { expect } from '@playwright/test'
 
 const execute = promisify(execFile)
@@ -61,7 +61,7 @@ export async function verifyNativeWindow(app, page, root, label) {
     return state
   }
   const mouse = async (action, x, y, endX = x, endY = y) => {
-    await execute(
+    const { stdout } = await execute(
       'pwsh',
       [
         '-NoProfile',
@@ -84,6 +84,7 @@ export async function verifyNativeWindow(app, page, root, label) {
       ],
       { timeout: 15000, windowsHide: true },
     )
+    await appendFile(join(root, `${label}-input.log`), `${action}: ${stdout}\n`)
   }
   const points = async () => {
     const content = await window.evaluate((window) => window.getContentBounds())

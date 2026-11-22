@@ -37,3 +37,53 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+
+  native-window-input:
+    name: Windows native window controls and drag
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Install desktop recorder
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ffmpeg -version
+      - name: Native mouse and desktop recording
+        shell: pwsh
+        env:
+          DINKSTER_NATIVE_WINDOW_INPUT: '1'
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ github.workspace }}/.amp/in/native-window-input
+          CUDA_VISIBLE_DEVICES: ''
+          DINKSTER_ACCELERATOR: cpu
+        run: |
+          New-Item -ItemType Directory -Force .amp/in | Out-Null
+          pnpm --filter @dinkster/e2e exec node scripts/verify-window-chrome.mjs
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-native-window-input
+          if-no-files-found: warn
+          path: |
+            .amp/in/native-window-input/*.png
+            .amp/in/native-window-input/*.json
+            .amp/in/native-window-input/*.mp4
+            .amp/in/native-window-input/*.log

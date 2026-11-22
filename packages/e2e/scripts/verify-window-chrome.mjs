@@ -1,10 +1,20 @@
 import assert from 'node:assert/strict'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:http'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { _electron as electron, expect } from '@playwright/test'
+import {
+  requireHostedWindows,
+  verifyNativeWindow,
+} from './verify-native-window.mjs'
+
+const nativeInput = process.env.DINKSTER_NATIVE_WINDOW_INPUT === '1'
+if (nativeInput) requireHostedWindows()
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 assert(
@@ -88,8 +98,65 @@ await new Promise((resolve, reject) => {
 })
 const origin = `http://127.0.0.1:${server.address().port}`
 let app
+let recorder
+let recorderLog
+let recorderFinished
 const results = []
 try {
+  if (nativeInput) {
+    recorderLog = createWriteStream(join(root, 'desktop-recording.log'))
+    recorder = spawn(
+      'ffmpeg',
+      [
+        '-y',
+        '-f',
+        'gdigrab',
+        '-framerate',
+        '10',
+        '-draw_mouse',
+        '1',
+        '-i',
+        'desktop',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-pix_fmt',
+        'yuv420p',
+        join(root, 'desktop-input.mp4'),
+      ],
+      { windowsHide: true },
+    )
+    let progress = ''
+    let recordingError
+    recorder.on('error', (error) => {
+      recordingError = error
+    })
+    recorderFinished = once(recorder, 'close')
+    // Handle an early recorder failure while retaining its diagnostic log.
+    recorderFinished.catch(() => {})
+    recorder.stderr.pipe(recorderLog)
+    recorder.stderr.on('data', (data) => {
+      progress += data.toString()
+    })
+    await expect
+      .poll(
+        () =>
+          Boolean(
+            recordingError ||
+              recorder.exitCode !== null ||
+              progress.includes('frame='),
+          ),
+        { timeout: 15000 },
+      )
+      .toBe(true)
+    if (recordingError) throw recordingError
+    assert.equal(
+      recorder.exitCode,
+      null,
+      'Desktop recorder exited before input',
+    )
+  }
   app = await electron.launch({
     executablePath: require('electron'),
     args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`, entry],
@@ -238,7 +305,26 @@ try {
           `${theme}-${existing ? 'existing' : 'fallback'}-1100.png`,
         ),
       })
+      let nativeMouse
+      if (nativeInput) {
+        assert.equal(
+          recorder.exitCode,
+          null,
+          'Desktop recorder stopped during validation',
+        )
+        await window.evaluate((window) =>
+          window.setBounds({ x: 100, y: 100, width: 390, height: 600 }),
+        )
+        await expect.poll(() => page.evaluate(() => innerWidth)).toBe(390)
+        nativeMouse = await verifyNativeWindow(
+          app,
+          page,
+          root,
+          `${theme}-${existing ? 'existing' : 'fallback'}`,
+        )
+      }
       results.push({
+        nativeMouse,
         theme,
         existing,
         geometry,
@@ -248,7 +334,7 @@ try {
         cspEnforced: true,
         nativeWindowStates: true,
       })
-      await window.evaluate((window) => window.destroy())
+      if (!nativeInput) await window.evaluate((window) => window.destroy())
     }
   }
   assert.equal(requests.includes('/unexpected-connect'), false)
@@ -276,8 +362,35 @@ try {
     `Shared chrome passed ${results.length} Electron cases with live theme changes, controls and isolated worlds`,
   )
 } finally {
-  await app?.close()
-  await new Promise((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  )
+  try {
+    try {
+      await app?.close()
+    } finally {
+      await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      )
+    }
+  } finally {
+    try {
+      if (recorder?.pid) {
+        const endedEarly =
+          recorder.exitCode !== null || recorder.signalCode !== null
+        if (!endedEarly) recorder.stdin.end('q\n')
+        const timeout = setTimeout(() => recorder.kill(), 15000)
+        try {
+          const [code] = await recorderFinished
+          assert.equal(
+            endedEarly,
+            false,
+            'Desktop recording ended before intentional shutdown',
+          )
+          assert.equal(code, 0, 'Desktop recording must finish successfully')
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
+    } finally {
+      recorderLog?.end()
+    }
+  }
 }

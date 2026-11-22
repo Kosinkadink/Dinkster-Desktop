@@ -114,17 +114,48 @@ export async function verifyNativeWindow(app, page, root, label) {
   await expect
     .poll(() => window.evaluate((window) => window.isFocused()))
     .toBe(true)
-  const before = await capture('before')
+  await capture('before')
+  const control = (await page.locator('#control').count())
+    ? await page.locator('#control').boundingBox()
+    : null
+  if (control) {
+    const before = await window.evaluate((window) => window.getBounds())
+    const content = await window.evaluate((window) => window.getContentBounds())
+    const x = content.x + control.x + control.width / 2
+    const y = content.y + control.y + control.height / 2
+    await mouse('Drag', x, y, x + 90, y + 80)
+    await expect
+      .poll(() => window.evaluate((window) => window.getBounds()))
+      .toEqual(before)
+    await capture('control-not-draggable')
+  }
+  for (const [dx, dy, label] of [
+    [90, 80, 'dragged-down-right'],
+    [-70, -100, 'dragged-up-left'],
+  ]) {
+    const before = await window.evaluate((window) => window.getBounds())
+    const point = await points()
+    await mouse('Drag', point.dragX, point.y, point.dragX + dx, point.y + dy)
+    // Native drag activation consumes cursor travel; window travel is not pixel-identical.
+    // Exercise both directions and reject no-op, wrong-axis, overshoot and resize behavior.
+    await expect
+      .poll(async () => {
+        const bounds = await window.evaluate((window) => window.getBounds())
+        const x = (bounds.x - before.x) / dx
+        const y = (bounds.y - before.y) / dy
+        return (
+          x >= 0.75 &&
+          x <= 1 &&
+          y >= 0.75 &&
+          y <= 1 &&
+          bounds.width === before.width &&
+          bounds.height === before.height
+        )
+      })
+      .toBe(true)
+    await capture(label)
+  }
   let point = await points()
-  await mouse('Drag', point.dragX, point.y, point.dragX + 90, point.y + 80)
-  await expect
-    .poll(async () => {
-      const bounds = await window.evaluate((window) => window.getBounds())
-      return { x: bounds.x - before.bounds.x, y: bounds.y - before.bounds.y }
-    })
-    .toEqual({ x: 90, y: 80 })
-  await capture('dragged')
-  point = await points()
   await mouse('DoubleClick', point.dragX, point.y)
   await expect
     .poll(() => window.evaluate((window) => window.isMaximized()))

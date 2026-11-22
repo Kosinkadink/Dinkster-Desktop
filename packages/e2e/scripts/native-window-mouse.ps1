@@ -56,10 +56,8 @@ public static class NativeMouse {
       if (action == "Drag") {
         int thresholdX = GetSystemMetrics(68), thresholdY = GetSystemMetrics(69);
         Console.WriteLine("{\"thresholdX\":" + thresholdX + ",\"thresholdY\":" + thresholdY + "}");
-        // Include the OS drag threshold in cursor travel, not in asserted window travel.
         for (int step = 1; step <= 20; step++) {
-          Move(window, pid, x + (endX + thresholdX - x) * step / 20,
-            y + (endY + thresholdY - y) * step / 20);
+          Move(window, pid, x + (endX - x) * step / 20, y + (endY - y) * step / 20);
           Thread.Sleep(20);
         }
       } else Thread.Sleep(60);

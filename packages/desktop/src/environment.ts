@@ -12,7 +12,7 @@ import { wslLinuxPath, wslLocation, wslWindowsPath, type WslHost } from './wsl.j
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply' | 'source' | 'restore' | 'library-list' | 'project-get' | 'project-check' | 'project-select'
+export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply' | 'source' | 'restore' | 'library-list' | 'project-get' | 'project-check' | 'project-select' | 'history'
 export type EnvironmentChannel = 'stable' | 'nightly'
 
 export interface DevelopmentSources {
@@ -89,6 +89,20 @@ export interface EnvironmentRequest {
   readonly historyEntry?: number
 }
 
+export interface EnvironmentHistoryEntry {
+  readonly format: 'dinkster.install-history/1'
+  readonly id: number
+  readonly timestamp: string
+  readonly reason: string
+  readonly generation: number
+  readonly exact: boolean
+  readonly kind?: 'activation' | 'import'
+  readonly snapshot: {
+    readonly engine: { readonly version: string; readonly release: string }
+    readonly base: { readonly id: string; readonly variant: string }
+  }
+}
+
 export interface EnvironmentEngine {
   readonly gpus?: readonly string[]
   readonly sandboxPacks?: boolean
@@ -145,6 +159,7 @@ export interface SandboxReadiness {
 
 /** Validated command response; WSL filesystem paths use the native host spelling. */
 export interface EnvironmentResult {
+  readonly history?: readonly EnvironmentHistoryEntry[]
   readonly project?: LibraryProject
   readonly environment?: { readonly id: string; readonly snapshot: string } | null
   readonly library?: LibraryPage
@@ -245,6 +260,11 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
+  if (request.operation === 'history') {
+    if (confirmed || Object.keys(request).some((key) => !['root', 'operation', 'channel'].includes(key))) throw new Error('environment history is read-only')
+    if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
+    return ['--root', request.root, 'history', '--json']
+  }
   if (['project-get', 'project-check', 'project-select'].includes(request.operation)) {
     const selecting = request.operation === 'project-select'
     if (Object.keys(request).some((key) => !['root', 'operation', 'channel', 'libraryProject', ...(selecting ? ['projectRevision'] : [])].includes(key))
@@ -580,6 +600,24 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
         ? binding?.['id'] !== candidate?.['id'] || ![request.projectRevision, request.projectRevision! + 1].includes(Number(project['revision']))
         : project['revision'] !== request.projectRevision))) throw new Error('unsupported project selection response')
   }
+  if (operation === 'history' && row['status'] !== 'error') {
+    const entries = row['history']
+    const ids = new Set<number>()
+    const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+    if (row['status'] !== 'clean' || !Array.isArray(entries) || !entries.every((value: unknown) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+      const entry = value as Record<string, unknown>
+      const snapshot = entry['snapshot'] as EnvironmentHistoryEntry['snapshot'] | undefined
+      if (entry['format'] !== 'dinkster.install-history/1' || !Number.isSafeInteger(entry['id']) || Number(entry['id']) < 1
+        || ids.has(Number(entry['id'])) || !text(entry['timestamp']) || !Number.isFinite(Date.parse(entry['timestamp']))
+        || !text(entry['reason']) || !Number.isSafeInteger(entry['generation']) || Number(entry['generation']) < 1
+        || typeof entry['exact'] !== 'boolean' || (entry['kind'] !== undefined && entry['kind'] !== 'activation' && entry['kind'] !== 'import')
+        || !snapshot || !text(snapshot.engine?.version) || !text(snapshot.engine?.release)
+        || !text(snapshot.base?.id) || !text(snapshot.base?.variant)) return false
+      ids.add(Number(entry['id']))
+      return true
+    })) throw new Error('unsupported environment history response')
+  }
   if (operation === 'library-list' && row['status'] !== 'error') {
     const page = row['library'] as Record<string, unknown> | undefined
     const key = page?.['kind'] === 'projects' ? 'items' : page?.['kind'] === 'workflows' ? 'records' : page?.['kind'] === 'assets' ? 'assets' : undefined
@@ -801,7 +839,7 @@ export class EnvironmentClient {
       }
     }
     const result = resultFrom(stdout, request, confirmed)
-    if (['library-list', 'project-get', 'project-check', 'project-select'].includes(request.operation) && result.root !== request.root) throw new Error('dinkster-env returned a different project root')
+    if (['history', 'library-list', 'project-get', 'project-check', 'project-select'].includes(request.operation) && result.root !== request.root) throw new Error('dinkster-env returned a different project root')
     if (['packs-plan', 'packs-apply', 'source', 'restore'].includes(request.operation)
       && await realpath(result.root) !== await realpath(request.root)) throw new Error('dinkster-env returned a different project root')
     if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))

@@ -211,6 +211,13 @@ registry stores shell bindings, not environment settings.
 
 ## Environment commands
 
+The command client reads durable software history with `history --json`,
+without activation flags or a writer confirmation. It validates each recorded
+entry's identity, date, software descriptors and exactness, keeping the history
+entry ID distinct from the numbered snapshot directory. Duplicate entries,
+malformed records and a response for a different root refuse the read. This
+command does not restore software, edit a project or change cleanup policy.
+
 Before setup, update or catalog inspection uses a release channel, Desktop
 verifies its Ed25519 envelope with independently embedded public keys and
 checks that its signed channel name matches the request. This applies to

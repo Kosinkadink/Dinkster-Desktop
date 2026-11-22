@@ -77,6 +77,36 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('reads software history without activation flags and refuses malformed or wrong-root history', async () => {
+    const { root, client } = await commandFixture()
+    try {
+      const entry = { format: 'dinkster.install-history/1', id: 7, generation: 12,
+        timestamp: '2026-11-22T23:00:00+00:00', reason: 'update', exact: true,
+        snapshot: { engine: { version: '0.0.17', release: `sha256:${'a'.repeat(64)}` },
+          base: { id: `sha256:${'b'.repeat(64)}`, variant: 'cpu' } } }
+      const script = join(root, 'command.cjs')
+      const original = await readFile(script, 'utf8')
+      const response = original.replace("status:error ? 'error' :", "status:operation === 'history' ? 'clean' : error ? 'error' :")
+        .replace('root, current: 2,', `root, current: 2, history: ${JSON.stringify([entry])},`)
+      await writeFile(script, response)
+      expect((await client.run({ root, operation: 'history' })).history).toEqual([entry])
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'history', '--json'])
+      await expect(client.run({ root, operation: 'history' }, true)).rejects.toThrow('read-only')
+      for (const extra of [{ repair: true }, { historyEntry: 7 }, { automaticCleanup: false }, { libraryProject: 'film' }]) {
+        await expect(client.run({ root, operation: 'history', ...extra })).rejects.toThrow('read-only')
+      }
+      for (const history of [null, [entry, entry], [{ ...entry, id: 0 }], [{ ...entry, timestamp: 'invalid' }],
+        [{ ...entry, generation: 0 }], [{ ...entry, exact: 'yes' }], [{ ...entry, snapshot: {} }]]) {
+        await writeFile(script, response.replace(JSON.stringify([entry]), JSON.stringify(history)))
+        await expect(client.run({ root, operation: 'history' })).rejects.toThrow('history response')
+      }
+      await writeFile(script, response.replace(JSON.stringify([entry]), '[]'))
+      expect((await client.run({ root, operation: 'history' })).history).toEqual([])
+      await writeFile(script, response.replace('root, current: 2,', "root: path.join(root, 'other'), current: 2,"))
+      await expect(client.run({ root, operation: 'history' })).rejects.toThrow('different project root')
+    } finally { await client.dispose() }
+  })
+
   it('reads library pages without activation flags and rejects malformed pages', async () => {
     const { root, client } = await commandFixture()
     const script = join(root, 'command.cjs')

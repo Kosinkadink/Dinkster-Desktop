@@ -148,6 +148,9 @@ jobs:
         env:
           DINKSTER_ELECTRON_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
       - run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-library-restore.mjs
+        env:
+          DINKSTER_RESTORE_UI: '1'
+          DINKSTER_SMOKE_ARTIFACTS: test-results/desktop-smoke/library-restore
       - run: mkdir -p test-results/desktop-smoke && xvfb-run --auto-servernum node packages/e2e/scripts/verify-desktop-install.mjs
         env:
           DINKSTER_DESKTOP_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke

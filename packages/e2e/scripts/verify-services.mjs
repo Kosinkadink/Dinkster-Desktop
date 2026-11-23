@@ -271,6 +271,10 @@ async function configuration(directory) {
         if (
           !name.startsWith('runtime/') &&
           name !== 'dinkster-library/.engine.lock' &&
+          !/^dinkster-library\/engine-lifetime-[0-9a-f]{32}-[0-9a-f]{32}\.lock$/.test(
+            name,
+          ) &&
+          !/^engine-state\/[^/]+\/\.working-[0-9a-f]{32}\.lock$/.test(name) &&
           !/^dinkster-library\/helper-[0-9a-f-]{36}\.lock$/.test(name) &&
           name !== 'dinkster-library/worker-state/mounts-snapshot.json' &&
           !/^dinkster-library\/worker-state\/asset-indexes\/[^/]+\.json$/.test(

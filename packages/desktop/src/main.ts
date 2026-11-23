@@ -19,6 +19,7 @@ import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
 import { assetLocations, chooseDirectory, dropResolutionSupported, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from './local-files.js'
+import { saveFile } from './save-file.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
 import { RotatingLog } from './rotating-log.js'
@@ -1422,6 +1423,27 @@ ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: 
     }
     await context.revalidate()
   })
+})
+ipcMain.handle('desktop:save-file', async (event, bytes: unknown, suggestedName: unknown) => {
+  const parent = BrowserWindow.fromWebContents(event.sender)
+  if (!parent) throw new Error('Save requires a Desktop window')
+  const binding = remoteWindows.get(parent)
+  const document = binding?.document
+  const frame = event.senderFrame
+  const url = frame?.url
+  const revalidate = (): void => {
+    if (quitting || parent.isDestroyed() || event.sender.mainFrame !== frame || frame?.url !== url) {
+      throw new Error('The saving window changed')
+    }
+    if (binding) {
+      if (remoteWindows.get(parent) !== binding || binding.document !== document
+        || !isTrustedDesktopIpc(parent.webContents, parent.webContents.mainFrame, new URL(binding.url).origin, event.sender, event.senderFrame)) {
+        throw new Error('Save denied for an untrusted renderer')
+      }
+    } else trustedIpc(event)
+  }
+  revalidate()
+  return saveFile(bytes, suggestedName, parent, revalidate)
 })
 ipcMain.handle('desktop:system-check', async (event) => {
   trustedIpc(event)

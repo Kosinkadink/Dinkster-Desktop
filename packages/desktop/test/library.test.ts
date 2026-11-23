@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { EnvironmentClient } from '../src/environment.js'
 import { DesktopLibrary } from '../src/library.js'
-import { writeProjects } from '../src/projects.js'
+import { readProjects, saveProject, writeProjects } from '../src/projects.js'
 
 it.each(['bound', 'empty', 'changed-project', 'changed-identity', 'changed-snapshot', 'changed-settings'] as const)(
   'reads only authoritative environment software history: %s', async (scenario) => {
@@ -65,6 +65,106 @@ it.each(['bound', 'empty', 'changed-project', 'changed-identity', 'changed-snaps
         await expect(library.history('first', 'beta')).rejects.toThrow(scenario === 'changed-settings' ? 'no saved local environment' : 'changed')
       }
     } finally { await client.dispose() }
+  },
+)
+
+it.each(['every-project', 'only-project', 'stale-project', 'stale-snapshot', 'stale-settings', 'document-changed', 'changed-after-retain', 'settings-during-precheck', 'expires-during-precheck', 'bad-choice', 'activation-failed'] as const)(
+  'retains project software consent and refuses unsafe apply: %s', async (scenario) => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop-library-restore-'))
+    roots.push(root)
+    const source = { id: 'source', name: 'Studio', root: join(root, 'source'), channel: 'stable' as const,
+      engines: [{ id: 'main', name: 'Main', kind: 'local' as const, gpus: [] }] }
+    const target = { ...source, id: 'isolated', name: 'Film environment', root: join(root, 'isolated') }
+    await mkdir(source.root)
+    await writeProjects(root, { version: 1, projects: [source] })
+    const state = join(root, 'state.json'), applied = join(root, 'applied.json'), script = join(root, 'command.cjs')
+    await writeFile(state, '{}')
+    const project = { id: 'film', uid: 'film-global', name: 'Film', revision: 7, deleted: false,
+      environment: { id: 'a'.repeat(32), lastSnapshot: null, lastRunAt: null } }
+    const sibling = { ...project, id: 'sibling', uid: 'sibling-global', name: 'Sibling', revision: 3 }
+    const notice = 'Snapshot 12 cannot open the migrated library without library-helper/1.'
+    await writeFile(script, `
+      const fs=require('node:fs'), args=process.argv.slice(2), root=args[1], operation=args[2];
+      const state=JSON.parse(fs.readFileSync(${JSON.stringify(state)},'utf8')), applied=${JSON.stringify(applied)};
+      const isolated=root===${JSON.stringify(target.root)}, done=fs.existsSync(applied);
+      const project=${JSON.stringify(project)};
+      if(state.changed) project.revision++;
+      if(done && JSON.parse(fs.readFileSync(applied,'utf8')).includes('fork')) { project.revision=8; project.environment.id='b'.repeat(32); }
+      const snapshot=isolated?1:done?3:state.snapshot?4:2;
+      const result={format:'dinkster.environment-result/1',root,operation,status:'clean',current:snapshot,plan:[],
+        project,environment:{id:(isolated?'b':'a').repeat(32),snapshot:String(snapshot)}};
+      if(operation==='restore' || operation==='fork') {
+        const scope=args[args.indexOf('--scope')+1], fork=operation==='fork';
+        const before=${JSON.stringify(project)};
+        result.restorePlan={format:'dinkster.restore-plan/1',entry:7,exact:false,missing:[],scope,
+          projectReview:{library:'private-library-path',environment:before.environment.id,project:before,
+            projects:[before,${JSON.stringify(sibling)}].map(project=>({project,needs:{}}))},
+          alternatives:['c','d'].map((key,index)=>({approval:'sha256:'+key.repeat(64),
+            snapshot:{engine:{version:index?'0.3.0':'0.2.0',release:index?'release-b':'release-a'},
+              base:{id:'cpu',variant:'cpu'},metadata:{private:'private-software-recovery'}},substitutions:[{field:'engine'}]})),
+          ...(fork?{fork:{source:root,destination:${JSON.stringify(target.root)}}}:{})};
+        result.status=args.includes('--approve')?'applied':'approval-required'; result.restoredFrom=7;
+        result.plan=[${JSON.stringify(notice)},'private-software-recovery'];
+        if(fork) result.destination=${JSON.stringify(target.root)};
+        if(args.includes('--approve')) {
+          if(args[args.indexOf('--approve')+1]!=='sha256:'+'d'.repeat(64)) process.exit(3);
+          if(fork && !JSON.parse(fs.readFileSync(${JSON.stringify(join(root, 'projects.json'))},'utf8')).projects.some(p=>p.id==='isolated')) process.exit(4);
+          if(fork) fs.mkdirSync(${JSON.stringify(target.root)});
+          fs.writeFileSync(applied,JSON.stringify(args));
+          result.current=fork?1:3;result.engines=[];
+          if(fork) {result.project={...before,revision:8,environment:{...before.environment,id:'b'.repeat(32)}};
+            result.environment={id:'b'.repeat(32),snapshot:'1'};}
+        } else {result.current=fork?null:2;delete result.environment;delete result.project;}
+      }
+      if(operation==='project-check' && state.settingsDuringCheck) {
+        const path=${JSON.stringify(join(root, 'projects.json'))};
+        const saved=JSON.parse(fs.readFileSync(path,'utf8'));saved.projects[0].name='Changed';fs.writeFileSync(path,JSON.stringify(saved));
+      }
+      console.log(JSON.stringify(result));
+    `)
+    const client = new EnvironmentClient(process.execPath, [script])
+    let trusted = true, activation = ''
+    const check = () => { if (!trusted) throw new Error('document changed') }
+    const library = new DesktopLibrary(root, client, {
+      fork: async () => ({ installation: target, destination: target.root, retain: async () => {
+        await writeProjects(root, saveProject(await readProjects(root), target))
+        if (scenario === 'changed-after-retain') await writeFile(state, '{"changed":true}')
+        if (scenario === 'settings-during-precheck') await writeFile(state, '{"settingsDuringCheck":true}')
+        if (scenario === 'expires-during-precheck') vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 900_000)
+      } }),
+      activate: async (installation, identifier, result, trust) => {
+        trust()
+        expect(identifier).toBe('film')
+        expect(result.status).toBe('applied')
+        if (scenario === 'activation-failed') throw new Error('activation failed')
+        activation = installation.id
+      },
+    })
+    const scope = ['only-project', 'changed-after-retain', 'settings-during-precheck', 'expires-during-precheck'].includes(scenario) ? 'only-project' : 'every-project'
+    try {
+      const review = await library.reviewRestore('source', 'film', 7, scope, check)
+      expect(review.projects.map((item) => item.name)).toEqual(scope === 'only-project' ? ['Film'] : ['Film', 'Sibling'])
+      expect(review.alternatives.map((item) => item.snapshot.engine.release)).toEqual(['release-a', 'release-b'])
+      expect(review.notices).toEqual([notice])
+      expect(JSON.stringify(review)).not.toMatch(/private-|sha256:|command.cjs/)
+      expect((await readProjects(root)).projects).toHaveLength(1)
+      if (scenario === 'stale-project') await writeFile(state, '{"changed":true}')
+      if (scenario === 'stale-snapshot') await writeFile(state, '{"snapshot":true}')
+      if (scenario === 'stale-settings') await writeProjects(root, { version: 1, projects: [{ ...source, name: 'Changed' }] })
+      if (scenario === 'document-changed') trusted = false
+      if (scenario === 'every-project' || scenario === 'only-project') {
+        await library.applyRestore(review.token, 1, check)
+        expect(activation).toBe(scope === 'only-project' ? 'isolated' : 'source')
+        const args: string[] = JSON.parse(await readFile(applied, 'utf8'))
+        expect(args.slice(args.indexOf('--approve'), args.indexOf('--approve') + 2)).toEqual(['--approve', `sha256:${'d'.repeat(64)}`])
+      } else {
+        await expect(library.applyRestore(review.token, scenario === 'bad-choice' ? 2 : 1, check)).rejects.toThrow()
+        expect(activation).toBe('')
+        if (scenario !== 'activation-failed') await expect(readFile(applied, 'utf8')).rejects.toThrow()
+      }
+      trusted = true
+      await expect(library.applyRestore(review.token, 1, check)).rejects.toThrow('expired')
+    } finally { vi.restoreAllMocks(); await client.dispose() }
   },
 )
 

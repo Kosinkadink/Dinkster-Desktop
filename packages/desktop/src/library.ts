@@ -1,4 +1,6 @@
-import type { EnvironmentClient, EnvironmentHistoryEntry, EnvironmentResult, LibraryListKind, LibraryProject } from './environment.js'
+import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
+import type { EnvironmentClient, EnvironmentHistoryEntry, EnvironmentRequest, EnvironmentResult, LibraryListKind, LibraryProject } from './environment.js'
 import { readProjects, type DesktopProject } from './projects.js'
 
 export interface LibraryEntry {
@@ -20,7 +22,36 @@ export interface LibraryHistory {
   readonly notices: readonly string[]
 }
 
+export interface LibrarySelection {
+  readonly installation: DesktopProject
+  readonly project: LibraryProject
+  readonly environment: NonNullable<EnvironmentResult['environment']>
+}
+
+export interface LibraryFork {
+  readonly installation: DesktopProject
+  readonly destination: string
+  readonly retain: () => Promise<void>
+}
+
+export interface LibraryRestoreReview {
+  readonly token: string
+  readonly scope: 'every-project' | 'only-project'
+  readonly installation: LibraryEntry
+  readonly project: LibraryProject
+  readonly entry: number
+  readonly projects: readonly LibraryProject[]
+  readonly alternatives: readonly {
+    readonly snapshot: EnvironmentHistoryEntry['snapshot']
+    readonly changes: readonly string[]
+  }[]
+  readonly notices: readonly string[]
+  readonly expiresInSeconds: number
+}
+
 export interface DesktopLibraryBridge {
+  reviewRestore(installation: string, project: string, entry: number, scope: 'every-project' | 'only-project'): Promise<LibraryRestoreReview>
+  applyRestore(token: string, alternative: number): Promise<void>
   history(installation: string, project: string): Promise<LibraryHistory>
   open(installation: string, project: string): Promise<void>
   installations(): Promise<readonly LibraryEntry[]>
@@ -33,7 +64,105 @@ const unavailable = 'By the way, these projects and files cannot be shown with t
 
 /** Resolve only saved installations; renderer inputs never choose filesystem paths. */
 export class DesktopLibrary {
-  constructor(private readonly directory: string, private readonly tools: Pick<EnvironmentClient, 'run'>) {}
+  private pendingRestore: {
+    token: string
+    expires: number
+    selected: LibrarySelection
+    request: EnvironmentRequest
+    approvals: readonly string[]
+    fork?: LibraryFork
+    trusted: () => void
+  } | undefined
+
+  constructor(private readonly directory: string, private readonly tools: Pick<EnvironmentClient, 'run'>,
+    private readonly restore?: {
+      readonly fork: (selected: LibrarySelection) => Promise<LibraryFork>
+      readonly activate: (installation: DesktopProject, project: string, result: EnvironmentResult, trusted: () => void) => Promise<void>
+    }) {}
+
+  discardRestore(): void {
+    this.pendingRestore = undefined
+  }
+
+  async reviewRestore(installation: string, identifier: string, entry: number,
+    scope: 'every-project' | 'only-project', trusted: () => void): Promise<LibraryRestoreReview> {
+    this.discardRestore()
+    trusted()
+    if (!this.restore || !Number.isSafeInteger(entry) || entry < 1
+      || !['every-project', 'only-project'].includes(scope)) throw new Error('invalid software restore review')
+    const selected = await this.prepareOpen(installation, identifier)
+    const fork = scope === 'only-project' ? await this.restore.fork(selected) : undefined
+    const request: EnvironmentRequest = {
+      root: selected.installation.root!, channel: selected.installation.channel,
+      operation: fork ? 'fork' : 'restore', historyEntry: entry,
+      libraryProject: selected.project.id, projectRevision: selected.project.revision, restoreScope: scope,
+      ...(fork ? { destination: fork.destination } : {}),
+    }
+    const result = await this.tools.run(request)
+    const plan = result.restorePlan
+    const review = plan?.['projectReview'] as { project: LibraryProject; projects: { project: LibraryProject }[] } | undefined
+    const alternatives = plan?.['alternatives'] as { approval: string; snapshot: EnvironmentHistoryEntry['snapshot']; substitutions: { field: string }[] }[] | undefined
+    if (result.status !== 'approval-required' || !review || !isDeepStrictEqual(review.project, selected.project)
+      || !alternatives || !isDeepStrictEqual(await this.prepareOpen(installation, identifier), selected)) {
+      throw new Error('project or environment changed; review the restore again')
+    }
+    const display = alternatives.map((alternative) => {
+      const { engine, base } = alternative.snapshot
+      if (!engine || !base || ![engine.version, engine.release, base.id, base.variant].every((value) => typeof value === 'string' && value)
+        || !alternative.substitutions.every((change) => typeof change.field === 'string' && change.field)) throw new Error('unsupported restore software description')
+      return { snapshot: { engine: { version: engine.version, release: engine.release }, base: { id: base.id, variant: base.variant } },
+        changes: alternative.substitutions.map((change) => change.field) }
+    })
+    trusted()
+    const token = randomUUID()
+    this.pendingRestore = { token, expires: Date.now() + 900_000, selected, request,
+      approvals: alternatives.map((alternative) => alternative.approval), trusted, ...(fork ? { fork } : {}) }
+    return { token, scope, installation: { id: selected.installation.id, name: selected.installation.name },
+      project: selected.project, entry, projects: scope === 'only-project' ? [selected.project] : review.projects.map((row) => row.project),
+      alternatives: display, notices: result.plan.filter((line) => /library-helper\/1|migrated library/.test(line)), expiresInSeconds: 900 }
+  }
+
+  async applyRestore(token: string, alternative: number, trusted: () => void): Promise<void> {
+    const pending = this.pendingRestore
+    this.discardRestore()
+    trusted()
+    if (!this.restore || !pending || pending.token !== token || Date.now() >= pending.expires
+      || !Number.isSafeInteger(alternative) || alternative < 0 || alternative >= pending.approvals.length) {
+      throw new Error('the restore review expired; review it again')
+    }
+    pending.trusted()
+    const selected = pending.selected
+    if (!isDeepStrictEqual(await this.prepareOpen(selected.installation.id, selected.project.id), selected)) {
+      throw new Error('project or environment changed; review the restore again')
+    }
+    trusted()
+    pending.trusted()
+    await pending.fork?.retain()
+    const checked = await this.tools.run({ root: selected.installation.root!, channel: selected.installation.channel,
+      operation: 'project-check', libraryProject: selected.project.id })
+    if (checked.status !== 'clean' || !isDeepStrictEqual(checked.project, selected.project)
+      || !isDeepStrictEqual(checked.environment, selected.environment)) throw new Error('project or environment changed; review the restore again')
+    const saved = await readProjects(this.directory)
+    if (!isDeepStrictEqual(saved.projects.find((item) => item.id === selected.installation.id), selected.installation)
+      || (pending.fork && !isDeepStrictEqual(saved.projects.find((item) => item.id === pending.fork!.installation.id), pending.fork.installation))) {
+      throw new Error('saved environments changed; review the restore again')
+    }
+    trusted()
+    pending.trusted()
+    if (Date.now() >= pending.expires) throw new Error('the restore review expired; review it again')
+    const result = await this.tools.run({ ...pending.request, approval: pending.approvals[alternative]! }, true)
+    trusted()
+    pending.trusted()
+    if (result.status !== 'applied') throw new Error('software restore did not apply; inspect environment status')
+    const target = pending.fork?.installation ?? selected.installation
+    const opened = await this.prepareOpen(target.id, selected.project.id)
+    if (!isDeepStrictEqual(opened.installation, target) || opened.project.uid !== selected.project.uid
+      || opened.environment.id !== (pending.fork ? result.environment?.id : selected.environment.id)
+      || opened.environment.snapshot !== String(result.current)) throw new Error('restored environment requires readback before opening')
+    trusted()
+    pending.trusted()
+    await this.restore.activate(target, selected.project.id, result, () => { trusted(); pending.trusted() })
+  }
 
   async installations(): Promise<readonly LibraryEntry[]> {
     return (await readProjects(this.directory)).projects.filter((project) => project.root !== undefined)

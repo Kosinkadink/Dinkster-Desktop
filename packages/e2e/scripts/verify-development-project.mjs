@@ -278,6 +278,7 @@ try {
       'resolveDroppedFile',
       'revealFile',
       'revealModelLocation',
+      'saveFile',
     ],
   )
   const served = await fetch(`http://127.0.0.1:${port}/`)

@@ -153,7 +153,7 @@ async function mark(page, selection, kind) {
         const elements = [
           document.body,
           ...document.querySelectorAll(
-            'body > header, .topbar > .topbar-group-left, .dinkster-topbar > .dinkster-brand',
+            'body > header, .topbar > .topbar-group-left, .dinkster-topbar .dinkster-brand',
           ),
         ]
         return (
@@ -825,7 +825,7 @@ try {
             manager.evaluate(() =>
               getComputedStyle(
                 document.querySelector(
-                  'body > header, .dinkster-topbar > .dinkster-brand',
+                  'body > header, .dinkster-topbar .dinkster-brand',
                 ),
                 '::after',
               ).content.includes('[QA]'),

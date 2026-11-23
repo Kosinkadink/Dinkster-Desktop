@@ -45,7 +45,7 @@ export function installWindowChrome(window: BrowserWindow, development: () => bo
       }
     ` : ''
     const servicesMark = services === 'qa' ? `
-      .topbar > .topbar-group-left::after, .dinkster-topbar > .dinkster-brand::after, body > header::after {
+      .topbar > .topbar-group-left::after, .dinkster-topbar .dinkster-brand::after, body > header::after {
         content: '[QA]'; flex-shrink: 0; margin-left: 8px;
         color: #ededed; font: bold 12px system-ui, sans-serif;
         pointer-events: none; -webkit-app-region: no-drag;

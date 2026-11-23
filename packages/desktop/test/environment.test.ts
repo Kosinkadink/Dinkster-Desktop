@@ -431,12 +431,12 @@ describe('Desktop dinkster-env command client', () => {
     if (settingsFile === 'environment.json') await writeFile(join(root, 'project.json'), JSON.stringify({ migrated: true }))
     await writeFile(join(root, settingsFile), JSON.stringify({ channel: 'nightly', mirrors: [root] }))
     await writeFile(channel, channelFixture({ format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.1' }))
-    for (const operation of ['setup', 'update', 'catalog'] as const) {
+    for (const operation of ['setup', 'update', 'catalog', 'start'] as const) {
       await expect(client.run({ root, operation })).rejects.toThrow('DesktopVersionTooOld: channel requires Desktop 0.2.1')
       await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
     }
     await rm(channel)
-    for (const operation of ['start', 'status', 'doctor', 'stop'] as const) {
+    for (const operation of ['status', 'doctor', 'stop'] as const) {
       expect((await client.run({ root, operation }, true)).operation).toBe(operation)
     }
     for (const minimumDesktopVersion of ['0.2.0', '0.1.99']) {
@@ -470,7 +470,7 @@ describe('Desktop dinkster-env command client', () => {
     await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
   })
 
-  it('selects a channel tools pin before the packaged payload for a supported channel', async () => {
+  it.each(['setup', 'update', 'catalog', 'start'] as const)('selects channel tools before the bundle for %s and falls back only without a tools pin', async (operation) => {
     const { root } = await commandFixture()
     await mkdir(join(root, 'channels'))
     const manifest = join(root, 'newer-tools.json')
@@ -483,8 +483,15 @@ describe('Desktop dinkster-env command client', () => {
       { manifest: join(root, 'bundle-must-not-open'), sha256: 'b'.repeat(64), release: root }, '0.2.0')
     // A checksum error from the channel's real file, not ENOENT from the bundle,
     // proves selection and that the channel pin still goes through verification.
-    await expect(client.run({ root, operation: 'setup', channel: 'nightly', mirrors: [root] })).rejects.toThrow('checksum mismatch')
+    await writeFile(join(root, 'project.json'), JSON.stringify({ channel: 'nightly', mirrors: [root] }))
+    await expect(client.run({ root, operation })).rejects.toThrow('checksum mismatch')
     await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
+    await writeFile(join(root, 'channels', 'nightly.json'), channelFixture({
+      format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0',
+    }))
+    await expect(client.run({ root, operation })).rejects.toThrow('bundle-must-not-open')
+    await rm(join(root, 'channels', 'nightly.json'))
+    await expect(client.run({ root, operation })).rejects.toThrow('no mirror supplied a valid trusted channel')
     await client.dispose()
   })
 

@@ -43,9 +43,9 @@ function validToolsPin(tools: Record<string, unknown>): tools is Record<string, 
   return false
 }
 
-/** Installed engine operations never consult mutable channel metadata. */
+/** Launch and channel-changing operations use the channel's tools; diagnostics stay offline. */
 export async function channelTools(request: EnvironmentRequest, desktopVersion: string): Promise<EnvironmentToolsInput | undefined> {
-  if (!['setup', 'update', 'catalog'].includes(request.operation)) return undefined
+  if (!['setup', 'update', 'catalog', 'start'].includes(request.operation)) return undefined
   let settings: { channel?: string; mirrors?: string[] } = {}
   for (const name of ['environment.json', 'project.json']) {
     try {

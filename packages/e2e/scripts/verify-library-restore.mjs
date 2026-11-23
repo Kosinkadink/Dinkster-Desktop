@@ -23,6 +23,10 @@ try {
     'document-during-handoff',
     'selection-during-handoff',
     'settings-during-handoff',
+    'isolated-document-during-start',
+    'isolated-selection-during-start',
+    'isolated-settings-during-start',
+    'isolated-document-during-load',
   ]) {
     const root = join(scratch, scenario)
     await mkdir(join(root, 'desktop'), { recursive: true })
@@ -36,6 +40,13 @@ try {
         'Isolated supervisor',
       ]) {
         const server = createServer(async (request, response) => {
+          if (
+            title === 'Isolated supervisor' &&
+            scenario === 'isolated-document-during-load' &&
+            request.url !== '/favicon.ico' &&
+            !request.url.startsWith('/api/')
+          )
+            await library.reload()
           if (
             title === 'Restored supervisor' &&
             request.url === '/api/nodes?wire=1'
@@ -52,6 +63,27 @@ try {
               const file = join(root, 'desktop/projects.json')
               const saved = JSON.parse(await readFile(file, 'utf8'))
               saved.projects[0].name = 'Changed environment'
+              await writeFile(file, JSON.stringify(saved))
+            }
+          }
+          if (
+            title === 'Isolated supervisor' &&
+            request.url === '/api/nodes?wire=1'
+          ) {
+            if (scenario === 'isolated-document-during-start')
+              await library.reload()
+            if (scenario === 'isolated-selection-during-start') {
+              const current = JSON.parse(await readFile(statePath, 'utf8'))
+              await writeFile(
+                statePath,
+                JSON.stringify({ ...current, revision: current.revision + 1 }),
+              )
+            }
+            if (scenario === 'isolated-settings-during-start') {
+              const file = join(root, 'desktop/projects.json')
+              const saved = JSON.parse(await readFile(file, 'utf8'))
+              saved.projects.find((project) => project.root !== source).name =
+                'Changed destination'
               await writeFile(file, JSON.stringify(saved))
             }
           }
@@ -174,11 +206,11 @@ try {
         state.environments[source].running = false
         await writeFile(statePath, JSON.stringify(state))
       }
-      const scope = ['isolated', 'start-failure', 'stop-uncertain'].includes(
-        scenario,
-      )
-        ? 'only-project'
-        : 'every-project'
+      const scope =
+        scenario.startsWith('isolated') ||
+        ['start-failure', 'stop-uncertain'].includes(scenario)
+          ? 'only-project'
+          : 'every-project'
       const review = await library.evaluate(
         (scope) =>
           window.dinksterLibrary.reviewRestore('source', 'film', 1, scope),
@@ -206,23 +238,37 @@ try {
           }
         }, review.token)
         .catch((error) => {
-          if (scenario !== 'document-during-handoff') throw error
+          if (
+            ![
+              'document-during-handoff',
+              'isolated-document-during-start',
+              'isolated-document-during-load',
+            ].includes(scenario)
+          )
+            throw error
           assert.match(error.message, /Execution context was destroyed/)
           return { ok: false }
         })
-      if (scenario === 'document-during-handoff') {
+      if (
+        [
+          'document-during-handoff',
+          'isolated-document-during-start',
+          'isolated-document-during-load',
+        ].includes(scenario)
+      ) {
         await library.waitForFunction(
           () => typeof window.dinksterLibrary?.reviewRestore === 'function',
         )
-        // A serialized review waits for the interrupted Apply to finish.
-        await library.evaluate(() =>
-          window.dinksterLibrary.reviewRestore(
-            'source',
-            'film',
-            1,
-            'every-project',
-          ),
-        )
+        // A serialized replay waits for the interrupted Apply to finish.
+        const replay = await library.evaluate(async (token) => {
+          try {
+            await window.dinksterLibrary.applyRestore(token, 0)
+            return true
+          } catch {
+            return false
+          }
+        }, review.token)
+        assert.equal(replay, false)
       }
       const after = JSON.parse(await readFile(statePath, 'utf8'))
       if (scope === 'only-project') {
@@ -259,7 +305,11 @@ try {
           1,
         )
         await expect(engine.locator('h1')).toHaveText('Original supervisor')
-      } else if (scenario === 'start-failure') {
+      } else if (
+        scenario.endsWith('-during-start') ||
+        scenario.endsWith('-during-load') ||
+        scenario === 'start-failure'
+      ) {
         assert.equal(apply.ok, false)
         assert.equal(after.environments[source].running, true)
         assert.equal(
@@ -268,6 +318,7 @@ try {
           1,
         )
         assert.equal(after.environments[source].snapshot, 2)
+        assert.equal(app.windows().length, 2)
         await expect(engine.locator('h1')).toHaveText('Original supervisor')
       } else {
         assert.equal(apply.ok, true, JSON.stringify(apply))

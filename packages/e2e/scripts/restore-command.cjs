@@ -44,7 +44,33 @@ const engine = () => ({
   gpus: [],
 })
 if (operation === 'status') result.engines = [engine()]
-else if (operation === 'project-get' || operation === 'project-check') {
+else if (operation === 'library-list') {
+  const kind = args[3]
+  result.library = {
+    kind,
+    cursor: null,
+    ...(kind === 'projects'
+      ? { items: [{ id: project.id, name: project.name }] }
+      : kind === 'workflows'
+        ? { records: [] }
+        : { assets: [] }),
+  }
+} else if (operation === 'history') {
+  result.history = [
+    {
+      format: 'dinkster.install-history/1',
+      id: 1,
+      generation: 7,
+      timestamp: '2026-11-22T22:00:00Z',
+      reason: 'update',
+      exact: true,
+      snapshot: {
+        engine: { version: '1.0', release: 'recorded-release' },
+        base: { id: 'cpu', variant: 'cpu' },
+      },
+    },
+  ]
+} else if (operation === 'project-get' || operation === 'project-check') {
   result.project = project
   result.environment = {
     id: environment.id,
@@ -86,6 +112,20 @@ else if (operation === 'project-get' || operation === 'project-check') {
         },
         substitutions: [],
       },
+      {
+        approval: 'sha256:' + 'd'.repeat(64),
+        snapshot: {
+          engine: { version: '1.1', release: 'c'.repeat(64) },
+          base: { id: 'cpu', variant: 'cpu' },
+        },
+        substitutions: [
+          {
+            field: 'engine',
+            before: { version: '1.0', release: 'recorded-release' },
+            after: { version: '1.1', release: 'c'.repeat(64) },
+          },
+        ],
+      },
     ],
     ...(fork ? { fork: { source: root, destination } } : {}),
   }
@@ -96,7 +136,10 @@ else if (operation === 'project-get' || operation === 'project-check') {
     result.current = null
   }
   if (args.includes('--approve')) {
-    if (args[args.indexOf('--approve') + 1] !== approval)
+    if (
+      args[args.indexOf('--approve') + 1] !==
+      (state.interactive ? 'sha256:' + 'd'.repeat(64) : approval)
+    )
       throw new Error('wrong approval')
     if (fork) {
       const saved = JSON.parse(

@@ -11,8 +11,9 @@ import { _electron as electron, expect } from '@playwright/test'
 const scripts = dirname(fileURLToPath(import.meta.url))
 const repo = resolve(scripts, '../../..')
 const scratch = await mkdtemp(join(tmpdir(), 'dinkster-library-restore-'))
+const artifacts = process.env.DINKSTER_SMOKE_ARTIFACTS
 try {
-  for (const scenario of [
+  for (const name of [
     'shared',
     'stopped-source',
     'isolated',
@@ -27,8 +28,13 @@ try {
     'isolated-selection-during-start',
     'isolated-settings-during-start',
     'isolated-document-during-load',
+    ...(process.env.DINKSTER_RESTORE_UI === '1'
+      ? ['ui-shared', 'ui-isolated', 'ui-selection-changed', 'ui-start-failure']
+      : []),
   ]) {
-    const root = join(scratch, scenario)
+    const interactive = name.startsWith('ui-')
+    const scenario = interactive ? name.slice(3) : name
+    const root = join(scratch, name)
     await mkdir(join(root, 'desktop'), { recursive: true })
     await mkdir(join(root, 'source'))
     const servers = []
@@ -121,6 +127,7 @@ try {
         statePath = join(root, 'state.json')
       let state = {
         scenario,
+        interactive,
         source,
         urls,
         environments: {
@@ -211,13 +218,80 @@ try {
         ['start-failure', 'stop-uncertain'].includes(scenario)
           ? 'only-project'
           : 'every-project'
-      const review = await library.evaluate(
-        (scope) =>
-          window.dinksterLibrary.reviewRestore('source', 'film', 1, scope),
-        scope,
-      )
-      assert.equal(review.projects.length, scope === 'only-project' ? 1 : 2)
-      assert.equal(JSON.stringify(review).includes(root), false)
+      let review
+      const dialog = library.getByRole('dialog', {
+        name: 'Restore snapshot 7',
+        exact: true,
+      })
+      if (interactive) {
+        await library.setViewportSize({ width: 1280, height: 1200 })
+        await library
+          .getByRole('button', { name: 'View projects', exact: true })
+          .click()
+        await library
+          .getByRole('button', { name: 'View assets', exact: true })
+          .click()
+        await library
+          .getByRole('button', { name: 'Review restore', exact: true })
+          .click()
+        await expect(
+          dialog.getByRole('button', { name: 'Review changes', exact: true }),
+        ).toBeDisabled()
+        await dialog
+          .getByLabel('Who should use this software?')
+          .selectOption(scope)
+        await dialog
+          .getByRole('button', { name: 'Review changes', exact: true })
+          .click()
+        await expect(
+          dialog
+            .getByRole('list', { name: 'Affected projects' })
+            .getByRole('listitem'),
+        ).toHaveCount(scope === 'only-project' ? 1 : 2)
+        await expect(dialog).toContainText('History entry 1.')
+        await expect(
+          dialog.getByRole('list', { name: 'Selected software' }),
+        ).toContainText('Engine 1.0')
+        await expect(
+          dialog.getByRole('list', { name: 'Software substitutions' }),
+        ).toContainText('No software substitutions')
+        await dialog.getByLabel('Software alternative').selectOption('1')
+        await expect(
+          dialog.getByRole('list', { name: 'Selected software' }),
+        ).toContainText('Engine 1.1')
+        await expect(
+          dialog.getByRole('list', { name: 'Software substitutions' }),
+        ).toContainText(
+          'Recorded: Version: 1.0; Release: recorded-release. Restore with: Version: 1.1;',
+        )
+        const beforeApply = (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .map(JSON.parse)
+        assert.equal(
+          beforeApply.some((args) => args.includes('--approve')),
+          false,
+        )
+        assert.equal(
+          beforeApply.filter((args) => args[2] === 'start').length,
+          1,
+        )
+        assert.equal((await dialog.textContent()).includes(root), false)
+        if (artifacts) {
+          await mkdir(artifacts, { recursive: true })
+          await library.screenshot({
+            path: join(artifacts, `${name}-review.png`),
+          })
+        }
+      } else {
+        review = await library.evaluate(
+          (scope) =>
+            window.dinksterLibrary.reviewRestore('source', 'film', 1, scope),
+          scope,
+        )
+        assert.equal(review.projects.length, scope === 'only-project' ? 1 : 2)
+        assert.equal(JSON.stringify(review).includes(root), false)
+      }
       if (scenario === 'document-changed') {
         await library.reload()
         await library.waitForFunction(
@@ -228,27 +302,61 @@ try {
         state.revision++
         await writeFile(statePath, JSON.stringify(state))
       }
-      const apply = await library
-        .evaluate(async (token) => {
-          try {
-            await window.dinksterLibrary.applyRestore(token, 0)
+      const apply = interactive
+        ? await (async () => {
+            await dialog
+              .getByRole('button', { name: 'Apply restore', exact: true })
+              .click()
+            if (['selection-changed', 'start-failure'].includes(scenario)) {
+              await expect(dialog.getByRole('alert')).toContainText(
+                'Software or the project selection may already have changed.',
+              )
+              await expect(
+                dialog.getByRole('button', {
+                  name: 'Apply restore',
+                  exact: true,
+                }),
+              ).toHaveCount(0)
+              assert.equal((await dialog.textContent()).includes(root), false)
+              return { ok: false }
+            }
+            await expect(dialog).toHaveCount(0)
+            await expect(
+              library
+                .getByRole('status')
+                .filter({ hasText: 'Software restored and project opened.' }),
+            ).toBeVisible()
+            await expect(
+              library.getByRole('region', {
+                name: 'Environment software history',
+                exact: true,
+              }),
+            ).toContainText(
+              `active snapshot ${scope === 'only-project' ? 1 : 3}.`,
+            )
             return { ok: true }
-          } catch (error) {
-            return { ok: false, error: error.message }
-          }
-        }, review.token)
-        .catch((error) => {
-          if (
-            ![
-              'document-during-handoff',
-              'isolated-document-during-start',
-              'isolated-document-during-load',
-            ].includes(scenario)
-          )
-            throw error
-          assert.match(error.message, /Execution context was destroyed/)
-          return { ok: false }
-        })
+          })()
+        : await library
+            .evaluate(async (token) => {
+              try {
+                await window.dinksterLibrary.applyRestore(token, 0)
+                return { ok: true }
+              } catch (error) {
+                return { ok: false, error: error.message }
+              }
+            }, review.token)
+            .catch((error) => {
+              if (
+                ![
+                  'document-during-handoff',
+                  'isolated-document-during-start',
+                  'isolated-document-during-load',
+                ].includes(scenario)
+              )
+                throw error
+              assert.match(error.message, /Execution context was destroyed/)
+              return { ok: false }
+            })
       if (
         [
           'document-during-handoff',
@@ -349,17 +457,29 @@ try {
           await expect(engine.locator('h1')).toHaveText('Original supervisor')
           assert.equal(calls.filter((args) => args[2] === 'start').length, 1)
         }
-        const replay = await library.evaluate(async (token) => {
-          try {
-            await window.dinksterLibrary.applyRestore(token, 0)
-            return true
-          } catch {
-            return false
-          }
-        }, review.token)
-        assert.equal(replay, false)
+        if (interactive) {
+          assert.equal(
+            calls.filter((args) => args.includes('--approve')).length,
+            1,
+          )
+        } else {
+          const replay = await library.evaluate(async (token) => {
+            try {
+              await window.dinksterLibrary.applyRestore(token, 0)
+              return true
+            } catch {
+              return false
+            }
+          }, review.token)
+          assert.equal(replay, false)
+        }
       }
-      console.log(`Library software restore: ${scenario} passed`)
+      if (interactive && artifacts) {
+        await library.screenshot({
+          path: join(artifacts, `${name}-result.png`),
+        })
+      }
+      console.log(`Library software restore: ${name} passed`)
     } finally {
       if (app) await app.close()
       await Promise.all(

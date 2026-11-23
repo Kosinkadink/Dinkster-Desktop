@@ -148,7 +148,7 @@ export class DesktopLibrary {
   constructor(private readonly directory: string, private readonly tools: Pick<EnvironmentClient, 'run'>,
     private readonly restore?: {
       readonly fork: (selected: LibrarySelection) => Promise<LibraryFork>
-      readonly activate: (installation: DesktopProject, project: string, result: EnvironmentResult, trusted: () => void) => Promise<void>
+      readonly activate: (installation: DesktopProject, project: string, result: EnvironmentResult, trusted: () => void, validate: () => Promise<void>) => Promise<void>
     }) {}
 
   discardRestore(): void {
@@ -233,7 +233,15 @@ export class DesktopLibrary {
       || opened.environment.snapshot !== String(result.current)) throw new Error('restored environment requires readback before opening')
     trusted()
     pending.trusted()
-    await this.restore.activate(target, selected.project.id, result, () => { trusted(); pending.trusted() })
+    await this.restore.activate(target, selected.project.id, result, () => { trusted(); pending.trusted() }, async () => {
+      trusted()
+      pending.trusted()
+      if (!isDeepStrictEqual(await this.prepareOpen(target.id, selected.project.id), opened)) {
+        throw new Error('restored project or environment changed before activation; inspect environment status')
+      }
+      trusted()
+      pending.trusted()
+    })
   }
 
   async installations(): Promise<readonly LibraryEntry[]> {

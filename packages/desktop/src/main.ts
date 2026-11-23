@@ -292,10 +292,10 @@ const library = new DesktopLibrary(dataDirectory, environmentClient, {
     if (!engine) throw new Error('project environment has no unambiguous local engine')
     return prepareProjectFork(selected.installation, engine.id, selected.project)
   },
-  activate: async (target, project, result, trusted) => {
+  activate: async (target, project, result, trusted, validate) => {
     trusted()
     if (result.destination !== undefined) await openLibraryProject(target.id, project, trusted)
-    else await handoffProject(target, result)
+    else await handoffProject(target, result, false, validate)
   },
 })
 
@@ -572,13 +572,18 @@ function localEngineUrl(project: DesktopProject, engineId: string, result: Envir
   return address
 }
 
-async function handoffProject(project: DesktopProject, result: EnvironmentResult, preserve = false): Promise<void> {
+async function handoffProject(project: DesktopProject, result: EnvironmentResult, preserve = false,
+  validate?: () => Promise<void>): Promise<void> {
   const status = await environmentClient.run({ root: project.root!, operation: 'status' })
+  await validate?.()
   for (const [managed, binding] of remoteWindows) {
     if (binding.projectId !== project.id || managed.isDestroyed()) continue
     if (!project.engines.some((engine) => engine.id === binding.engineId && engine.kind === 'local')) continue
+    // A restore preserves stopped engines; their windows must not reopen them.
+    if (result.engines !== undefined && !result.engines.some((engine) => engine.name === binding.engineId && engine.state !== 'stopped')) continue
     const url = localEngineUrl(project, binding.engineId, result)
     if (await engineServices(url) !== services) throw new Error(`The updated engine did not select ${services} services.`)
+    await validate?.()
     binding.backendUrl = url
     binding.development = status.sourceDescription !== undefined
     if (binding.gateway) binding.gateway.setTarget(url)

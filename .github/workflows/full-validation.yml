@@ -13,6 +13,8 @@ on:
       - 'packages/desktop/electron-builder*.mjs'
       - 'packages/desktop/package.json'
       - 'packages/e2e/scripts/verify-environment-client.mjs'
+      - 'packages/e2e/scripts/verify-library-restore.mjs'
+      - 'packages/e2e/scripts/restore-command.cjs'
       - 'packages/e2e/scripts/verify-desktop-install.mjs'
       - 'packages/e2e/scripts/verify-development-project.mjs'
       - 'packages/e2e/scripts/verify-services.mjs'
@@ -82,7 +84,7 @@ jobs:
                 installers=true ;;
             esac
             case "$path" in
-              packages/desktop/src/release.ts|packages/desktop/src/backend-release.json|packages/desktop/src/engine.ts|packages/e2e/scripts/verify-desktop-install.mjs|packages/e2e/scripts/verify-environment-client.mjs)
+              packages/desktop/src/release.ts|packages/desktop/src/backend-release.json|packages/desktop/src/engine.ts|packages/desktop/src/library.ts|packages/desktop/src/main.ts|packages/desktop/src/preload.ts|packages/e2e/scripts/verify-desktop-install.mjs|packages/e2e/scripts/verify-environment-client.mjs|packages/e2e/scripts/verify-library-restore.mjs|packages/e2e/scripts/restore-command.cjs)
                 smoke=true ;;
             esac
             case "$path" in
@@ -145,6 +147,7 @@ jobs:
       - run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-environment-client.mjs
         env:
           DINKSTER_ELECTRON_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
+      - run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-library-restore.mjs
       - run: mkdir -p test-results/desktop-smoke && xvfb-run --auto-servernum node packages/e2e/scripts/verify-desktop-install.mjs
         env:
           DINKSTER_DESKTOP_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke

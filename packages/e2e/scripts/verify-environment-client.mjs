@@ -462,6 +462,7 @@ console.log(JSON.stringify(row));
       'resolveDroppedFile',
       'revealFile',
       'revealModelLocation',
+      'saveFile',
     ],
   )
   assert.deepEqual(
@@ -979,6 +980,7 @@ console.log(JSON.stringify(row));
       'resolveDroppedFile',
       'revealFile',
       'revealModelLocation',
+      'saveFile',
     ],
   )
   developmentCalls = (await readFile(calls, 'utf8'))

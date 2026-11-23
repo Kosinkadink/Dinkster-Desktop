@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type { EnvironmentClient, EnvironmentHistoryEntry, EnvironmentRequest, EnvironmentResult, LibraryListKind, LibraryProject } from './environment.js'
 import { readProjects, type DesktopProject } from './projects.js'
@@ -43,7 +43,11 @@ export interface LibraryRestoreReview {
   readonly projects: readonly LibraryProject[]
   readonly alternatives: readonly {
     readonly snapshot: EnvironmentHistoryEntry['snapshot']
-    readonly changes: readonly string[]
+    readonly changes: readonly {
+      readonly field: string
+      readonly before: readonly string[]
+      readonly after: readonly string[]
+    }[]
   }[]
   readonly notices: readonly string[]
   readonly expiresInSeconds: number
@@ -61,6 +65,73 @@ export interface DesktopLibraryBridge {
 }
 
 const unavailable = 'By the way, these projects and files cannot be shown with the installed tools.'
+
+function restoreDescription(field: string, value: unknown): readonly string[] {
+  const invalid = () => new Error('unsupported restore software description')
+  const record = (item: unknown): Record<string, unknown> => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw invalid()
+    return item as Record<string, unknown>
+  }
+  const text = (item: unknown): string => {
+    if (typeof item !== 'string' || !/^[A-Za-z0-9_.:+!~,*<>= -]+$/.test(item)) throw invalid()
+    return item
+  }
+  const rows = (item: unknown): unknown[] => {
+    if (!Array.isArray(item)) throw invalid()
+    return item
+  }
+  if (!['engine', 'base', 'constraints', 'source', 'inProcessPacks', 'isolatedInferencePacks'].includes(field)
+    && !/^metadata\.(dinkster\.lock|packs\/[a-z0-9][a-z0-9_.~-]*\/(pack-lock|installed-wheels)\.json)$/.test(field)) throw invalid()
+  if (value === null) return ['Not recorded']
+  if (field === 'engine') {
+    const engine = record(value)
+    return [`Version: ${text(engine['version'])}`, `Release: ${text(engine['release'])}`]
+  }
+  if (field === 'base') {
+    const base = record(value)
+    return [`Base: ${text(base['id'])}`, `Variant: ${text(base['variant'])}`]
+  }
+  if (field === 'constraints') {
+    if (typeof value !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(value)) throw invalid()
+    return [value]
+  }
+  if (field === 'source') {
+    if (!['published', 'source', 'local'].includes(String(value))) throw invalid()
+    return [String(value)]
+  }
+  if (field === 'inProcessPacks' || field === 'isolatedInferencePacks') return rows(value).map(text)
+  if (typeof value !== 'string') throw invalid()
+  // Only software identities leave the host, never acquisition URLs or private source paths.
+  let parsed: unknown
+  try { parsed = JSON.parse(value) } catch { throw invalid() }
+  const document = record(parsed)
+  const description = [`Software record SHA-256: ${createHash('sha256').update(value).digest('hex')}`]
+  if (field === 'metadata.dinkster.lock' && document['format'] === 'dinkster.lock/1') {
+    return [...description, ...rows(document['packs']).map((item) => {
+      const pack = record(item)
+      return `${text(pack['pack'])} ${text(pack['version'])} (${text(pack['artifactDigest'])})`
+    })]
+  }
+  if (field.endsWith('/pack-lock.json') && ['dinkster.pack-lock/1', 'dinkster.pack-lock/2', 'dinkster.pack-lock/3'].includes(String(document['format']))) {
+    return [...description, `Pack: ${text(document['pack'])}`, `Variant: ${text(document['variant'])}`,
+      ...(document['part'] === undefined ? [] : [`Part: ${text(document['part'])}`]),
+      ...(document['engine'] === undefined ? [] : [`Engine: ${text(document['engine'])}`]),
+      ...rows(document['packages']).flatMap((item) => {
+        const dependency = record(item)
+        return [`${text(dependency['name'])} ${text(dependency['version'])}`, ...rows(dependency['wheels']).map((item) => {
+          const wheel = record(item)
+          return `${text(wheel['filename'])} (${text(wheel['sha256'])})`
+        })]
+      })]
+  }
+  if (field.endsWith('/installed-wheels.json') && document['format'] === 'dinkster.installed-wheels/1') {
+    return [...description, ...rows(document['wheels']).map((item) => {
+      const wheel = record(item)
+      return `${text(wheel['filename'])} (${text(wheel['sha256'])})`
+    }), ...rows(document['inherited']).map((name) => `Provided by environment: ${text(name)}`)]
+  }
+  throw invalid()
+}
 
 /** Resolve only saved installations; renderer inputs never choose filesystem paths. */
 export class DesktopLibrary {
@@ -101,7 +172,7 @@ export class DesktopLibrary {
     const result = await this.tools.run(request)
     const plan = result.restorePlan
     const review = plan?.['projectReview'] as { project: LibraryProject; projects: { project: LibraryProject }[] } | undefined
-    const alternatives = plan?.['alternatives'] as { approval: string; snapshot: EnvironmentHistoryEntry['snapshot']; substitutions: { field: string }[] }[] | undefined
+    const alternatives = plan?.['alternatives'] as { approval: string; snapshot: EnvironmentHistoryEntry['snapshot']; substitutions: { field: string; before: unknown; after: unknown }[] }[] | undefined
     if (result.status !== 'approval-required' || !review || !isDeepStrictEqual(review.project, selected.project)
       || !alternatives || !isDeepStrictEqual(await this.prepareOpen(installation, identifier), selected)) {
       throw new Error('project or environment changed; review the restore again')
@@ -111,7 +182,8 @@ export class DesktopLibrary {
       if (!engine || !base || ![engine.version, engine.release, base.id, base.variant].every((value) => typeof value === 'string' && value)
         || !alternative.substitutions.every((change) => typeof change.field === 'string' && change.field)) throw new Error('unsupported restore software description')
       return { snapshot: { engine: { version: engine.version, release: engine.release }, base: { id: base.id, variant: base.variant } },
-        changes: alternative.substitutions.map((change) => change.field) }
+        changes: alternative.substitutions.map((change) => ({ field: change.field,
+          before: restoreDescription(change.field, change.before), after: restoreDescription(change.field, change.after) })) }
     })
     trusted()
     const token = randomUUID()
@@ -119,7 +191,7 @@ export class DesktopLibrary {
       approvals: alternatives.map((alternative) => alternative.approval), trusted, ...(fork ? { fork } : {}) }
     return { token, scope, installation: { id: selected.installation.id, name: selected.installation.name },
       project: selected.project, entry, projects: scope === 'only-project' ? [selected.project] : review.projects.map((row) => row.project),
-      alternatives: display, notices: result.plan.filter((line) => /library-helper\/1|migrated library/.test(line)), expiresInSeconds: 900 }
+      alternatives: display, notices: result.plan.filter((line) => /^(This library requires snapshots with library-helper\/1\.|Snapshot [1-9][0-9]* cannot open this migrated library; choose a snapshot with library helper support\.)$/.test(line)), expiresInSeconds: 900 }
   }
 
   async applyRestore(token: string, alternative: number, trusted: () => void): Promise<void> {

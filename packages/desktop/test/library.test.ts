@@ -68,7 +68,7 @@ it.each(['bound', 'empty', 'changed-project', 'changed-identity', 'changed-snaps
   },
 )
 
-it.each(['every-project', 'only-project', 'stale-project', 'stale-snapshot', 'stale-settings', 'document-changed', 'changed-after-retain', 'settings-during-precheck', 'expires-during-precheck', 'bad-choice', 'activation-failed'] as const)(
+it.each(['every-project', 'only-project', 'stale-project', 'stale-snapshot', 'stale-settings', 'document-changed', 'changed-after-retain', 'settings-during-precheck', 'expires-during-precheck', 'unknown-substitution', 'malformed-description', 'bad-choice', 'activation-failed'] as const)(
   'retains project software consent and refuses unsafe apply: %s', async (scenario) => {
     const root = await mkdtemp(join(tmpdir(), 'desktop-library-restore-'))
     roots.push(root)
@@ -82,7 +82,7 @@ it.each(['every-project', 'only-project', 'stale-project', 'stale-snapshot', 'st
     const project = { id: 'film', uid: 'film-global', name: 'Film', revision: 7, deleted: false,
       environment: { id: 'a'.repeat(32), lastSnapshot: null, lastRunAt: null } }
     const sibling = { ...project, id: 'sibling', uid: 'sibling-global', name: 'Sibling', revision: 3 }
-    const notice = 'Snapshot 12 cannot open the migrated library without library-helper/1.'
+    const notice = 'Snapshot 12 cannot open this migrated library; choose a snapshot with library helper support.'
     await writeFile(script, `
       const fs=require('node:fs'), args=process.argv.slice(2), root=args[1], operation=args[2];
       const state=JSON.parse(fs.readFileSync(${JSON.stringify(state)},'utf8')), applied=${JSON.stringify(applied)};
@@ -101,10 +101,26 @@ it.each(['every-project', 'only-project', 'stale-project', 'stale-snapshot', 'st
             projects:[before,${JSON.stringify(sibling)}].map(project=>({project,needs:{}}))},
           alternatives:['c','d'].map((key,index)=>({approval:'sha256:'+key.repeat(64),
             snapshot:{engine:{version:index?'0.3.0':'0.2.0',release:index?'release-b':'release-a'},
-              base:{id:'cpu',variant:'cpu'},metadata:{private:'private-software-recovery'}},substitutions:[{field:'engine'}]})),
+              base:{id:'cpu',variant:'cpu'},metadata:{private:'private-software-recovery'}},substitutions:[
+              {field:'engine',before:{version:'0.1.0',release:'recorded-release'},after:{version:index?'0.3.0':'0.2.0',release:index?'release-b':'release-a'}},
+              {field:'base',before:{id:'old-cpu',variant:'old-variant'},after:{id:'cpu',variant:'cpu'}},
+              {field:'constraints',before:'sha256:'+'e'.repeat(64),after:'sha256:'+'f'.repeat(64)},
+              {field:'source',before:'published',after:'local'},
+              {field:'inProcessPacks',before:['healthy'],after:[]},
+              {field:'isolatedInferencePacks',before:[],after:['healthy']},
+              {field:'metadata.dinkster.lock',before:JSON.stringify({format:'dinkster.lock/1',packs:[{pack:'healthy',version:'1.0',artifactDigest:'blake3:'+'1'.repeat(64),source:'local:/private-source'}]}),
+                after:JSON.stringify({format:'dinkster.lock/1',packs:[{pack:'healthy',version:'2.0',artifactDigest:'blake3:'+'2'.repeat(64),source:'git:private-source'}]})},
+              {field:'metadata.packs/healthy~render/pack-lock.json',before:null,
+                after:JSON.stringify({format:'dinkster.pack-lock/3',pack:'healthy',part:'render',variant:'cpu',engine:'>=0.2,<0.4',indexes:['https://private-token@example.test'],
+                  packages:[{name:'pillow',version:'12.0',wheels:[{filename:'pillow-12.0-py3-none-any.whl',sha256:'3'.repeat(64),url:'https://private-token@example.test/wheel'}]}]})},
+              {field:'metadata.packs/healthy~render/installed-wheels.json',before:JSON.stringify({format:'dinkster.installed-wheels/1',wheels:[],inherited:['pillow']}),
+                after:JSON.stringify({format:'dinkster.installed-wheels/1',wheels:[{filename:'pillow-12.0-py3-none-any.whl',sha256:'3'.repeat(64),registry:'https://private-token@example.test'}],inherited:[]})},
+            ]})),
           ...(fork?{fork:{source:root,destination:${JSON.stringify(target.root)}}}:{})};
+        if(${JSON.stringify(scenario)}==='unknown-substitution') result.restorePlan.alternatives[0].substitutions=[{field:'metadata.private-state',before:null,after:null}];
+        if(${JSON.stringify(scenario)}==='malformed-description') result.restorePlan.alternatives[0].substitutions=[{field:'metadata.dinkster.lock',before:'private-raw-invalid-json',after:'{}'}];
         result.status=args.includes('--approve')?'applied':'approval-required'; result.restoredFrom=7;
-        result.plan=[${JSON.stringify(notice)},'private-software-recovery'];
+        result.plan=[${JSON.stringify(notice)},'private-software-recovery','substitute metadata.dinkster.lock: private-library-helper/1-token'];
         if(fork) result.destination=${JSON.stringify(target.root)};
         if(args.includes('--approve')) {
           if(args[args.indexOf('--approve')+1]!=='sha256:'+'d'.repeat(64)) process.exit(3);
@@ -142,11 +158,33 @@ it.each(['every-project', 'only-project', 'stale-project', 'stale-snapshot', 'st
     })
     const scope = ['only-project', 'changed-after-retain', 'settings-during-precheck', 'expires-during-precheck'].includes(scenario) ? 'only-project' : 'every-project'
     try {
+      if (scenario === 'unknown-substitution' || scenario === 'malformed-description') {
+        await expect(library.reviewRestore('source', 'film', 7, scope, check)).rejects.toThrow('unsupported restore software description')
+        await expect(readFile(applied, 'utf8')).rejects.toThrow()
+        return
+      }
       const review = await library.reviewRestore('source', 'film', 7, scope, check)
       expect(review.projects.map((item) => item.name)).toEqual(scope === 'only-project' ? ['Film'] : ['Film', 'Sibling'])
       expect(review.alternatives.map((item) => item.snapshot.engine.release)).toEqual(['release-a', 'release-b'])
       expect(review.notices).toEqual([notice])
-      expect(JSON.stringify(review)).not.toMatch(/private-|sha256:|command.cjs/)
+      expect(JSON.stringify(review)).not.toMatch(/private-|sha256:c{64}|sha256:d{64}|command.cjs/)
+      expect(review.alternatives[1]!.changes.slice(0, 6)).toEqual([
+        { field: 'engine', before: ['Version: 0.1.0', 'Release: recorded-release'], after: ['Version: 0.3.0', 'Release: release-b'] },
+        { field: 'base', before: ['Base: old-cpu', 'Variant: old-variant'], after: ['Base: cpu', 'Variant: cpu'] },
+        { field: 'constraints', before: [`sha256:${'e'.repeat(64)}`], after: [`sha256:${'f'.repeat(64)}`] },
+        { field: 'source', before: ['published'], after: ['local'] },
+        { field: 'inProcessPacks', before: ['healthy'], after: [] },
+        { field: 'isolatedInferencePacks', before: [], after: ['healthy'] },
+      ])
+      const metadata = review.alternatives[1]!.changes.slice(6)
+      expect(metadata[0]!.before).toContain(`healthy 1.0 (blake3:${'1'.repeat(64)})`)
+      expect(metadata[0]!.after).toContain(`healthy 2.0 (blake3:${'2'.repeat(64)})`)
+      expect(metadata[0]!.before[0]).toMatch(/^Software record SHA-256: [a-f0-9]{64}$/)
+      expect(metadata[0]!.before[0]).not.toBe(metadata[0]!.after[0])
+      expect(metadata[1]!.before).toEqual(['Not recorded'])
+      expect(metadata[1]!.after.slice(1)).toEqual(['Pack: healthy', 'Variant: cpu', 'Part: render', 'Engine: >=0.2,<0.4', 'pillow 12.0', `pillow-12.0-py3-none-any.whl (${'3'.repeat(64)})`])
+      expect(metadata[2]!.before.slice(1)).toEqual(['Provided by environment: pillow'])
+      expect(metadata[2]!.after.slice(1)).toEqual([`pillow-12.0-py3-none-any.whl (${'3'.repeat(64)})`])
       expect((await readProjects(root)).projects).toHaveLength(1)
       if (scenario === 'stale-project') await writeFile(state, '{"changed":true}')
       if (scenario === 'stale-snapshot') await writeFile(state, '{"snapshot":true}')

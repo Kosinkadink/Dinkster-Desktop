@@ -20,7 +20,12 @@ const home = join(root, 'home')
 await mkdir(home)
 await writeFile(
   join(home, 'model-settings.json'),
-  JSON.stringify({ locations: [] }),
+  JSON.stringify({
+    version: 1,
+    locations: [],
+    downloadLocation: null,
+    disabled: true,
+  }),
 )
 const env = Object.fromEntries(
   Object.entries(process.env).filter(

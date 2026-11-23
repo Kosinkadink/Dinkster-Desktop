@@ -291,6 +291,7 @@ if(operation==='packs-apply' && args[args.indexOf('--scope')+1]==='only-project'
   const metadata=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'desktop', 'projects.json'))},'utf8'));
   if(!metadata.projects.some(row=>row.root===fork.destination)) throw new Error('destination has no saved native binding');
   fs.mkdirSync(fork.destination);
+  fs.copyFileSync(require('node:path').join(root,'environment.json'),require('node:path').join(fork.destination,'environment.json'));
   const scenario=JSON.parse(fs.readFileSync(${JSON.stringify(join(scratch, 'project-opening.json'))},'utf8')).isolatedScenario;
   fs.writeFileSync(isolatedFile,JSON.stringify({...fork,state:'stopped',scenario}));
   if(scenario==='lost-response') {console.log('lost construction response');process.exit(0);}
@@ -462,6 +463,7 @@ console.log(JSON.stringify(row));
       'resolveDroppedFile',
       'revealFile',
       'revealModelLocation',
+      'saveFile',
     ],
   )
   assert.deepEqual(
@@ -979,6 +981,7 @@ console.log(JSON.stringify(row));
       'resolveDroppedFile',
       'revealFile',
       'revealModelLocation',
+      'saveFile',
     ],
   )
   developmentCalls = (await readFile(calls, 'utf8'))
@@ -1306,6 +1309,10 @@ console.log(JSON.stringify(row));
   const firstRoot = join(scratch, 'installation')
   const secondRoot = join(scratch, 'second-installation')
   await mkdir(secondRoot)
+  await writeFile(
+    join(secondRoot, 'environment.json'),
+    await readFile(join(firstRoot, 'environment.json')),
+  )
   await writeFile(
     join(env.DINKSTER_DESKTOP_DATA, 'projects.json'),
     JSON.stringify({

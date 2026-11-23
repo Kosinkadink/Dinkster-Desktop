@@ -17,6 +17,7 @@ import type {
 } from './types.js'
 
 const bridge: DesktopBridge = {
+  saveFile: (bytes, suggestedName) => ipcRenderer.invoke('desktop:save-file', bytes, suggestedName),
   locale: () => ipcRenderer.invoke('desktop:locale') as Promise<string>,
   info: () => ipcRenderer.invoke('desktop:info') as Promise<DesktopInfo>,
   checkForUpdates: () => ipcRenderer.invoke('desktop:check-for-updates') as Promise<void>,
@@ -81,6 +82,7 @@ const library: DesktopLibraryBridge = {
 }
 if (libraryOnly) contextBridge.exposeInMainWorld('dinksterLibrary', library)
 if (!libraryOnly) contextBridge.exposeInMainWorld('dinksterDesktop', localFilesOnly ? {
+  saveFile: bridge.saveFile,
   fileCapabilities: bridge.fileCapabilities,
   chooseDirectory: bridge.chooseDirectory,
   revealFile: bridge.revealFile,

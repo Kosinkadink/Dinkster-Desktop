@@ -92,7 +92,12 @@ export type DesktopDroppedFileResult =
     } }
   | { readonly status: 'refused'; readonly reason: 'not-resolvable' | 'not-native-file' | 'unsupported-backend' }
 
+export type DesktopSaveResult =
+  | { readonly status: 'saved'; readonly name: string }
+  | { readonly status: 'closed' }
+
 export interface DesktopBridge {
+  saveFile(bytes: Uint8Array, suggestedName: string): Promise<DesktopSaveResult>
   locale(): Promise<string>
   info(): Promise<DesktopInfo>
   checkForUpdates(): Promise<void>

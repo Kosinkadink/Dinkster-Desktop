@@ -192,12 +192,12 @@ describe('private WSL readiness', () => {
     guestDisk.root = root
     try {
       await mkdir(guest.projectRoot('studio'), { recursive: true })
-      await writeFile(join(guest.projectRoot('studio'), 'environment.json'), '{}')
-      const result = await client.run({ root: guest.projectRoot('studio'),
-        operation: channelSelected ? 'update' : 'status',
-        ...(channelSelected ? { channel: 'nightly' as const, mirrors: ['https://channel.invalid'] } : {}) })
-      expect(JSON.parse(result.sourceDescription!)).toEqual({ input: channelSelected ? channelTools : tools, services })
-      expect(result.root).toBe(guest.projectRoot('studio'))
+      await writeFile(join(guest.projectRoot('studio'), 'environment.json'), JSON.stringify({ channel: 'nightly', mirrors: ['https://channel.invalid'] }))
+      for (const operation of channelSelected ? ['setup', 'start', 'update'] as const : ['status'] as const) {
+        const result = await client.run({ root: guest.projectRoot('studio'), operation })
+        expect(JSON.parse(result.sourceDescription!)).toEqual({ input: channelSelected ? channelTools : tools, services })
+        expect(result.root).toBe(guest.projectRoot('studio'))
+      }
     } finally {
       await client.dispose()
       await rm(root, { recursive: true, force: true })

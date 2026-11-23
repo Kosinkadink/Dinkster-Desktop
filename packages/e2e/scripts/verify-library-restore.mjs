@@ -180,7 +180,8 @@ try {
         XDG_CONFIG_HOME: join(root, 'config'),
         XDG_CACHE_HOME: join(root, 'cache'),
         DINKSTER_HOME: join(root, 'home'),
-        TMPDIR: root,
+        // Chromium's singleton socket must not include the longer scenario names.
+        TMPDIR: scratch,
         DINKSTER_DESKTOP_DATA: join(root, 'desktop'),
         DINKSTER_ENV: join(scripts, 'restore-command.cjs'),
         DINKSTER_RESTORE_FIXTURE: root,

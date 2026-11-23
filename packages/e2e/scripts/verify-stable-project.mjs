@@ -451,6 +451,12 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
   await expect(
     manager.getByRole('button', { name: 'Open main', exact: true }),
   ).toBeVisible({ timeout: 120_000 })
+  assert.equal(
+    mirrorRequests.length,
+    offlineRequests,
+    'installed project browsing must not consult the unavailable mirror',
+  )
+  mirrorOnline = true
   const writer = spawn(
     toolsPython,
     [
@@ -535,12 +541,18 @@ with writer_lock(Path(sys.argv[1])):
       2,
     ),
   )
-  assert.equal(
-    mirrorRequests.length,
-    offlineRequests,
-    'installed start must not consult the unavailable mirror',
+  const startRequests = mirrorRequests.slice(offlineRequests)
+  assert(
+    startRequests.includes('/channels/stable.json'),
+    'installed start must select the signed channel tools',
   )
-  mirrorOnline = true
+  assert(
+    startRequests.every(
+      (path) =>
+        path === '/channels/stable.json' || path.startsWith(`${toolsPath}/`),
+    ),
+    'installed start must not reacquire engine or base artifacts',
+  )
   mirrorChannel = refusedChannels.wrongChannel
   const nightly = verifyChannel(mirrorChannel, 'nightly')
   const updatedPlan = await manager.evaluate(

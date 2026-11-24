@@ -20,16 +20,27 @@ async function temporaryDirectory(): Promise<string> {
 const placement = { bounds: { x: 10, y: 20, width: 640, height: 480 }, maximized: false } as const
 
 describe('window layout model', () => {
-  it('uses native overlay controls off macOS and inset traffic lights on macOS', () => {
-    for (const platform of ['win32', 'linux'] as const) {
-      const options = windowChromeOptions(platform)
-      expect(options.titleBarStyle).toBe('hidden')
-      expect(options.titleBarOverlay).toEqual({ color: '#202020', symbolColor: '#ededed', height: 48 })
-      expect(options.trafficLightPosition).toBeUndefined()
+  it('uses published native geometry and both theme palettes without private overrides', () => {
+    const chrome = {
+      css: '', script: '',
+      native: {
+        overlay: {
+          dark: { color: '#123456', symbolColor: '#abcdef', height: 57 },
+          light: { color: '#fedcba', symbolColor: '#654321', height: 59 },
+        },
+        trafficLightPosition: { x: 15, y: 17 },
+      },
     }
-    const mac = windowChromeOptions('darwin')
+    for (const platform of ['win32', 'linux'] as const) {
+      const options = windowChromeOptions(chrome, true, platform)
+      expect(options.titleBarStyle).toBe('hidden')
+      expect(options.titleBarOverlay).toEqual({ color: '#123456', symbolColor: '#abcdef', height: 57 })
+      expect(options.trafficLightPosition).toBeUndefined()
+      expect(windowChromeOptions(chrome, false, platform).titleBarOverlay).toEqual({ color: '#fedcba', symbolColor: '#654321', height: 59 })
+    }
+    const mac = windowChromeOptions(chrome, false, 'darwin')
     expect(mac.titleBarStyle).toBe('hidden')
-    expect(mac.trafficLightPosition).toEqual({ x: 14, y: 16 })
+    expect(mac.trafficLightPosition).toEqual({ x: 15, y: 17 })
     expect(mac.titleBarOverlay).toBeUndefined()
   })
 

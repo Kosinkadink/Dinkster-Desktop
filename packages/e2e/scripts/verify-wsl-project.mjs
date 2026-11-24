@@ -80,6 +80,7 @@ try {
     env,
   })
   manager = await installationManager(app)
+  await manager.getByText('Advanced settings', { exact: true }).click()
   await manager.getByLabel('Engine host').selectOption('wsl2')
   await manager.getByRole('button', { name: 'Check WSL2' }).click()
   await expect(manager.getByText('Prepare a private Ubuntu')).toBeVisible()
@@ -101,7 +102,9 @@ try {
     'Explicit UI preparation created a private WSL2 distribution',
   )
 
-  await manager.getByLabel('Environment name').fill('Private WSL acceptance')
+  await manager
+    .getByLabel('Environment name', { exact: true })
+    .fill('Private WSL acceptance')
   await manager
     .getByRole('button', { name: 'Use Linux environment folder' })
     .click()
@@ -126,9 +129,11 @@ try {
   await manager
     .getByRole('button', { name: 'Copy Windows model folder' })
     .click()
-  await expect(manager.getByRole('status')).toContainText(
-    'Models copied to /home/dinkster/models/models',
-  )
+  await expect(
+    manager
+      .getByRole('status')
+      .filter({ hasText: /Models copied|already exists/ }),
+  ).toContainText('Models copied to /home/dinkster/models/models')
   const copied = wslWindowsPath(
     host.distribution,
     '/home/dinkster/models/models/sentinel.safetensors',
@@ -138,7 +143,11 @@ try {
   await manager
     .getByRole('button', { name: 'Copy Windows model folder' })
     .click()
-  await expect(manager.getByRole('status')).toContainText('already exists')
+  await expect(
+    manager
+      .getByRole('status')
+      .filter({ hasText: /Models copied|already exists/ }),
+  ).toContainText('already exists')
   assert.deepEqual(await readFile(copied), bytes)
   receipt.copy = {
     source,
@@ -153,7 +162,7 @@ try {
   await manager
     .getByLabel('Mirrors, in order')
     .fill('https://releases.dinkster.org')
-  await manager.getByLabel('Channel').selectOption('nightly')
+  await manager.getByLabel('Channel', { exact: true }).selectOption('nightly')
   await manager
     .getByRole('button', { name: 'Inspect hardware and variants' })
     .click()

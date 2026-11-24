@@ -110,7 +110,10 @@ try {
     env,
   })
   const manager = await installationManager(app)
-  await manager.getByLabel('Environment name').fill('Contributor development')
+  await manager.getByText('Advanced settings', { exact: true }).click()
+  await manager
+    .getByLabel('Environment name', { exact: true })
+    .fill('Contributor development')
   await manager.getByLabel('Install location').fill(project)
   await manager
     .getByLabel('Mirrors, in order')
@@ -173,14 +176,17 @@ try {
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await manager.waitForFunction(
     () =>
-      document.body.textContent?.includes(
-        'Development - unpublished sources',
-      ) || document.querySelector('[role="alert"]')?.textContent.trim(),
+      document
+        .querySelector('ul[aria-label="Saved environments"]')
+        ?.textContent?.includes('Development - unpublished sources') ||
+      document.querySelector('[role="alert"]')?.textContent.trim(),
     null,
     { timeout: 1_200_000 },
   )
   await expect(
-    manager.getByText('Development - unpublished sources'),
+    manager
+      .getByRole('list', { name: 'Saved environments' })
+      .getByText('Development - unpublished sources'),
   ).toBeVisible()
   const generation = join(
     project,

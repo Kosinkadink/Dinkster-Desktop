@@ -89,6 +89,10 @@ try {
       assert.deepEqual(projects[0].engines, [{ id: 'remote', name: 'Remote engine', kind: 'remote', url }])
       if (bindings !== undefined) assert.equal(record, bindings, 'Restart must preserve remote bindings')
       bindings = record
+      if (!(await page.getByLabel('Server URL').isVisible()))
+        await page
+          .getByText('Connect a remote environment', { exact: true })
+          .click()
       await page.getByLabel('Remote environment name').fill('Rejected credentials')
       await page.getByLabel('Server URL').fill(url.replace('://', '://blocked@'))
       await page

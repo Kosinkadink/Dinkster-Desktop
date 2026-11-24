@@ -46,6 +46,7 @@ async function launch(environment, profile) {
     env: environment,
   })
   const page = await installationManager(app)
+  await page.getByText('Advanced settings', { exact: true }).click()
   return page
 }
 async function stop(page) {
@@ -57,10 +58,11 @@ async function stop(page) {
     page.getByRole('button', { name: 'Confirm and apply' }),
   ).toBeVisible()
   await page.getByRole('button', { name: 'Confirm and apply' }).click()
-  await expect(page.getByRole('status')).toContainText(
-    'Environment operation completed',
-    { timeout: 60_000 },
-  )
+  await expect(
+    page
+      .getByRole('status')
+      .filter({ hasText: /Binding saved|Environment operation completed/ }),
+  ).toContainText('Environment operation completed', { timeout: 60_000 })
 }
 async function json(url, options) {
   const response = await fetch(url, options)
@@ -108,7 +110,9 @@ try {
   )
   const hostNamespaces = await namespaces(process.pid)
   const page = await launch(env, 'chromium-available')
-  await page.getByLabel('Environment name').fill('Sandbox acceptance')
+  await page
+    .getByLabel('Environment name', { exact: true })
+    .fill('Sandbox acceptance')
   await page.getByLabel('Install location').fill(project)
   await page.getByLabel('Supervisor port').fill(String(port))
   await page.getByRole('button', { name: 'Check sandbox availability' }).click()
@@ -119,7 +123,11 @@ try {
   for (const sandboxed of [false, true]) {
     await page.getByLabel('Sandbox local pack workers').setChecked(sandboxed)
     await page.getByRole('button', { name: 'Save existing binding' }).click()
-    await expect(page.getByRole('status')).toContainText('Binding saved')
+    await expect(
+      page
+        .getByRole('status')
+        .filter({ hasText: /Binding saved|Environment operation completed/ }),
+    ).toContainText('Binding saved')
     const saved = JSON.parse(
       await readFile(join(data, 'projects.json'), 'utf8'),
     )
@@ -264,7 +272,11 @@ try {
   await unavailable
     .getByRole('button', { name: 'Save existing binding' })
     .click()
-  await expect(unavailable.getByRole('status')).toContainText('Binding saved')
+  await expect(
+    unavailable
+      .getByRole('status')
+      .filter({ hasText: /Binding saved|Environment operation completed/ }),
+  ).toContainText('Binding saved')
   const disabled = JSON.parse(
     await readFile(join(data, 'projects.json'), 'utf8'),
   )

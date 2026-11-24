@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { BrowserWindow, BrowserWindowConstructorOptions, NativeTheme } from 'electron'
+import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron'
 import { desktopTitle, type DesktopServices } from './services.js'
 
 export interface WindowChrome {
@@ -17,39 +17,55 @@ export function readWindowChrome(directory: string): WindowChrome {
   return { ...metadata, script: readFileSync(join(directory, 'desktop-chrome.js'), 'utf8') }
 }
 
-export function windowChromeOptions(chrome: WindowChrome, dark: boolean, platform: NodeJS.Platform = process.platform): BrowserWindowConstructorOptions {
+export function windowChromeOptions(chrome: WindowChrome, platform: NodeJS.Platform = process.platform): BrowserWindowConstructorOptions {
   return {
     titleBarStyle: 'hidden',
+    // On macOS the overlay only tells the page where the traffic lights are,
+    // so the bar's inset goes away in full screen, where they are hidden.
     ...(platform === 'darwin'
-      ? { trafficLightPosition: chrome.native.trafficLightPosition }
-      : { titleBarOverlay: chrome.native.overlay[dark ? 'dark' : 'light'] }),
+      ? { trafficLightPosition: chrome.native.trafficLightPosition, titleBarOverlay: true }
+      : { titleBarOverlay: chrome.native.overlay.dark }),
   }
 }
 
+// Dinkster pages are dark unless the page itself says it is light.
+const pageTheme = "(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')"
+
 /** The shared DOM installer has no access to Electron or the preload bridge. */
-export function installWindowChrome(window: BrowserWindow, chrome: WindowChrome, appearance: NativeTheme, development: () => boolean = () => false, services: DesktopServices = 'production'): void {
-  let loaded = false
-  const refresh = async (): Promise<void> => {
-    if (!loaded || window.isDestroyed()) return
-    const theme = appearance.shouldUseDarkColors ? 'dark' : 'light'
-    const unpublished = development()
-    window.setTitle(desktopTitle(services, unpublished))
-    if (process.platform !== 'darwin') window.setTitleBarOverlay(chrome.native.overlay[theme])
-    await window.webContents.executeJavaScriptInIsolatedWorld(1001, [{
-      code: `if (!globalThis.DinksterDesktopChrome) { ${chrome.script} }\nDinksterDesktopChrome.install(${JSON.stringify({
-        title: desktopTitle(services), platform: process.platform, theme,
-        qa: services === 'qa', development: unpublished,
-      })})`,
-    }])
-  }
-  const report = (): void => {
-    if (!window.isDestroyed()) console.warn('Desktop window chrome could not be applied.')
+export function installWindowChrome(window: BrowserWindow, chrome: WindowChrome, development: () => boolean = () => false, services: DesktopServices = 'production'): void {
+  // A script still waiting in a page that has gone never settles, so each
+  // page's loop also ends when the next page loads or the window closes.
+  let leave = (): void => {}
+  const inPage = (code: string): Promise<unknown> => window.webContents.executeJavaScriptInIsolatedWorld(1001, [{ code }])
+  const follow = async (left: Promise<void>): Promise<void> => {
+    let active = true
+    void left.then(() => { active = false })
+    while (active && !window.isDestroyed()) {
+      const unpublished = development()
+      window.setTitle(desktopTitle(services, unpublished))
+      const theme = await inPage(`if (!globalThis.DinksterDesktopChrome) { ${chrome.script} }
+        DinksterDesktopChrome.install({ ...${JSON.stringify({
+          title: desktopTitle(services), platform: process.platform,
+          qa: services === 'qa', development: unpublished,
+        })}, theme: ${pageTheme} });
+        ${pageTheme}`) === 'light' ? 'light' : 'dark'
+      if (!active || window.isDestroyed()) return
+      if (process.platform !== 'darwin') window.setTitleBarOverlay(chrome.native.overlay[theme])
+      // The app switches its theme without reloading; wait for that, then match it.
+      await Promise.race([left, inPage(`new Promise((resolve) => {
+        const changed = () => ${pageTheme} !== ${JSON.stringify(theme)}
+        if (changed()) return resolve()
+        const observer = new MutationObserver(() => { if (changed()) { observer.disconnect(); resolve() } })
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+      })`)])
+    }
   }
   window.webContents.on('did-finish-load', () => {
-    loaded = true
-    void window.webContents.insertCSS(chrome.css).then(refresh).catch(report)
+    leave()
+    const left = new Promise<void>((resolve) => { leave = resolve })
+    void window.webContents.insertCSS(chrome.css).then(() => follow(left)).catch(() => {
+      if (!window.isDestroyed()) console.warn('Desktop window chrome could not be applied.')
+    })
   })
-  const changed = (): void => { void refresh().catch(report) }
-  appearance.on('updated', changed)
-  window.on('closed', () => appearance.removeListener('updated', changed))
+  window.on('closed', () => leave())
 }

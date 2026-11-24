@@ -310,13 +310,13 @@ function trustedLibraryIpc(event: Electron.IpcMainInvokeEvent): void {
 async function createLibraryWindow(): Promise<void> {
   if (libraryWindow && !libraryWindow.isDestroyed()) { libraryWindow.show(); libraryWindow.focus(); return }
   const panel = new BrowserWindow({
-    ...windowChromeOptions(chrome, nativeTheme.shouldUseDarkColors),
+    ...windowChromeOptions(chrome),
     width: 1040, height: 760, minWidth: 390, minHeight: 500,
     title: desktopTitle(services), icon: applicationIcon(), backgroundColor: windowBackground(),
     webPreferences: { ...secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')), additionalArguments: ['--dinkster-library'] },
   })
   libraryWindow = panel
-  installWindowChrome(panel, chrome, nativeTheme, undefined, services)
+  installWindowChrome(panel, chrome, undefined, services)
   panel.on('page-title-updated', (event) => event.preventDefault())
   denyRendererPermissions(panel.webContents.session)
   panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -474,12 +474,12 @@ function trustedProjectIpc(event: Electron.IpcMainInvokeEvent): void {
 async function createProjectManager(): Promise<void> {
   if (projectWindow && !projectWindow.isDestroyed()) { projectWindow.show(); return }
   projectWindow = new BrowserWindow({
-    ...windowChromeOptions(chrome, nativeTheme.shouldUseDarkColors),
+    ...windowChromeOptions(chrome),
     width: 1040, height: 760, minWidth: 600, minHeight: 500,
     title: desktopTitle(services), icon: applicationIcon(), backgroundColor: windowBackground(),
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
-  installWindowChrome(projectWindow, chrome, nativeTheme, undefined, services)
+  installWindowChrome(projectWindow, chrome, undefined, services)
   projectWindow.on('page-title-updated', (event) => event.preventDefault())
   denyRendererPermissions(projectWindow.webContents.session)
   projectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -781,14 +781,14 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
     return
   }
   const remote = new BrowserWindow({
-    ...windowChromeOptions(chrome, nativeTheme.shouldUseDarkColors),
+    ...windowChromeOptions(chrome),
     width: 1440, height: 900, title: desktopTitle(services),
     icon: applicationIcon(), backgroundColor: windowBackground(),
     webPreferences: engine.kind === 'local'
       ? { ...secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')), additionalArguments: ['--dinkster-local-files'] }
       : { contextIsolation: true, sandbox: true, nodeIntegration: false },
   })
-  installWindowChrome(remote, chrome, nativeTheme, () => binding.development, services)
+  installWindowChrome(remote, chrome, () => binding.development, services)
   remote.on('page-title-updated', (event) => event.preventDefault())
   const binding: { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; libraryProject?: string; libraryUid?: string; environmentId?: string; folderProject: string | undefined; document: number; development: boolean } = {
     projectId, engineId, url, backendUrl: url, folderProject: undefined, document: 0, development,
@@ -974,7 +974,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
   const bounds = normalizeWindowBounds(placement.bounds, displayWorkAreas())
   windowLayout = updateWindowPlacement(windowLayout, id, { bounds })
   const managed = new BrowserWindow({
-    ...windowChromeOptions(chrome, nativeTheme.shouldUseDarkColors),
+    ...windowChromeOptions(chrome),
     ...bounds,
     minWidth: Math.min(900, bounds.width),
     minHeight: Math.min(640, bounds.height),
@@ -984,7 +984,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
     backgroundColor: windowBackground(),
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
-  installWindowChrome(managed, chrome, nativeTheme, undefined, services)
+  installWindowChrome(managed, chrome, undefined, services)
   managed.on('page-title-updated', (event) => event.preventDefault())
   windows.set(id, managed)
   if (id === 'primary') window = managed

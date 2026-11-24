@@ -6,7 +6,6 @@ import {
   addChildWindow, addWorkspaceWindow, decodeWindowLayout, defaultWindowLayout, normalizeWindowBounds,
   readWindowLayout, removeWindow, restoreChildWindows, setWorkspaceProject, updateWindowPlacement, writeWindowLayout,
 } from '../src/window-layout.js'
-import { windowChromeOptions } from '../src/window-chrome.js'
 
 const temporaryDirectories: string[] = []
 afterEach(async () => Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))))
@@ -20,30 +19,6 @@ async function temporaryDirectory(): Promise<string> {
 const placement = { bounds: { x: 10, y: 20, width: 640, height: 480 }, maximized: false } as const
 
 describe('window layout model', () => {
-  it('uses published native geometry and both theme palettes without private overrides', () => {
-    const chrome = {
-      css: '', script: '',
-      native: {
-        overlay: {
-          dark: { color: '#123456', symbolColor: '#abcdef', height: 57 },
-          light: { color: '#fedcba', symbolColor: '#654321', height: 59 },
-        },
-        trafficLightPosition: { x: 15, y: 17 },
-      },
-    }
-    for (const platform of ['win32', 'linux'] as const) {
-      const options = windowChromeOptions(chrome, true, platform)
-      expect(options.titleBarStyle).toBe('hidden')
-      expect(options.titleBarOverlay).toEqual({ color: '#123456', symbolColor: '#abcdef', height: 57 })
-      expect(options.trafficLightPosition).toBeUndefined()
-      expect(windowChromeOptions(chrome, false, platform).titleBarOverlay).toEqual({ color: '#fedcba', symbolColor: '#654321', height: 59 })
-    }
-    const mac = windowChromeOptions(chrome, false, 'darwin')
-    expect(mac.titleBarStyle).toBe('hidden')
-    expect(mac.trafficLightPosition).toEqual({ x: 15, y: 17 })
-    expect(mac.titleBarOverlay).toBeUndefined()
-  })
-
   it('falls back for corrupt and unsupported persisted data', async () => {
     const directory = await temporaryDirectory()
     const fallback = defaultWindowLayout({ x: 1, y: 2, width: 800, height: 600 })

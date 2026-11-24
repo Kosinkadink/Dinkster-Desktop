@@ -154,7 +154,9 @@ try {
         maximized: window.isMaximized(),
         fullScreen: window.isFullScreen(),
         buttons:
-          process.platform === 'darwin' ? window.getWindowButtonPosition() : null,
+          process.platform === 'darwin'
+            ? window.getWindowButtonPosition()
+            : null,
       }
     }, url)
   const setWindow = (action) =>
@@ -235,7 +237,11 @@ try {
           `${name}: content starts after the traffic lights`,
         )
       else
-        assert.equal(measured.paddingLeft, 12, `${name}: no traffic-light inset`)
+        assert.equal(
+          measured.paddingLeft,
+          12,
+          `${name}: no traffic-light inset`,
+        )
     } else if (controlsShown) {
       assert(measured.overlay, `${name}: window controls overlay shown`)
       assert.equal(measured.overlay.x, 0, `${name}: buttons at the right`)

@@ -435,11 +435,14 @@ console.log(JSON.stringify(row));
   assert(!setup[0].includes('--yes'))
   assert.equal(setup[0][setup[0].indexOf('--engine') + 1], 'main')
   assert(history.every((args) => !args.includes('--yes')))
-  if (artifacts)
-    await manager.screenshot({
-      path: join(artifacts, 'local-plan.png'),
-      fullPage: true,
-    })
+  if (artifacts) {
+    await manager
+      .getByLabel('Sandbox local pack workers')
+      .scrollIntoViewIfNeeded()
+    await manager.screenshot({ path: join(artifacts, 'sandbox-viewport.png') })
+    await apply.scrollIntoViewIfNeeded()
+    await manager.screenshot({ path: join(artifacts, 'local-plan.png') })
+  }
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await manager
     .getByRole('button', { name: 'Open main', exact: true })
@@ -1038,7 +1041,10 @@ console.log(JSON.stringify(row));
   )
   if (artifacts) {
     await manager
-      .getByText('Explicit development sources', { exact: true })
+      .getByRole('region', {
+        name: 'Explicit development sources',
+        exact: true,
+      })
       .screenshot({ path: join(artifacts, 'development-dev-server-setup.png') })
     await manager
       .getByLabel('Reviewed environment details')
@@ -1085,7 +1091,10 @@ console.log(JSON.stringify(row));
   )
   if (artifacts) {
     await manager
-      .getByText('Explicit development sources', { exact: true })
+      .getByRole('region', {
+        name: 'Explicit development sources',
+        exact: true,
+      })
       .screenshot({ path: join(artifacts, 'development-git-setup.png') })
     await manager
       .getByLabel('Reviewed environment details')

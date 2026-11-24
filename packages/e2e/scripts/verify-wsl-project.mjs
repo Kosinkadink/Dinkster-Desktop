@@ -80,35 +80,38 @@ try {
     env,
   })
   manager = await installationManager(app)
-  await manager
-    .getByText('Manage a local installation', { exact: true })
-    .click()
-  await manager.locator('#local-host').selectOption('wsl2')
-  await manager.locator('#wsl-check').click()
-  await expect(manager.locator('#wsl-status')).toContainText(
-    'Prepare a private Ubuntu',
-  )
+  await manager.getByText('Advanced settings', { exact: true }).click()
+  await manager.getByLabel('Engine host').selectOption('wsl2')
+  await manager.getByRole('button', { name: 'Check WSL2' }).click()
+  await expect(manager.getByText('Prepare a private Ubuntu')).toBeVisible()
   await manager.screenshot({
     path: join(scratch, 'before-provisioning.png'),
     fullPage: true,
   })
-  await manager.locator('#wsl-prepare').click()
-  await expect(manager.locator('#wsl-status')).toContainText(
-    'Private WSL2 distribution ready',
-    { timeout: 30 * 60_000 },
-  )
+  await manager
+    .getByRole('button', { name: 'Prepare private distribution' })
+    .click()
+  await expect(
+    manager.getByText('Private WSL2 distribution ready'),
+  ).toBeVisible({
+    timeout: 30 * 60_000,
+  })
   receipt.ready = await host.status()
   assert.equal(receipt.ready.ready, true)
   receipt.steps.push(
     'Explicit UI preparation created a private WSL2 distribution',
   )
 
-  await manager.locator('#local-name').fill('Private WSL acceptance')
-  await manager.locator('#wsl-root').click()
-  await expect(manager.locator('#local-root')).toHaveValue(
+  await manager
+    .getByLabel('Environment name', { exact: true })
+    .fill('Private WSL acceptance')
+  await manager
+    .getByRole('button', { name: 'Use Linux environment folder' })
+    .click()
+  await expect(manager.getByLabel('Install location')).toHaveValue(
     /\\\\wsl\.localhost\\Dinkster-Desktop-/,
   )
-  root = await manager.locator('#local-root').inputValue()
+  root = await manager.getByLabel('Install location').inputValue()
   assert.equal(wslLocation(root).distribution, host.distribution)
   receipt.root = root
 
@@ -123,18 +126,28 @@ try {
       filePaths: [source],
     })
   }, source)
-  await manager.locator('#wsl-copy').click()
-  await expect(manager.locator('#message')).toContainText(
-    'Models copied to /home/dinkster/models/models',
-  )
+  await manager
+    .getByRole('button', { name: 'Copy Windows model folder' })
+    .click()
+  await expect(
+    manager
+      .getByRole('status')
+      .filter({ hasText: /Models copied|already exists/ }),
+  ).toContainText('Models copied to /home/dinkster/models/models')
   const copied = wslWindowsPath(
     host.distribution,
     '/home/dinkster/models/models/sentinel.safetensors',
   )
   assert.deepEqual(await readFile(copied), bytes)
   assert.deepEqual(await readFile(join(source, 'sentinel.safetensors')), bytes)
-  await manager.locator('#wsl-copy').click()
-  await expect(manager.locator('#message')).toContainText('already exists')
+  await manager
+    .getByRole('button', { name: 'Copy Windows model folder' })
+    .click()
+  await expect(
+    manager
+      .getByRole('status')
+      .filter({ hasText: /Models copied|already exists/ }),
+  ).toContainText('already exists')
   assert.deepEqual(await readFile(copied), bytes)
   receipt.copy = {
     source,
@@ -146,28 +159,37 @@ try {
     'Real Windows-to-WSL copy preserved originals and refused replacement',
   )
 
-  await manager.locator('#local-mirrors').fill('https://releases.dinkster.org')
-  await manager.locator('#local-channel').selectOption('nightly')
-  await manager.locator('#inspect-hardware').click()
+  await manager
+    .getByLabel('Mirrors, in order')
+    .fill('https://releases.dinkster.org')
+  await manager.getByLabel('Channel', { exact: true }).selectOption('nightly')
+  await manager
+    .getByRole('button', { name: 'Inspect hardware and variants' })
+    .click()
   await expect(
-    manager.locator('#local-variant option[value="linux-cpu"]'),
+    manager.getByLabel('Hardware variant').locator('option[value="linux-cpu"]'),
   ).toHaveCount(1, { timeout: 10 * 60_000 })
   // CPU is explicit; no device is admitted by this Desktop lifecycle check.
-  assert.equal(await manager.locator('#local-gpus').inputValue(), '')
-  await manager.locator('#local-variant').selectOption('linux-cpu')
+  assert.equal(
+    await manager.getByLabel('Assigned NVIDIA devices').inputValue(),
+    '',
+  )
+  await manager.getByLabel('Hardware variant').selectOption('linux-cpu')
   await manager
-    .locator('#local-port')
+    .getByLabel('Supervisor port')
     .fill(process.env.DINKSTER_WSL_PORT ?? '54796')
   await manager
     .getByRole('button', { name: 'Review environment plan', exact: true })
     .click()
-  await expect(manager.locator('#apply')).toBeVisible({ timeout: 10 * 60_000 })
+  await expect(
+    manager.getByRole('button', { name: 'Confirm and apply' }),
+  ).toBeVisible({ timeout: 10 * 60_000 })
   await manager.screenshot({
     path: join(scratch, 'install-plan.png'),
     fullPage: true,
   })
   setupStarted = true
-  await manager.locator('#apply').click()
+  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await expect(
     manager.getByRole('button', { name: 'Open main', exact: true }),
   ).toBeVisible({ timeout: 30 * 60_000 })

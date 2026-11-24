@@ -372,11 +372,20 @@ console.log(JSON.stringify(row));
     env,
   })
   const manager = await installationManager(app)
-  await manager.getByText('No projects yet.', { exact: false }).waitFor()
+  const reviewedDetails = manager.getByLabel('Reviewed environment details')
+  const apply = manager.getByRole('button', { name: 'Confirm and apply' })
+  const savedEnvironments = manager.getByRole('list', {
+    name: 'Saved environments',
+  })
+  const toast = manager
+    .getByRole('status')
+    .filter({ hasText: 'Environment operation completed' })
+  const errorBanner = manager.getByRole('alert')
+  await manager.getByText('No environments yet', { exact: false }).waitFor()
   await expect
     .poll(() =>
       manager
-        .locator('header')
+        .getByRole('banner')
         .evaluate((bar) =>
           getComputedStyle(bar).getPropertyValue('-webkit-app-region'),
         ),
@@ -387,26 +396,26 @@ console.log(JSON.stringify(row));
       path: join(artifacts, 'projects-default.png'),
       fullPage: true,
     })
+  await manager.getByText('Advanced settings', { exact: true }).click()
   await manager
-    .getByText('Manage a local installation', { exact: true })
-    .click()
-  await manager.locator('#local-name').fill('Local studio')
-  await manager.locator('#local-root').fill(join(scratch, 'installation'))
-  await manager.locator('#local-mirrors').fill(mirror)
+    .getByLabel('Environment name', { exact: true })
+    .fill('Local studio')
+  await manager
+    .getByLabel('Install location')
+    .fill(join(scratch, 'installation'))
+  await manager.getByLabel('Mirrors, in order').fill(mirror)
   await manager
     .getByRole('button', { name: 'Inspect hardware and variants' })
     .click()
   await expect(
-    manager.locator('#local-variant option[value="linux-cpu"]'),
+    manager.getByLabel('Hardware variant').locator('option[value="linux-cpu"]'),
   ).toHaveCount(1)
-  await expect(manager.locator('#local-variant')).toHaveValue('')
-  await manager.locator('#local-variant').selectOption('linux-cpu')
-  await expect(manager.locator('#hardware-reason')).toContainText(
-    'Explicit override: CPU',
-  )
-  await expect(manager.locator('#hardware-reason')).toContainText(
-    '123,456,789 bytes',
-  )
+  await expect(manager.getByLabel('Hardware variant')).toHaveValue('')
+  await manager.getByLabel('Hardware variant').selectOption('linux-cpu')
+  await expect(manager.getByLabel('Hardware variant')).toHaveValue('linux-cpu')
+  await expect(
+    manager.getByText('CPU runs locally without an NVIDIA GPU.').last(),
+  ).toContainText('123,456,789 bytes')
   if (artifacts)
     await manager.screenshot({
       path: join(artifacts, 'hardware-cpu-choice.png'),
@@ -426,11 +435,14 @@ console.log(JSON.stringify(row));
   assert(!setup[0].includes('--yes'))
   assert.equal(setup[0][setup[0].indexOf('--engine') + 1], 'main')
   assert(history.every((args) => !args.includes('--yes')))
-  if (artifacts)
-    await manager.screenshot({
-      path: join(artifacts, 'local-plan.png'),
-      fullPage: true,
-    })
+  if (artifacts) {
+    await manager
+      .getByLabel('Sandbox local pack workers')
+      .scrollIntoViewIfNeeded()
+    await manager.screenshot({ path: join(artifacts, 'sandbox-viewport.png') })
+    await apply.scrollIntoViewIfNeeded()
+    await manager.screenshot({ path: join(artifacts, 'local-plan.png') })
+  }
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await manager
     .getByRole('button', { name: 'Open main', exact: true })
@@ -646,7 +658,7 @@ console.log(JSON.stringify(row));
   await manager
     .getByRole('button', { name: 'Manage main', exact: true })
     .click()
-  await manager.locator('#local-operation').selectOption('update')
+  await manager.getByLabel('Operation').selectOption('update')
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await engine.getByRole('heading', { name: 'Updated supervisor' }).waitFor()
@@ -679,9 +691,9 @@ console.log(JSON.stringify(row));
     .getByText('Environment operation completed.', { exact: false })
     .waitFor()
   await manager
-    .locator('#local-operation')
+    .getByLabel('Operation')
     .selectOption({ label: 'Restore previous' })
-  await expect(manager.locator('#local-operation')).toHaveValue('rollback')
+  await expect(manager.getByLabel('Operation')).toHaveValue('rollback')
   if (artifacts)
     await manager.screenshot({
       path: join(artifacts, 'restore-previous.png'),
@@ -821,45 +833,40 @@ console.log(JSON.stringify(row));
     true,
   )
   for (const operation of ['status', 'cleanup', 'space']) {
-    await manager.locator('#local-operation').selectOption(operation)
+    await manager.getByLabel('Operation').selectOption(operation)
     await manager
       .getByRole('button', { name: 'Review environment plan' })
       .click()
-    await expect(manager.locator('#plan')).toContainText(
+    await expect(reviewedDetails).toContainText(
       'Automatic snapshot cleanup: off',
     )
-    await expect(manager.locator('#plan')).toContainText(
+    await expect(reviewedDetails).toContainText(
       'Snapshot 7: retained - current snapshot',
     )
-    await expect(manager.locator('#plan')).not.toContainText(
-      /generation|rollback/i,
-    )
+    await expect(reviewedDetails).not.toContainText(/generation|rollback/i)
     if (operation === 'space') {
-      await expect(manager.locator('#plan')).toContainText('Environment:')
-      await expect(manager.locator('#plan')).toContainText(
+      await expect(reviewedDetails).toContainText('Environment:')
+      await expect(reviewedDetails).toContainText(
         'Eligible snapshot cleanup: 1,024 bytes',
       )
     } else {
-      await expect(manager.locator('#plan')).toContainText(
-        'snapshots 2 await retry',
-      )
+      await expect(reviewedDetails).toContainText('snapshots 2 await retry')
     }
-    if (operation === 'cleanup')
-      await expect(manager.locator('#apply')).toBeVisible()
-    else await expect(manager.locator('#apply')).toBeHidden()
+    if (operation === 'cleanup') await expect(apply).toBeVisible()
+    else await expect(apply).toBeHidden()
     if (artifacts)
-      await manager.locator('#plan-panel').screenshot({
+      await reviewedDetails.screenshot({
         path: join(artifacts, `snapshot-${operation}.png`),
       })
   }
-  await manager.locator('#local-operation').selectOption('doctor')
+  await manager.getByLabel('Operation').selectOption('doctor')
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
-  await expect(manager.locator('#plan')).toContainText(
+  await expect(reviewedDetails).toContainText(
     'Variant: studio-cuda (user-defined)\nTorch: 2.14.1+cu130\nTorch index: https://download.pytorch.org/whl/cu130',
   )
-  await expect(manager.locator('#apply')).toBeHidden()
+  await expect(apply).toBeHidden()
   if (artifacts)
-    await manager.locator('#plan-panel').screenshot({
+    await reviewedDetails.screenshot({
       path: join(artifacts, 'user-defined-base.png'),
     })
   for (const labelled of [true, false]) {
@@ -885,25 +892,23 @@ console.log(JSON.stringify(row));
     await manager
       .getByRole('button', { name: 'Review environment plan' })
       .click()
-    await expect(manager.locator('#plan')).toContainText(
+    await expect(reviewedDetails).toContainText(
       'Variant: linux-nvidia (published)',
     )
-    await expect(manager.locator('#plan')).toContainText(
+    await expect(reviewedDetails).toContainText(
       'Engine: 0.4.2 (sha256:' + 'b'.repeat(64) + ')',
     )
     if (labelled) {
-      await expect(manager.locator('#plan')).toContainText(
-        `Base label: ${baseLabel}`,
-      )
-      await expect(manager.locator('#plan')).toContainText(
+      await expect(reviewedDetails).toContainText(`Base label: ${baseLabel}`)
+      await expect(reviewedDetails).toContainText(
         `Engine label: ${engineLabel}`,
       )
     } else {
-      await expect(manager.locator('#plan')).not.toContainText('Base label:')
-      await expect(manager.locator('#plan')).not.toContainText('Engine label:')
+      await expect(reviewedDetails).not.toContainText('Base label:')
+      await expect(reviewedDetails).not.toContainText('Engine label:')
     }
     if (artifacts)
-      await manager.locator('#plan-panel').screenshot({
+      await reviewedDetails.screenshot({
         path: join(
           artifacts,
           labelled ? 'installed-labels.png' : 'legacy-labels.png',
@@ -915,25 +920,30 @@ console.log(JSON.stringify(row));
       path: join(artifacts, 'local-applied.png'),
       fullPage: true,
     })
-  await manager.locator('#local-kind').selectOption('development')
+  await manager.getByLabel('Source kind').selectOption('development')
   await manager
-    .locator('#development-engine')
+    .getByLabel('Engine source')
     .fill(join(scratch, 'engine checkout'))
   await manager
-    .locator('#development-inference')
+    .getByLabel('dinkster-inference source (optional)')
     .fill(join(scratch, 'inference'))
-  await manager.locator('#development-helper').fill(join(scratch, 'helper'))
-  await manager.locator('#development-packs').fill(join(scratch, 'pack one'))
   await manager
-    .locator('#development-frontend')
+    .getByLabel('dinkster-pack-helpers source (optional)')
+    .fill(join(scratch, 'helper'))
+  await manager
+    .getByLabel('Pack sources (one per line, optional)')
+    .fill(join(scratch, 'pack one'))
+  await manager
+    .getByLabel('Built frontend folder (optional)')
     .fill(join(scratch, 'frontend dist'))
   await manager
     .getByRole('button', { name: 'Inspect hardware and variants' })
     .click()
-  await manager.locator('#local-variant').selectOption('linux-cpu')
+  await manager.getByLabel('Hardware variant').selectOption('linux-cpu')
   if (artifacts)
     await manager
-      .locator('#local-settings')
+      .getByText('Advanced settings', { exact: true })
+      .locator('..')
       .screenshot({ path: join(artifacts, 'development-setup.png') })
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await manager.getByRole('button', { name: 'Confirm and apply' }).waitFor()
@@ -946,10 +956,10 @@ console.log(JSON.stringify(row));
   assert(developmentCalls[0].includes('--plan'))
   assert(!developmentCalls[0].includes('--approve'))
   await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
-  await expect(manager.locator('#apply')).toBeHidden()
+  await expect(apply).toBeHidden()
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
-  await expect(manager.locator('#projects')).toContainText(
+  await expect(savedEnvironments).toContainText(
     'Development - unpublished sources',
   )
   await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
@@ -998,20 +1008,26 @@ console.log(JSON.stringify(row));
   assert(appliedDevelopment.includes('--yes'))
   if (artifacts) {
     await manager
-      .locator('#projects')
+      .getByRole('list', { name: 'Saved environments' })
       .screenshot({ path: join(artifacts, 'development-project-list.png') })
     await engine.screenshot({ path: join(artifacts, 'development-engine.png') })
   }
-  await manager.locator('#development-frontend').fill('')
+  await manager.getByLabel('Built frontend folder (optional)').fill('')
   await manager
-    .locator('#development-frontend-dev')
+    .getByLabel('Frontend dev server', { exact: true })
     .fill('http://192.0.2.1:5173')
+  await manager
+    .getByRole('button', { name: 'Inspect hardware and variants' })
+    .click()
+  await manager.getByLabel('Hardware variant').selectOption('linux-cpu')
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
-  await expect(manager.locator('#message')).toContainText('explicit permission')
-  await expect(manager.locator('#apply')).toBeHidden()
-  await manager.locator('#development-frontend-remote').check()
+  await expect(errorBanner).toContainText('explicit permission')
+  await expect(apply).toBeHidden()
+  await manager
+    .getByLabel('Explicitly allow a non-loopback frontend dev server')
+    .check()
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
-  await expect(manager.locator('#apply')).toBeVisible()
+  await expect(apply).toBeVisible()
   const remoteFrontendCall = (await readFile(calls, 'utf8'))
     .trim()
     .split('\n')
@@ -1024,31 +1040,37 @@ console.log(JSON.stringify(row));
     'http://192.0.2.1:5173',
   )
   if (artifacts) {
+    await manager.evaluate(() => window.scrollTo(0, 0))
+    await manager.screenshot({
+      path: join(artifacts, 'development-dev-server-setup.png'),
+      fullPage: true,
+    })
     await manager
-      .locator('#development-sources')
-      .screenshot({ path: join(artifacts, 'development-dev-server-setup.png') })
-    await manager
-      .locator('#plan-panel')
+      .getByLabel('Reviewed environment details')
       .screenshot({ path: join(artifacts, 'development-dev-server-plan.png') })
   }
   await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
   const gitPack =
     'https://github.com/Kosinkadink/dinkster-nodes.git#ref=refs/pull/123/head&subdirectory=packages/dinkster-nodes-utilities'
-  await manager.locator('#development-packs').fill(gitPack)
-  await manager.locator('#development-frontend-dev').fill('')
-  await manager.locator('#development-frontend-remote').uncheck()
+  await manager
+    .getByLabel('Pack sources (one per line, optional)')
+    .fill(gitPack)
+  await manager.getByLabel('Frontend dev server', { exact: true }).fill('')
+  await manager
+    .getByLabel('Explicitly allow a non-loopback frontend dev server')
+    .uncheck()
   const gitFrontend =
     'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=selected-frontend'
-  await manager.locator('#development-frontend-git').fill(gitFrontend)
+  await manager.getByLabel('Frontend Git source').fill(gitFrontend)
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
-  await expect(manager.locator('#apply')).toBeVisible()
-  await expect(manager.locator('#plan')).toContainText(
+  await expect(apply).toBeVisible()
+  await expect(reviewedDetails).toContainText(
     'Requested ref: refs/pull/123/head',
   )
-  await expect(manager.locator('#plan')).toContainText(
+  await expect(reviewedDetails).toContainText(
     `Resolved commit: ${'f'.repeat(40)}`,
   )
-  await expect(manager.locator('#plan')).toContainText(
+  await expect(reviewedDetails).toContainText(
     'Package folder: packages/dinkster-nodes-utilities',
   )
   const gitCall = (await readFile(calls, 'utf8'))
@@ -1063,37 +1085,45 @@ console.log(JSON.stringify(row));
   assert(
     !gitCall.includes('--frontend-dev') && !gitCall.includes('--frontend-root'),
   )
-  await expect(manager.locator('#plan')).toContainText(
+  await expect(reviewedDetails).toContainText(
     'Requested ref: selected-frontend',
   )
   if (artifacts) {
+    await manager.evaluate(() => window.scrollTo(0, 0))
+    await manager.screenshot({
+      path: join(artifacts, 'development-git-setup.png'),
+      fullPage: true,
+    })
     await manager
-      .locator('#development-sources')
-      .screenshot({ path: join(artifacts, 'development-git-setup.png') })
-    await manager
-      .locator('#plan-panel')
+      .getByLabel('Reviewed environment details')
       .screenshot({ path: join(artifacts, 'development-git-plan.png') })
   }
   await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
-  await manager.locator('#local-operation').selectOption('source')
-  await expect(manager.locator('#source-settings')).toBeVisible()
-  await manager.locator('#local-kind').selectOption('release')
-  await expect(manager.locator('#source-settings')).toBeHidden()
-  await expect(manager.locator('#development-sources')).toBeHidden()
-  await manager.locator('#local-operation').selectOption('source')
+  await manager.getByLabel('Operation').selectOption('source')
+  await expect(
+    manager.getByText('Managed Git sources on the installed release base', {
+      exact: true,
+    }),
+  ).toBeVisible()
+  await manager.getByLabel('Source kind').selectOption('release')
+  await expect(
+    manager.getByText('Managed Git sources on the installed release base', {
+      exact: true,
+    }),
+  ).toBeHidden()
+  await expect(
+    manager.getByText('Explicit development sources', { exact: true }),
+  ).toBeHidden()
+  await manager.getByLabel('Operation').selectOption('source')
   await manager
-    .locator('#source-url')
+    .getByLabel('Public HTTPS repository URL')
     .fill('https://github.com/Kosinkadink/Dinkster.git')
-  await manager.locator('#source-ref').fill('selected-managed-ref')
+  await manager.getByLabel('Git ref (optional)').fill('selected-managed-ref')
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
-  await expect(manager.locator('#apply')).toBeVisible()
-  await expect(manager.locator('#plan')).toContainText(
-    `"commit": "${'a'.repeat(40)}"`,
-  )
+  await expect(apply).toBeVisible()
+  await expect(reviewedDetails).toContainText(`"commit": "${'a'.repeat(40)}"`)
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
-  await expect(manager.locator('#message')).toContainText(
-    'Environment operation completed',
-  )
+  await expect(toast).toContainText('Environment operation completed')
   let managedCall = (await readFile(calls, 'utf8'))
     .trim()
     .split('\n')
@@ -1105,15 +1135,14 @@ console.log(JSON.stringify(row));
     `sha256:${'e'.repeat(64)}`,
   )
   assert(!managedCall.includes('--approve'))
-  await manager.locator('#source-action').selectOption('release')
+  await manager.getByLabel('Operation').selectOption('source')
+  await manager.getByLabel('Source action').selectOption('release')
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
-  await expect(manager.locator('#plan')).toContainText(
+  await expect(reviewedDetails).toContainText(
     'Restore recorded release history entry: 7',
   )
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
-  await expect(manager.locator('#message')).toContainText(
-    'Environment operation completed',
-  )
+  await expect(toast).toContainText('Environment operation completed')
   managedCall = (await readFile(calls, 'utf8'))
     .trim()
     .split('\n')
@@ -1121,14 +1150,12 @@ console.log(JSON.stringify(row));
     .filter((args) => args[2] === 'restore')
     .at(-1)
   assert.deepEqual(managedCall.slice(2), ['restore', '7', '--json', '--yes'])
-  await manager.locator('#local-operation').selectOption('update')
-  await manager.locator('#local-frontend-version').fill('0.3.2rc1')
+  await manager.getByLabel('Operation').selectOption('update')
+  await manager.getByLabel('Published frontend version').fill('0.3.2rc1')
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
-  await expect(manager.locator('#plan')).toContainText('0.3.2rc1')
+  await expect(reviewedDetails).toContainText('0.3.2rc1')
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
-  await expect(manager.locator('#message')).toContainText(
-    'Environment operation completed',
-  )
+  await expect(toast).toContainText('Environment operation completed')
   managedCall = (await readFile(calls, 'utf8'))
     .trim()
     .split('\n')
@@ -1145,11 +1172,14 @@ console.log(JSON.stringify(row));
   )
   if (artifacts)
     await manager
-      .locator('#plan-panel')
+      .getByLabel('Reviewed environment details')
       .screenshot({ path: join(artifacts, 'managed-frontend-plan.png') })
-  await manager.locator('#name').fill('Remote studio')
-  await manager.locator('#url').fill(urls[1])
-  await manager.getByRole('button', { name: 'Save remote project' }).click()
+  await manager
+    .getByText('Connect a remote environment', { exact: true })
+    .click()
+  await manager.getByLabel('Remote environment name').fill('Remote studio')
+  await manager.getByLabel('Server URL').fill(urls[1])
+  await manager.getByRole('button', { name: 'Save remote binding' }).click()
   await manager.getByRole('button', { name: 'Open Remote engine' }).waitFor()
   const count = (await readFile(calls, 'utf8')).trim().split('\n').length
   const remoteOpened = app.waitForEvent('window')
@@ -1243,42 +1273,61 @@ console.log(JSON.stringify(row));
         module: join(root, 'packages/desktop/dist/hardware.js'),
       },
     )
-    await manager.locator('#local-gpus').fill('1')
+    await manager.getByLabel('Assigned NVIDIA devices').fill('1')
     await manager
       .getByRole('button', { name: 'Inspect hardware and variants' })
       .click()
     if (driver === '524.99') {
-      await expect(manager.locator('#local-variant')).toHaveValue('')
-      await expect(manager.locator('#hardware-reason')).toContainText(
+      await expect(manager.getByLabel('Hardware variant')).toHaveValue('')
+      await expect(manager.getByLabel('Hardware guidance')).toContainText(
         'Requires NVIDIA driver 525',
       )
       await expect(
-        manager.locator('#local-variant option[value="win-cpu"]'),
+        manager
+          .getByLabel('Hardware variant')
+          .locator('option[value="win-cpu"]'),
       ).toHaveCount(1)
       if (artifacts)
         await manager
-          .locator('#local-settings')
+          .getByText('Advanced settings', { exact: true })
+          .locator('..')
           .screenshot({ path: join(artifacts, 'hardware-old-driver.png') })
-      await manager.locator('#local-variant').selectOption('win-cpu')
-      await expect(manager.locator('#hardware-reason')).toContainText(
-        'Explicit override: CPU',
+      await manager.getByLabel('Hardware variant').selectOption('win-cpu')
+      await expect(manager.getByLabel('Hardware variant')).toHaveValue(
+        'win-cpu',
       )
+      await expect(
+        manager.getByText('CPU runs locally without an NVIDIA GPU.').last(),
+      ).toBeVisible()
     } else {
-      await expect(manager.locator('#local-variant')).toHaveValue('win-nvidia')
-      await expect(manager.locator('#hardware-reason')).toContainText(
+      await expect(manager.getByLabel('Hardware variant')).toHaveValue(
+        'win-nvidia',
+      )
+      await expect(manager.getByLabel('Hardware guidance')).toContainText(
         'lowest compute capability 8.9',
       )
       if (artifacts)
         await manager
-          .locator('#local-settings')
+          .getByText('Advanced settings', { exact: true })
+          .locator('..')
           .screenshot({ path: join(artifacts, 'hardware-assigned-gpu.png') })
-      await manager.locator('#local-variant').selectOption('win-nvidia-cu126')
-      await expect(manager.locator('#hardware-reason')).toContainText(
-        'Explicit override:',
+      await manager
+        .getByLabel('Hardware variant')
+        .selectOption('win-nvidia-cu126')
+      await expect(manager.getByLabel('Hardware variant')).toHaveValue(
+        'win-nvidia-cu126',
       )
+      await expect(
+        manager
+          .getByText(
+            'Assigned GPUs meet driver 525; lowest compute capability 8.9 meets 5.0.',
+          )
+          .last(),
+      ).toBeVisible()
       if (artifacts)
         await manager
-          .locator('#local-settings')
+          .getByText('Advanced settings', { exact: true })
+          .locator('..')
           .screenshot({ path: join(artifacts, 'hardware-override.png') })
     }
   }
@@ -1706,12 +1755,13 @@ console.log(JSON.stringify(row));
     ?.windows()
     .find(
       (page) =>
-        page.url().startsWith('file:') && page.url().includes('projects'),
+        page.url().startsWith('file:') &&
+        page.url().includes('desktop-environments.html'),
     )
   if (manager && !manager.isClosed()) {
     console.error(
       'Project manager status:',
-      await manager.locator('#message').textContent(),
+      await manager.getByRole('alert').allTextContents(),
     )
     if (artifacts)
       await manager.screenshot({

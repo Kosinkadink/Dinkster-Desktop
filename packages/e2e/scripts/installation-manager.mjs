@@ -12,7 +12,9 @@ export async function installationManager(app) {
     .toBe(true)
   const existing = app
     .windows()
-    .find((page) => new URL(page.url()).pathname.endsWith('/projects.html'))
+    .find((page) =>
+      new URL(page.url()).pathname.endsWith('/desktop-environments.html'),
+    )
   const opened = existing
     ? Promise.resolve(existing)
     : app.waitForEvent('window')
@@ -24,7 +26,7 @@ export async function installationManager(app) {
   })
   const page = await opened
   await expect(
-    page.getByRole('heading', { name: 'Projects', exact: true }),
+    page.getByRole('heading', { name: 'Environments', exact: true }),
   ).toBeVisible()
   return page
 }

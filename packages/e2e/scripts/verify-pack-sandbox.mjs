@@ -46,20 +46,23 @@ async function launch(environment, profile) {
     env: environment,
   })
   const page = await installationManager(app)
-  await page.getByText('Manage a local installation', { exact: true }).click()
+  await page.getByText('Advanced settings', { exact: true }).click()
   return page
 }
 async function stop(page) {
-  await page.locator('#local-operation').selectOption('stop')
+  await page.getByLabel('Operation').selectOption('stop')
   await page
     .getByRole('button', { name: 'Review environment plan', exact: true })
     .click()
-  await expect(page.locator('#apply')).toBeVisible()
-  await page.locator('#apply').click()
-  await expect(page.locator('#message')).toContainText(
-    'Environment operation completed',
-    { timeout: 60_000 },
-  )
+  await expect(
+    page.getByRole('button', { name: 'Confirm and apply' }),
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Confirm and apply' }).click()
+  await expect(
+    page
+      .getByRole('status')
+      .filter({ hasText: /Binding saved|Environment operation completed/ }),
+  ).toContainText('Environment operation completed', { timeout: 60_000 })
 }
 async function json(url, options) {
   const response = await fetch(url, options)
@@ -107,21 +110,29 @@ try {
   )
   const hostNamespaces = await namespaces(process.pid)
   const page = await launch(env, 'chromium-available')
-  await page.locator('#local-name').fill('Sandbox acceptance')
-  await page.locator('#local-root').fill(project)
-  await page.locator('#local-port').fill(String(port))
-  await page.locator('#check-sandbox').click()
-  await expect(page.locator('#local-sandbox')).toBeEnabled({ timeout: 60_000 })
-  await expect(page.locator('#local-sandbox')).not.toBeChecked()
+  await page
+    .getByLabel('Environment name', { exact: true })
+    .fill('Sandbox acceptance')
+  await page.getByLabel('Install location').fill(project)
+  await page.getByLabel('Supervisor port').fill(String(port))
+  await page.getByRole('button', { name: 'Check sandbox availability' }).click()
+  await expect(page.getByLabel('Sandbox local pack workers')).toBeEnabled({
+    timeout: 60_000,
+  })
+  await expect(page.getByLabel('Sandbox local pack workers')).not.toBeChecked()
   for (const sandboxed of [false, true]) {
-    await page.locator('#local-sandbox').setChecked(sandboxed)
-    await page.locator('#bind-local').click()
-    await expect(page.locator('#message')).toContainText('Binding saved')
+    await page.getByLabel('Sandbox local pack workers').setChecked(sandboxed)
+    await page.getByRole('button', { name: 'Save existing binding' }).click()
+    await expect(
+      page
+        .getByRole('status')
+        .filter({ hasText: /Binding saved|Environment operation completed/ }),
+    ).toContainText('Binding saved')
     const saved = JSON.parse(
       await readFile(join(data, 'projects.json'), 'utf8'),
     )
     assert.equal(saved.projects[0].sandboxPacks, sandboxed)
-    await page.locator('#sandbox-settings').screenshot({
+    await page.screenshot({
       path: join(artifacts, sandboxed ? 'sandbox-on.png' : 'sandbox-off.png'),
     })
     await page.getByRole('button', { name: 'Open main', exact: true }).click()
@@ -208,9 +219,9 @@ try {
       children,
     })
     if (!sandboxed) {
-      await page.locator('#local-sandbox').check()
-      await page.locator('#bind-local').click()
-      await expect(page.locator('#message')).toContainText(
+      await page.getByLabel('Sandbox local pack workers').check()
+      await page.getByRole('button', { name: 'Save existing binding' }).click()
+      await expect(page.getByRole('alert')).toContainText(
         'Stop the local engines',
       )
       const unchanged = JSON.parse(
@@ -229,38 +240,53 @@ try {
     'chromium-unavailable',
   )
   await unavailable
-    .locator('#local-project')
+    .getByLabel('Saved environment')
     .selectOption({ label: 'Sandbox acceptance' })
-  await unavailable.locator('#check-sandbox').click()
-  await expect(unavailable.locator('#sandbox-detail')).toContainText(
-    'bwrap not found',
-    { timeout: 60_000 },
-  )
-  await expect(unavailable.locator('#local-sandbox')).toBeChecked()
   await unavailable
-    .locator('#sandbox-settings')
-    .screenshot({ path: join(artifacts, 'sandbox-saved-unavailable.png') })
+    .getByRole('button', { name: 'Check sandbox availability' })
+    .click()
+  await expect(unavailable.getByText('bwrap not found')).toBeVisible({
+    timeout: 60_000,
+  })
+  await expect(
+    unavailable.getByLabel('Sandbox local pack workers'),
+  ).toBeChecked()
+  await unavailable.screenshot({
+    path: join(artifacts, 'sandbox-saved-unavailable.png'),
+  })
   await unavailable
     .getByRole('button', { name: 'Open main', exact: true })
     .click()
-  await expect(unavailable.locator('#message')).toContainText('bwrap not found')
+  await expect(unavailable.getByRole('alert')).toContainText('bwrap not found')
   const retained = JSON.parse(
     await readFile(join(data, 'projects.json'), 'utf8'),
   )
   assert.equal(retained.projects[0].sandboxPacks, true)
-  await unavailable.locator('#local-sandbox').uncheck()
-  await expect(unavailable.locator('#local-sandbox')).toBeDisabled()
-  await expect(unavailable.locator('#local-sandbox')).not.toBeChecked()
-  await unavailable.locator('#bind-local').click()
-  await expect(unavailable.locator('#message')).toContainText('Binding saved')
+  await unavailable.getByLabel('Sandbox local pack workers').uncheck()
+  await expect(
+    unavailable.getByLabel('Sandbox local pack workers'),
+  ).toBeDisabled()
+  await expect(
+    unavailable.getByLabel('Sandbox local pack workers'),
+  ).not.toBeChecked()
+  await unavailable
+    .getByRole('button', { name: 'Save existing binding' })
+    .click()
+  await expect(
+    unavailable
+      .getByRole('status')
+      .filter({ hasText: /Binding saved|Environment operation completed/ }),
+  ).toContainText('Binding saved')
   const disabled = JSON.parse(
     await readFile(join(data, 'projects.json'), 'utf8'),
   )
   assert.equal(disabled.projects[0].sandboxPacks, false)
-  await unavailable
-    .locator('#sandbox-settings')
-    .screenshot({ path: join(artifacts, 'sandbox-unavailable.png') })
-  receipt.unavailable = await unavailable.locator('#sandbox-detail').innerText()
+  await unavailable.screenshot({
+    path: join(artifacts, 'sandbox-unavailable.png'),
+  })
+  receipt.unavailable = await unavailable
+    .getByText('bwrap not found')
+    .innerText()
   await writeFile(
     join(artifacts, 'receipt.json'),
     JSON.stringify(receipt, null, 2),

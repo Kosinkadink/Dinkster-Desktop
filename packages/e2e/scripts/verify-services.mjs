@@ -130,7 +130,7 @@ async function launch(selection) {
   )
   const manager = await installationManager(app)
   await manager
-    .getByRole('heading', { name: 'Projects', exact: true })
+    .getByRole('heading', { name: 'Environments', exact: true })
     .waitFor()
   return manager
 }

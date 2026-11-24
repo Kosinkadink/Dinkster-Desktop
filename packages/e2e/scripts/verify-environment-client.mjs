@@ -1040,12 +1040,11 @@ console.log(JSON.stringify(row));
     'http://192.0.2.1:5173',
   )
   if (artifacts) {
-    await manager
-      .getByRole('region', {
-        name: 'Explicit development sources',
-        exact: true,
-      })
-      .screenshot({ path: join(artifacts, 'development-dev-server-setup.png') })
+    await manager.evaluate(() => window.scrollTo(0, 0))
+    await manager.screenshot({
+      path: join(artifacts, 'development-dev-server-setup.png'),
+      fullPage: true,
+    })
     await manager
       .getByLabel('Reviewed environment details')
       .screenshot({ path: join(artifacts, 'development-dev-server-plan.png') })
@@ -1090,12 +1089,11 @@ console.log(JSON.stringify(row));
     'Requested ref: selected-frontend',
   )
   if (artifacts) {
-    await manager
-      .getByRole('region', {
-        name: 'Explicit development sources',
-        exact: true,
-      })
-      .screenshot({ path: join(artifacts, 'development-git-setup.png') })
+    await manager.evaluate(() => window.scrollTo(0, 0))
+    await manager.screenshot({
+      path: join(artifacts, 'development-git-setup.png'),
+      fullPage: true,
+    })
     await manager
       .getByLabel('Reviewed environment details')
       .screenshot({ path: join(artifacts, 'development-git-plan.png') })

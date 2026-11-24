@@ -28,6 +28,5 @@ export async function installationManager(app) {
   await expect(
     page.getByRole('heading', { name: 'Environments', exact: true }),
   ).toBeVisible()
-  await page.getByText('Advanced settings', { exact: true }).click()
   return page
 }

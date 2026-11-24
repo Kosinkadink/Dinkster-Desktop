@@ -110,7 +110,10 @@ try {
     env,
   })
   const manager = await installationManager(app)
-  await manager.getByLabel('Environment name').fill('Contributor development')
+  await manager.getByText('Advanced settings', { exact: true }).click()
+  await manager
+    .getByLabel('Environment name', { exact: true })
+    .fill('Contributor development')
   await manager.getByLabel('Install location').fill(project)
   await manager
     .getByLabel('Mirrors, in order')
@@ -180,7 +183,9 @@ try {
     { timeout: 1_200_000 },
   )
   await expect(
-    manager.getByText('Development - unpublished sources'),
+    manager
+      .getByRole('list', { name: 'Saved environments' })
+      .getByText('Development - unpublished sources'),
   ).toBeVisible()
   const generation = join(
     project,

@@ -80,6 +80,7 @@ try {
     env,
   })
   manager = await installationManager(app)
+  await manager.getByText('Advanced settings', { exact: true }).click()
   await manager.getByLabel('Engine host').selectOption('wsl2')
   await manager.getByRole('button', { name: 'Check WSL2' }).click()
   await expect(manager.getByText('Prepare a private Ubuntu')).toBeVisible()
@@ -101,7 +102,9 @@ try {
     'Explicit UI preparation created a private WSL2 distribution',
   )
 
-  await manager.getByLabel('Environment name').fill('Private WSL acceptance')
+  await manager
+    .getByLabel('Environment name', { exact: true })
+    .fill('Private WSL acceptance')
   await manager
     .getByRole('button', { name: 'Use Linux environment folder' })
     .click()

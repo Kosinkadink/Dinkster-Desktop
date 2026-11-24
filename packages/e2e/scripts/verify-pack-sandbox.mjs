@@ -46,6 +46,7 @@ async function launch(environment, profile) {
     env: environment,
   })
   const page = await installationManager(app)
+  await page.getByText('Advanced settings', { exact: true }).click()
   return page
 }
 async function stop(page) {
@@ -108,7 +109,9 @@ try {
   )
   const hostNamespaces = await namespaces(process.pid)
   const page = await launch(env, 'chromium-available')
-  await page.getByLabel('Environment name').fill('Sandbox acceptance')
+  await page
+    .getByLabel('Environment name', { exact: true })
+    .fill('Sandbox acceptance')
   await page.getByLabel('Install location').fill(project)
   await page.getByLabel('Supervisor port').fill(String(port))
   await page.getByRole('button', { name: 'Check sandbox availability' }).click()

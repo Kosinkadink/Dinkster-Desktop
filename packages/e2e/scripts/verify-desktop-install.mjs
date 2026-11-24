@@ -39,7 +39,9 @@ try {
     try {
       assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
       page = await installationManager(app)
-      await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
+      await page
+        .getByRole('heading', { name: 'Environments', exact: true })
+        .waitFor()
       if (process.env.DINKSTER_VERIFY_PUBLIC_UPDATE === '1') {
         // Projects cannot invoke desktop capabilities. Check the installed
         // updater in the main process without overriding its public feed.
@@ -54,11 +56,18 @@ try {
         await writeFile(join(root, `${launch}-update.json`), JSON.stringify(update, null, 2))
       }
       if (launch === 'first-run') {
-        await page.getByText('No projects yet.', { exact: false }).waitFor()
-        await page.locator('#name').fill('Installed remote project')
-        await page.locator('#url').fill(url)
-        await page.locator('#channel').selectOption('nightly')
-        await page.getByRole('button', { name: 'Save remote project' }).click()
+        await page
+          .getByText('No environments yet', { exact: false })
+          .waitFor()
+        await page
+          .getByText('Connect a remote environment', { exact: true })
+          .click()
+        await page.getByLabel('Remote environment name').fill('Installed remote project')
+        await page.getByLabel('Server URL').fill(url)
+        await page.getByLabel('Remote channel').selectOption('nightly')
+        await page
+          .getByRole('button', { name: 'Save remote binding' })
+          .click()
       }
       await page.getByRole('button', { name: 'Open Remote engine' }).waitFor()
       const before = requests
@@ -80,10 +89,12 @@ try {
       assert.deepEqual(projects[0].engines, [{ id: 'remote', name: 'Remote engine', kind: 'remote', url }])
       if (bindings !== undefined) assert.equal(record, bindings, 'Restart must preserve remote bindings')
       bindings = record
-      await page.locator('#name').fill('Rejected credentials')
-      await page.locator('#url').fill(url.replace('://', '://blocked@'))
-      await page.getByRole('button', { name: 'Save remote project' }).click()
-      await expect(page.locator('#message')).toContainText('without credentials')
+      await page.getByLabel('Remote environment name').fill('Rejected credentials')
+      await page.getByLabel('Server URL').fill(url.replace('://', '://blocked@'))
+      await page
+        .getByRole('button', { name: 'Save remote binding' })
+        .click()
+      await expect(page.getByRole('alert')).toContainText('without credentials')
       assert.equal(await readFile(path, 'utf8'), record, 'Refused URL must not change bindings')
       async function inspect(directory) {
         for (const entry of await readdir(directory, { withFileTypes: true })) {

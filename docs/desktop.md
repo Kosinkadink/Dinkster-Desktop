@@ -110,13 +110,14 @@ the embedded web page's browser title.
 
 Window chrome uses `desktop-chrome.json` and `desktop-chrome.js` from that same
 verified wheel. Preparation verifies every site manifest digest before copying
-assets. Native overlay colors, the 56px height and macOS traffic-light position
+assets. Native overlay colors, the bar height and macOS traffic-light position
 come from the shared metadata, not private Desktop CSS. The DOM-only installer
 runs in an isolated world with no Electron, Node or preload capability. It keeps
 existing header controls, follows late/replaced headers, and supplies a shared
 fallback bar when no header exists. QA and Development labels stay stacked in
-the bar, leaving the bottom-right toast corner clear. Chrome follows live OS
-appearance changes; page content retains its own theme and CSP. The local
+the bar, leaving the bottom-right toast corner clear. Chrome follows the page's
+theme as it changes and drops the macOS traffic-light inset in full screen;
+page content retains its own theme and CSP. The local
 installation page permits only embedded data fonts for the shared bar; remote
 page policies are not broadened. Navigation, window-open and IPC policies do not
 change.

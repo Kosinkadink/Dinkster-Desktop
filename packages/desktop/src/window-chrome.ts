@@ -20,10 +20,8 @@ export function readWindowChrome(directory: string): WindowChrome {
 export function windowChromeOptions(chrome: WindowChrome, platform: NodeJS.Platform = process.platform): BrowserWindowConstructorOptions {
   return {
     titleBarStyle: 'hidden',
-    // On macOS the overlay only tells the page where the traffic lights are,
-    // so the bar's inset goes away in full screen, where they are hidden.
     ...(platform === 'darwin'
-      ? { trafficLightPosition: chrome.native.trafficLightPosition, titleBarOverlay: true }
+      ? { trafficLightPosition: chrome.native.trafficLightPosition }
       : { titleBarOverlay: chrome.native.overlay.dark }),
   }
 }
@@ -36,23 +34,28 @@ export function installWindowChrome(window: BrowserWindow, chrome: WindowChrome,
   // A script still waiting in a page that has gone never settles, so each
   // page's loop also ends when the next page loads or the window closes.
   let leave = (): void => {}
+  let screenChanged = (): void => {}
+  window.on('enter-full-screen', () => screenChanged())
+  window.on('leave-full-screen', () => screenChanged())
   const inPage = (code: string): Promise<unknown> => window.webContents.executeJavaScriptInIsolatedWorld(1001, [{ code }])
   const follow = async (left: Promise<void>): Promise<void> => {
     let active = true
     void left.then(() => { active = false })
     while (active && !window.isDestroyed()) {
       const unpublished = development()
+      const fullScreenChanged = new Promise<void>((resolve) => { screenChanged = resolve })
       window.setTitle(desktopTitle(services, unpublished))
       const theme = await inPage(`if (!globalThis.DinksterDesktopChrome) { ${chrome.script} }
         DinksterDesktopChrome.install({ ...${JSON.stringify({
           title: desktopTitle(services), platform: process.platform,
-          qa: services === 'qa', development: unpublished,
+          qa: services === 'qa', development: unpublished, fullScreen: window.isFullScreen(),
         })}, theme: ${pageTheme} });
         ${pageTheme}`) === 'light' ? 'light' : 'dark'
       if (!active || window.isDestroyed()) return
       if (process.platform !== 'darwin') window.setTitleBarOverlay(chrome.native.overlay[theme])
-      // The app switches its theme without reloading; wait for that, then match it.
-      await Promise.race([left, inPage(`new Promise((resolve) => {
+      // The app switches its theme without reloading, and macOS hides the
+      // traffic lights in full screen; wait for either, then match it.
+      await Promise.race([left, fullScreenChanged, inPage(`new Promise((resolve) => {
         const changed = () => ${pageTheme} !== ${JSON.stringify(theme)}
         if (changed()) return resolve()
         const observer = new MutationObserver(() => { if (changed()) { observer.disconnect(); resolve() } })

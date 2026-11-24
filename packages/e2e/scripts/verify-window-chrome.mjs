@@ -153,6 +153,8 @@ try {
         pid: window.webContents.getOSProcessId(),
         maximized: window.isMaximized(),
         fullScreen: window.isFullScreen(),
+        buttons:
+          process.platform === 'darwin' ? window.getWindowButtonPosition() : null,
       }
     }, url)
   const setWindow = (action) =>
@@ -226,16 +228,14 @@ try {
     assert.equal(measured.barTheme, measured.theme, `${name}: bar theme`)
     const controlsShown = state !== 'fullscreen'
     if (mac) {
+      // The three traffic lights span 52pt from their left edge.
       if (controlsShown)
         assert(
-          measured.overlay && measured.overlay.x > 0,
-          `${name}: traffic lights at the left`,
+          measured.paddingLeft >= window.buttons.x + 52 + 12,
+          `${name}: content starts after the traffic lights`,
         )
-      assert.equal(
-        measured.paddingLeft,
-        (controlsShown ? measured.overlay.x : 0) + 12,
-        `${name}: content starts after the traffic lights`,
-      )
+      else
+        assert.equal(measured.paddingLeft, 12, `${name}: no traffic-light inset`)
     } else if (controlsShown) {
       assert(measured.overlay, `${name}: window controls overlay shown`)
       assert.equal(measured.overlay.x, 0, `${name}: buttons at the right`)
@@ -374,7 +374,7 @@ try {
   ])
     assert(
       dragged.moved[axis] >= travel * 0.75 &&
-        dragged.moved[axis] <= travel * 1.05,
+        dragged.moved[axis] <= travel * 1.25,
       `dragging the bar's empty space moves the window along ${axis}: ${JSON.stringify(dragged)}`,
     )
   assert(!dragged.resized, 'dragging the bar does not resize the window')

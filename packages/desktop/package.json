@@ -59,7 +59,6 @@
     "generateUpdatesFilesForAllChannels": false,
     "files": [
       "dist/**/*",
-      "resources/projects.html",
       "package.json"
     ],
     "extraResources": [

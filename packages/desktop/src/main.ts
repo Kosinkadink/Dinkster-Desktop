@@ -283,8 +283,8 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
   throw new Error('Native file access requires a bound project-managed local engine')
 }
 
-const projectDialogPath = join(app.getAppPath(), 'resources', 'projects.html')
 const libraryPath = join(app.isPackaged ? join(process.resourcesPath, 'app') : join(app.getAppPath(), '..', 'app', 'dist'), 'site', 'desktop-library.html')
+const projectDialogPath = join(dirname(libraryPath), 'desktop-environments.html')
 let libraryDocument = 0
 const library = new DesktopLibrary(dataDirectory, environmentClient, {
   fork: async (selected) => {

@@ -12,7 +12,7 @@ import { wslLinuxPath, wslLocation, wslWindowsPath, type WslHost } from './wsl.j
 
 const execute = promisify(execFile)
 
-export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply' | 'source' | 'restore' | 'library-list' | 'project-get' | 'project-check' | 'project-select'
+export type EnvironmentOperation = 'develop' | 'setup' | 'update' | 'rollback' | 'move' | 'doctor' | 'gc' | 'cleanup' | 'start' | 'stop' | 'status' | 'catalog' | 'space' | 'packs-plan' | 'packs-apply' | 'source' | 'restore' | 'library-list' | 'project-get' | 'project-check' | 'project-select' | 'history' | 'fork'
 export type EnvironmentChannel = 'stable' | 'nightly'
 
 export interface DevelopmentSources {
@@ -73,6 +73,7 @@ export interface EnvironmentRequest {
   readonly inputs?: string
   readonly approval?: string
   readonly packScope?: 'every-project' | 'only-project'
+  readonly restoreScope?: 'every-project' | 'only-project'
   readonly progress?: string
   readonly automaticCleanup?: boolean
   readonly keepPreviousGenerations?: number
@@ -87,6 +88,20 @@ export interface EnvironmentRequest {
   readonly frontendVersion?: string
   readonly frontendApproval?: string
   readonly historyEntry?: number
+}
+
+export interface EnvironmentHistoryEntry {
+  readonly format: 'dinkster.install-history/1'
+  readonly id: number
+  readonly timestamp: string
+  readonly reason: string
+  readonly generation: number
+  readonly exact: boolean
+  readonly kind?: 'activation' | 'import'
+  readonly snapshot: {
+    readonly engine: { readonly version: string; readonly release: string }
+    readonly base: { readonly id: string; readonly variant: string }
+  }
 }
 
 export interface EnvironmentEngine {
@@ -145,6 +160,7 @@ export interface SandboxReadiness {
 
 /** Validated command response; WSL filesystem paths use the native host spelling. */
 export interface EnvironmentResult {
+  readonly history?: readonly EnvironmentHistoryEntry[]
   readonly project?: LibraryProject
   readonly environment?: { readonly id: string; readonly snapshot: string } | null
   readonly library?: LibraryPage
@@ -157,7 +173,7 @@ export interface EnvironmentResult {
       readonly url: string; readonly requestedRef: string | null; readonly commit: string; readonly subdirectory: string
     } }[]
   }
-  readonly status: 'planned' | 'applied' | 'clean' | 'drift' | 'error' | CleanupAttempt['status']
+  readonly status: 'planned' | 'approval-required' | 'applied' | 'clean' | 'drift' | 'error' | CleanupAttempt['status']
   readonly root: string
   readonly current: number | null
   readonly plan: readonly string[]
@@ -165,6 +181,7 @@ export interface EnvironmentResult {
   readonly changes?: readonly string[]
   readonly error?: string
   readonly packPlan?: Readonly<Record<string, unknown>>
+  readonly restorePlan?: Readonly<Record<string, unknown>>
   readonly approval?: string
   readonly expiresInSeconds?: number
   readonly sourceApproval?: string
@@ -245,6 +262,11 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
+  if (request.operation === 'history') {
+    if (confirmed || Object.keys(request).some((key) => !['root', 'operation', 'channel'].includes(key))) throw new Error('environment history is read-only')
+    if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
+    return ['--root', request.root, 'history', '--json']
+  }
   if (['project-get', 'project-check', 'project-select'].includes(request.operation)) {
     const selecting = request.operation === 'project-select'
     if (Object.keys(request).some((key) => !['root', 'operation', 'channel', 'libraryProject', ...(selecting ? ['projectRevision'] : [])].includes(key))
@@ -255,6 +277,38 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     return ['--root', request.root, request.operation, request.libraryProject,
       ...(selecting ? ['--revision', String(request.projectRevision), confirmed ? '--yes' : '--plan'] : []), '--json']
   }
+  const restoring = ['restore', 'rollback', 'fork'].includes(request.operation)
+  if (restoring && (request.libraryProject !== undefined || request.projectRevision !== undefined
+    || request.restoreScope !== undefined || request.approval !== undefined || request.operation === 'fork')) {
+    if (Object.keys(request).some((key) => !['root', 'operation', 'channel', 'historyEntry', 'libraryProject', 'projectRevision', 'restoreScope', 'approval', 'destination'].includes(key))) throw new Error('restore retains the reviewed software settings')
+    if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
+    const args = ['--root', request.root, request.operation]
+    if (request.operation === 'rollback') {
+      if (request.historyEntry !== undefined) throw new Error('restore previous selects its own history entry')
+    } else {
+      if (!Number.isSafeInteger(request.historyEntry) || request.historyEntry! < 1) throw new Error('restore requires an exact history entry')
+      args.push(String(request.historyEntry))
+    }
+    if (request.operation === 'fork') {
+      if (!request.destination || !isAbsolute(request.destination)) throw new Error('isolated restore requires an absolute destination')
+      args.push(request.destination)
+    } else if (request.destination !== undefined) throw new Error('restore destination requires fork')
+    const projectBound = request.libraryProject !== undefined || request.projectRevision !== undefined
+    if (projectBound) {
+      if (typeof request.libraryProject !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(request.libraryProject)
+        || !Number.isSafeInteger(request.projectRevision) || request.projectRevision! < 1) throw new Error('restore requires an authoritative project and observed revision')
+      const scope = request.operation === 'fork' ? 'only-project' : 'every-project'
+      if (request.restoreScope !== scope) throw new Error('restore requires explicit matching project scope')
+      if (confirmed && request.approval === undefined) throw new Error('restore apply requires the reviewed supervisor approval')
+      args.push('--project', request.libraryProject, '--revision', String(request.projectRevision), '--scope', scope)
+    } else if (request.restoreScope !== undefined) throw new Error('restore scope requires a project')
+    if (request.approval !== undefined) {
+      if (!confirmed || !/^sha256:[a-f0-9]{64}$/.test(request.approval)) throw new Error('restore apply requires the reviewed supervisor approval')
+      args.push('--approve', request.approval)
+    }
+    return [...args, '--json', confirmed ? '--yes' : '--plan']
+  }
+  if (request.restoreScope !== undefined) throw new Error('restore scope requires a restore operation')
   if (request.projectRevision !== undefined && request.operation !== 'packs-plan') throw new Error('project revision requires project-select or packs-plan')
   if (request.packScope !== undefined && request.operation !== 'packs-apply') throw new Error('pack scope requires packs-apply')
   if (request.operation === 'library-list') {
@@ -502,8 +556,20 @@ function validSpace(value: unknown, root: string): boolean {
     })
 }
 
+function validLibraryProject(value: unknown): value is LibraryProject {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const project = value as Record<string, unknown>
+  const binding = project['environment'] as Record<string, unknown> | null | undefined
+  const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+  return typeof project['id'] === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(project['id'])
+    && text(project['uid']) && text(project['name']) && Number.isSafeInteger(project['revision']) && Number(project['revision']) > 0
+    && project['deleted'] === false && (binding === null || (!!binding && !Array.isArray(binding) && text(binding['id'])
+      && ((binding['lastSnapshot'] === null && binding['lastRunAt'] === null) || (text(binding['lastSnapshot']) && text(binding['lastRunAt'])))))
+}
+
 function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolean, distribution?: string): EnvironmentResult {
   const { operation } = request
+  const restoring = ['restore', 'rollback', 'fork'].includes(operation)
   const value: unknown = JSON.parse(text)
   if (!value || typeof value !== 'object') throw new Error('invalid dinkster-env response')
   const row = value as Record<string, unknown>
@@ -521,6 +587,14 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
         candidate['destination'] = hostPath(candidate['destination'])
       }
     }
+    const restorePlan = row['restorePlan'] as Record<string, unknown> | undefined
+    if (restorePlan && typeof restorePlan === 'object') {
+      const fork = restorePlan['fork'] as Record<string, unknown> | undefined
+      if (fork && typeof fork === 'object') {
+        fork['source'] = hostPath(fork['source'])
+        fork['destination'] = hostPath(fork['destination'])
+      }
+    }
     const space = row['space']
     if (space && typeof space === 'object') {
       const measurement = space as Record<string, unknown>
@@ -529,7 +603,7 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
     }
   }
   if (row['format'] !== 'dinkster.environment-result/1' || row['operation'] !== operation
-    || !['planned', 'applied', 'clean', 'drift', 'error', ...(operation === 'cleanup' ? ['complete', 'deferred', 'disabled', 'coalesced'] : [])].includes(String(row['status']))
+    || !['planned', 'applied', 'clean', 'drift', 'error', ...(restoring ? ['approval-required'] : []), ...(operation === 'cleanup' ? ['complete', 'deferred', 'disabled', 'coalesced'] : [])].includes(String(row['status']))
     || typeof row['root'] !== 'string' || !isAbsolute(row['root'])
     || !(row['current'] === null || (Number.isInteger(row['current']) && Number(row['current']) > 0))
     || !Array.isArray(row['plan']) || !row['plan'].every((line) => typeof line === 'string')
@@ -566,12 +640,8 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
     const project = row['project'] as Record<string, unknown> | null | undefined
     const candidate = row['environment'] as Record<string, unknown> | null | undefined
     const binding = project?.['environment'] as Record<string, unknown> | null | undefined
-    const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0
     const expected = operation === 'project-select' ? confirmed ? 'applied' : 'planned' : 'clean'
-    if (row['status'] !== expected || !project || Array.isArray(project) || project['id'] !== request.libraryProject
-      || !text(project['uid']) || !text(project['name']) || !Number.isSafeInteger(project['revision']) || Number(project['revision']) < 1
-      || project['deleted'] !== false || (binding !== null && (!binding || Array.isArray(binding) || !text(binding['id'])
-        || !((binding['lastSnapshot'] === null && binding['lastRunAt'] === null) || (text(binding['lastSnapshot']) && text(binding['lastRunAt'])))))
+    if (row['status'] !== expected || !validLibraryProject(project) || project.id !== request.libraryProject
       || (candidate !== null && (!candidate || Array.isArray(candidate) || typeof candidate['id'] !== 'string' || !/^[a-f0-9]{32}$/.test(candidate['id'])
         || typeof candidate['snapshot'] !== 'string' || !/^[1-9][0-9]*$/.test(candidate['snapshot']) || candidate['snapshot'] !== String(row['current'])))
       || (operation !== 'project-get' && candidate === null)
@@ -579,6 +649,24 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
       || (operation === 'project-select' && (confirmed
         ? binding?.['id'] !== candidate?.['id'] || ![request.projectRevision, request.projectRevision! + 1].includes(Number(project['revision']))
         : project['revision'] !== request.projectRevision))) throw new Error('unsupported project selection response')
+  }
+  if (operation === 'history' && row['status'] !== 'error') {
+    const entries = row['history']
+    const ids = new Set<number>()
+    const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+    if (row['status'] !== 'clean' || !Array.isArray(entries) || !entries.every((value: unknown) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+      const entry = value as Record<string, unknown>
+      const snapshot = entry['snapshot'] as EnvironmentHistoryEntry['snapshot'] | undefined
+      if (entry['format'] !== 'dinkster.install-history/1' || !Number.isSafeInteger(entry['id']) || Number(entry['id']) < 1
+        || ids.has(Number(entry['id'])) || !text(entry['timestamp']) || !Number.isFinite(Date.parse(entry['timestamp']))
+        || !text(entry['reason']) || !Number.isSafeInteger(entry['generation']) || Number(entry['generation']) < 1
+        || typeof entry['exact'] !== 'boolean' || (entry['kind'] !== undefined && entry['kind'] !== 'activation' && entry['kind'] !== 'import')
+        || !snapshot || !text(snapshot.engine?.version) || !text(snapshot.engine?.release)
+        || !text(snapshot.base?.id) || !text(snapshot.base?.variant)) return false
+      ids.add(Number(entry['id']))
+      return true
+    })) throw new Error('unsupported environment history response')
   }
   if (operation === 'library-list' && row['status'] !== 'error') {
     const page = row['library'] as Record<string, unknown> | undefined
@@ -643,6 +731,56 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
         (key === 'maximumExclusiveComputeCapability' && nvidia[key] === null)
         || (typeof nvidia[key] === 'string' && /^\d+(\.\d+)*$/.test(nvidia[key]))))
     })) throw new Error('unsupported dinkster-env catalog response')
+  }
+  if (restoring && row['status'] !== 'error' && (row['restorePlan'] !== undefined || request.libraryProject !== undefined || operation === 'fork')) {
+    const plan = row['restorePlan'] as Record<string, unknown> | null
+    if (!plan || Array.isArray(plan) || plan['format'] !== 'dinkster.restore-plan/1'
+      || !Number.isSafeInteger(plan['entry']) || Number(plan['entry']) < 1 || row['restoredFrom'] !== plan['entry']
+      || (operation !== 'rollback' && plan['entry'] !== request.historyEntry)
+      || typeof plan['exact'] !== 'boolean' || !Array.isArray(plan['missing']) || !Array.isArray(plan['alternatives'])
+      || !plan['alternatives'].every((value: unknown) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+        const alternative = value as Record<string, unknown>
+        return typeof alternative['approval'] === 'string' && /^sha256:[a-f0-9]{64}$/.test(alternative['approval'])
+          && !!alternative['snapshot'] && typeof alternative['snapshot'] === 'object' && !Array.isArray(alternative['snapshot'])
+          && Array.isArray(alternative['substitutions'])
+      })) throw new Error('unsupported environment restore plan response')
+    const fork = plan['fork'] as Record<string, unknown> | undefined
+    const samePath = (a: unknown, b: string): boolean => typeof a === 'string' && isAbsolute(a) && (distribution
+      ? wslLinuxPath(distribution, a) === wslLinuxPath(distribution, b) : relative(b, a) === '')
+    if (operation === 'fork'
+      ? !fork || !samePath(fork['source'], request.root) || !samePath(fork['destination'], request.destination!) || !samePath(row['destination'], request.destination!)
+      : fork !== undefined || row['destination'] !== undefined) throw new Error('dinkster-env returned a different restore destination')
+    if (request.libraryProject !== undefined) {
+      const review = plan['projectReview'] as Record<string, unknown> | undefined
+      const selected = review?.['project']
+      const projects = review?.['projects']
+      if (!review || typeof review['library'] !== 'string' || !review['library']
+        || typeof review['environment'] !== 'string' || !/^[a-f0-9]{32}$/.test(review['environment'])
+        || !validLibraryProject(selected) || selected.id !== request.libraryProject || selected.revision !== request.projectRevision
+        || selected.environment?.id !== review['environment'] || plan['scope'] !== request.restoreScope
+        || !Array.isArray(projects) || !projects.every((value: unknown) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+          const item = value as Record<string, unknown>
+          return validLibraryProject(item['project']) && item['project'].environment?.id === review['environment']
+            && !!item['needs'] && typeof item['needs'] === 'object' && !Array.isArray(item['needs'])
+        }) || !projects.some((item) => item.project.id === selected.id && item.project.uid === selected.uid && item.project.revision === selected.revision)
+        || new Set(projects.map((item) => item.project.id)).size !== projects.length
+        || new Set(projects.map((item) => item.project.uid)).size !== projects.length
+        || row['status'] !== (confirmed ? 'applied' : 'approval-required')
+        || (confirmed && !plan['alternatives'].some((alternative: Record<string, unknown>) => alternative['approval'] === request.approval))) {
+        throw new Error('unsupported project restore review response')
+      }
+      if (confirmed && operation === 'fork') {
+        const selectedAfter = row['project']
+        const environment = row['environment'] as Record<string, unknown> | undefined
+        if (!validLibraryProject(selectedAfter) || selectedAfter.uid !== selected.uid || selectedAfter.id !== selected.id
+          || selectedAfter.revision !== selected.revision + 1 || !environment || typeof environment['id'] !== 'string'
+          || !/^[a-f0-9]{32}$/.test(environment['id']) || environment['id'] === review['environment']
+          || environment['snapshot'] !== String(row['current']) || selectedAfter.environment?.id !== environment['id']
+          || !Array.isArray(row['engines']) || row['engines'].length !== 0) throw new Error('unsupported isolated restore selection response')
+      }
+    }
   }
   if (operation === 'packs-plan' && row['status'] !== 'error') {
     const plan = row['packPlan'] as Record<string, unknown> | null
@@ -801,8 +939,8 @@ export class EnvironmentClient {
       }
     }
     const result = resultFrom(stdout, request, confirmed)
-    if (['library-list', 'project-get', 'project-check', 'project-select'].includes(request.operation) && result.root !== request.root) throw new Error('dinkster-env returned a different project root')
-    if (['packs-plan', 'packs-apply', 'source', 'restore'].includes(request.operation)
+    if (['history', 'library-list', 'project-get', 'project-check', 'project-select'].includes(request.operation) && result.root !== request.root) throw new Error('dinkster-env returned a different project root')
+    if (['packs-plan', 'packs-apply', 'source', 'restore', 'fork', 'rollback'].includes(request.operation)
       && await realpath(result.root) !== await realpath(request.root)) throw new Error('dinkster-env returned a different project root')
     if (result.status === 'error') throw new Error(result.error ?? result.plan.join('\n'))
     return result

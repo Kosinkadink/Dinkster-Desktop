@@ -77,6 +77,36 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('reads software history without activation flags and refuses malformed or wrong-root history', async () => {
+    const { root, client } = await commandFixture()
+    try {
+      const entry = { format: 'dinkster.install-history/1', id: 7, generation: 12,
+        timestamp: '2026-11-22T23:00:00+00:00', reason: 'update', exact: true,
+        snapshot: { engine: { version: '0.0.17', release: `sha256:${'a'.repeat(64)}` },
+          base: { id: `sha256:${'b'.repeat(64)}`, variant: 'cpu' } } }
+      const script = join(root, 'command.cjs')
+      const original = await readFile(script, 'utf8')
+      const response = original.replace("status:error ? 'error' :", "status:operation === 'history' ? 'clean' : error ? 'error' :")
+        .replace('root, current: 2,', `root, current: 2, history: ${JSON.stringify([entry])},`)
+      await writeFile(script, response)
+      expect((await client.run({ root, operation: 'history' })).history).toEqual([entry])
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'history', '--json'])
+      await expect(client.run({ root, operation: 'history' }, true)).rejects.toThrow('read-only')
+      for (const extra of [{ repair: true }, { historyEntry: 7 }, { automaticCleanup: false }, { libraryProject: 'film' }]) {
+        await expect(client.run({ root, operation: 'history', ...extra })).rejects.toThrow('read-only')
+      }
+      for (const history of [null, [entry, entry], [{ ...entry, id: 0 }], [{ ...entry, timestamp: 'invalid' }],
+        [{ ...entry, generation: 0 }], [{ ...entry, exact: 'yes' }], [{ ...entry, snapshot: {} }]]) {
+        await writeFile(script, response.replace(JSON.stringify([entry]), JSON.stringify(history)))
+        await expect(client.run({ root, operation: 'history' })).rejects.toThrow('history response')
+      }
+      await writeFile(script, response.replace(JSON.stringify([entry]), '[]'))
+      expect((await client.run({ root, operation: 'history' })).history).toEqual([])
+      await writeFile(script, response.replace('root, current: 2,', "root: path.join(root, 'other'), current: 2,"))
+      await expect(client.run({ root, operation: 'history' })).rejects.toThrow('different project root')
+    } finally { await client.dispose() }
+  })
+
   it('reads library pages without activation flags and rejects malformed pages', async () => {
     const { root, client } = await commandFixture()
     const script = join(root, 'command.cjs')
@@ -308,6 +338,75 @@ describe('Desktop dinkster-env command client', () => {
       { sourceRef: '--yes' }, { sourceTarget: 'pack' as const, sourceName: '--yes' }, { channel: 'stable' as const },
     ]) await expect(client.run({ ...base, sourceTarget: 'engine', ...changes })).rejects.toThrow()
     await client.dispose()
+  })
+
+  it.each(['restore', 'rollback', 'fork'] as const)('retains explicit project restore consent and verifies its %s result', async (operation) => {
+    const { root, client } = await commandFixture()
+    const destination = join(root, 'isolated')
+    const approval = `sha256:${'c'.repeat(64)}`
+    const scope = operation === 'fork' ? 'only-project' : 'every-project'
+    const project = { id: 'film', uid: 'film-global', name: 'Film', revision: 7, deleted: false,
+      environment: { id: 'a'.repeat(32), lastSnapshot: null, lastRunAt: null } }
+    const sibling = { ...project, id: 'sibling', uid: 'sibling-global', name: 'Sibling', revision: 3 }
+    const restorePlan = { format: 'dinkster.restore-plan/1', entry: 7, exact: true, missing: [],
+      alternatives: [{ approval, snapshot: { engine: { version: '0.0.17' } }, substitutions: [] }], scope,
+      projectReview: { library: join(root, 'library'), environment: project.environment.id,
+        project, projects: [project, sibling].map((project) => ({ project, needs: {} })) },
+      ...(operation === 'fork' ? { fork: { source: root, destination } } : {}) }
+    const response = { format: 'dinkster.environment-result/1', operation, root,
+      current: operation === 'fork' ? null : 2, status: 'approval-required', restoredFrom: 7,
+      plan: ['This library requires snapshots with library-helper/1.'], restorePlan,
+      ...(operation === 'fork' ? { destination } : {}) }
+    const responsePath = join(root, 'restore-response.json')
+    await writeFile(responsePath, JSON.stringify(response))
+    await writeFile(join(root, 'command.cjs'), `
+      const fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2),root=args[1];
+      fs.writeFileSync(path.join(root,'arguments.json'),JSON.stringify(args));
+      process.stdout.write(fs.readFileSync(path.join(root,'restore-response.json'),'utf8'));
+    `)
+    const request: EnvironmentRequest = { root, operation, ...(operation === 'rollback' ? {} : { historyEntry: 7 }),
+      libraryProject: 'film', projectRevision: 7, restoreScope: scope,
+      ...(operation === 'fork' ? { destination } : {}) }
+    try {
+      expect(await client.run(request)).toEqual(response)
+      const command = ['--root', root, operation, ...(operation === 'rollback' ? [] : ['7']), ...(operation === 'fork' ? [destination] : []),
+        '--project', 'film', '--revision', '7', '--scope', scope]
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...command, '--json', '--plan'])
+      await expect(client.run(request, true)).rejects.toThrow('reviewed supervisor approval')
+      await expect(client.run({ ...request, approval })).rejects.toThrow('reviewed supervisor approval')
+      for (const changes of [{ restoreScope: undefined }, { restoreScope: operation === 'fork' ? 'every-project' : 'only-project' },
+        { libraryProject: '../film' }, { projectRevision: 0 }, { repair: true }]) {
+        await expect(client.run({ ...request, ...changes } as EnvironmentRequest)).rejects.toThrow()
+      }
+      const selected = { ...project, revision: 8, environment: { ...project.environment, id: 'b'.repeat(32) } }
+      const applied = { ...response, status: 'applied', current: operation === 'fork' ? 1 : 3, engines: [],
+        ...(operation === 'fork' ? { project: selected, environment: { id: 'b'.repeat(32), snapshot: '1' } } : {}) }
+      await writeFile(responsePath, JSON.stringify(applied))
+      expect(await client.run({ ...request, approval }, true)).toEqual(applied)
+      expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([...command, '--approve', approval, '--json', '--yes'])
+      await expect(client.run({ ...request, approval: `sha256:${'d'.repeat(64)}` }, true)).rejects.toThrow('restore review response')
+      await writeFile(responsePath, JSON.stringify(response))
+      await expect(client.run({ ...request, approval }, true)).rejects.toThrow('restore review response')
+      for (const invalid of [
+        { ...response, restorePlan: undefined },
+        { ...response, restoredFrom: 8 },
+        { ...response, restorePlan: { ...restorePlan, alternatives: [{ approval: 'not-a-digest' }] } },
+        { ...response, restorePlan: { ...restorePlan, projectReview: { ...restorePlan.projectReview, project: { ...project, revision: 8 } } } },
+        { ...response, restorePlan: { ...restorePlan, projectReview: { ...restorePlan.projectReview, projects: [] } } },
+        { ...response, restorePlan: { ...restorePlan, projectReview: { ...restorePlan.projectReview, projects: [{ project, needs: {} }, { project, needs: {} }] } } },
+        ...(operation === 'fork' ? [{ ...response, destination: join(root, 'other') }] : []),
+      ]) {
+        await writeFile(responsePath, JSON.stringify(invalid))
+        await expect(client.run(request)).rejects.toThrow()
+      }
+      if (operation === 'fork') {
+        for (const invalid of [{ ...applied, project: sibling }, { ...applied, environment: { id: 'a'.repeat(32), snapshot: '1' } },
+          { ...applied, engines: [{ name: 'main', generation: 1, state: 'ready' }] }]) {
+          await writeFile(responsePath, JSON.stringify(invalid))
+          await expect(client.run({ ...request, approval }, true)).rejects.toThrow('isolated restore selection response')
+        }
+      }
+    } finally { await client.dispose() }
   })
 
   it('requires the planned published frontend identity before confirming a version', async () => {

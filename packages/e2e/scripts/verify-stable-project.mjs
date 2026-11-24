@@ -609,6 +609,102 @@ with writer_lock(Path(sys.argv[1])):
   })
   mirrorOnline = false
   const recoveryRequests = mirrorRequests.length
+  const nextManifest = JSON.parse(
+    await readFile(join(nextGeneration, 'engine-manifest.json'), 'utf8'),
+  )
+  const helperMigration =
+    nextManifest.capabilities.includes('library-helper/1') &&
+    !manifest.capabilities.includes('library-helper/1')
+  let recoveryRecord = record
+  let recoverySource = nextNumber
+  if (helperMigration) {
+    const libraryFormat = join(
+      projectRoot,
+      'dinkster-library/library-format.json',
+    )
+    const before = await readFile(libraryFormat, 'utf8')
+    const historyBefore = await readdir(join(projectRoot, 'history'))
+    const runtime = join(projectRoot, 'runtime', nextNumber, 'main.json')
+    const runtimeBefore = await readFile(runtime, 'utf8')
+    const refusedPlan = await manager.evaluate(
+      ({ project, root }) =>
+        window.dinksterProjects.plan(project, {
+          root,
+          operation: 'rollback',
+        }),
+      { project: { ...project, channel: 'nightly' }, root: projectRoot },
+    )
+    assert.equal(refusedPlan.result.status, 'planned')
+    assert(refusedPlan.token)
+    await assert.rejects(
+      manager.evaluate(
+        (token) => window.dinksterProjects.apply(token),
+        refusedPlan.token,
+      ),
+      /requires library-helper\/1.*This snapshot cannot open the migrated library/,
+    )
+    assert.equal(
+      (await readFile(join(projectRoot, 'current'), 'utf8')).trim(),
+      nextNumber,
+    )
+    assert.equal(await readFile(libraryFormat, 'utf8'), before)
+    assert.deepEqual(await readdir(join(projectRoot, 'history')), historyBefore)
+    assert.equal(await readFile(runtime, 'utf8'), runtimeBefore)
+    assert(
+      (
+        await engine.request.get(new URL('/api/health', engine.url()).href)
+      ).ok(),
+    )
+    assert.equal(mirrorRequests.length, recoveryRequests)
+    await writeFile(
+      join(root, 'incompatible-rollback.json'),
+      JSON.stringify(
+        { current: nextNumber, plan: refusedPlan.result },
+        null,
+        2,
+      ),
+    )
+
+    // A migrated library cannot return to an engine without its helper.
+    // Keep offline recovery coverage between two helper-compatible snapshots.
+    mirrorOnline = true
+    const repeatedPlan = await manager.evaluate(
+      ({ project, root, mirrors }) =>
+        window.dinksterProjects.plan(project, {
+          root,
+          operation: 'update',
+          channel: 'nightly',
+          mirrors,
+        }),
+      {
+        project: { ...project, channel: 'nightly' },
+        root: projectRoot,
+        mirrors: [mirrorUrl],
+      },
+    )
+    assert.equal(repeatedPlan.result.status, 'planned')
+    assert(repeatedPlan.token)
+    const repeated = await manager.evaluate(
+      (token) => window.dinksterProjects.apply(token),
+      repeatedPlan.token,
+    )
+    assert.equal(repeated.status, 'applied')
+    recoverySource = (
+      await readFile(join(projectRoot, 'current'), 'utf8')
+    ).trim()
+    assert.notEqual(recoverySource, nextNumber)
+    const repeatedRecord = JSON.parse(
+      await readFile(
+        join(projectRoot, 'builds', recoverySource, 'build.json'),
+        'utf8',
+      ),
+    )
+    assert.deepEqual(repeatedRecord.engine, nextRecord.engine)
+    assert.equal(repeatedRecord.base, nextRecord.base)
+    recoveryRecord = nextRecord
+    mirrorOnline = false
+  }
+  const rollbackRequests = mirrorRequests.length
   const rollbackPlan = await manager.evaluate(
     ({ project, request }) => window.dinksterProjects.plan(project, request),
     {
@@ -626,6 +722,7 @@ with writer_lock(Path(sys.argv[1])):
   const recoveredNumber = (
     await readFile(join(projectRoot, 'current'), 'utf8')
   ).trim()
+  assert.notEqual(recoveredNumber, recoverySource)
   assert.notEqual(recoveredNumber, nextNumber)
   assert.notEqual(recoveredNumber, number)
   const recovered = JSON.parse(
@@ -634,8 +731,8 @@ with writer_lock(Path(sys.argv[1])):
       'utf8',
     ),
   )
-  assert.deepEqual(recovered.engine, record.engine)
-  assert.equal(recovered.base, record.base)
+  assert.deepEqual(recovered.engine, recoveryRecord.engine)
+  assert.equal(recovered.base, recoveryRecord.base)
   await writeFile(
     join(root, 'recovered-generation.json'),
     JSON.stringify(
@@ -646,7 +743,7 @@ with writer_lock(Path(sys.argv[1])):
   )
   assert.equal(
     mirrorRequests.length,
-    recoveryRequests,
+    rollbackRequests,
     'rollback must not consult the unavailable mirror',
   )
   await expect(engine.getByTestId('graph-canvas')).toBeVisible({

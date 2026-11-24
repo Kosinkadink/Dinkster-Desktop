@@ -372,7 +372,7 @@ console.log(JSON.stringify(row));
     env,
   })
   const manager = await installationManager(app)
-  await manager.getByText('No projects yet.', { exact: false }).waitFor()
+  await manager.getByText('No environments yet', { exact: false }).waitFor()
   await expect
     .poll(() =>
       manager
@@ -387,24 +387,23 @@ console.log(JSON.stringify(row));
       path: join(artifacts, 'projects-default.png'),
       fullPage: true,
     })
+  await manager.getByLabel('Environment name').fill('Local studio')
   await manager
-    .getByText('Manage a local installation', { exact: true })
-    .click()
-  await manager.locator('#local-name').fill('Local studio')
-  await manager.locator('#local-root').fill(join(scratch, 'installation'))
-  await manager.locator('#local-mirrors').fill(mirror)
+    .getByLabel('Install location')
+    .fill(join(scratch, 'installation'))
+  await manager.getByLabel('Mirrors, in order').fill(mirror)
   await manager
     .getByRole('button', { name: 'Inspect hardware and variants' })
     .click()
   await expect(
-    manager.locator('#local-variant option[value="linux-cpu"]'),
+    manager.getByLabel('Hardware variant').locator('option[value="linux-cpu"]'),
   ).toHaveCount(1)
-  await expect(manager.locator('#local-variant')).toHaveValue('')
-  await manager.locator('#local-variant').selectOption('linux-cpu')
-  await expect(manager.locator('#hardware-reason')).toContainText(
+  await expect(manager.getByLabel('Hardware variant')).toHaveValue('')
+  await manager.getByLabel('Hardware variant').selectOption('linux-cpu')
+  await expect(manager.getByLabel('Hardware guidance')).toContainText(
     'Explicit override: CPU',
   )
-  await expect(manager.locator('#hardware-reason')).toContainText(
+  await expect(manager.getByLabel('Hardware guidance')).toContainText(
     '123,456,789 bytes',
   )
   if (artifacts)

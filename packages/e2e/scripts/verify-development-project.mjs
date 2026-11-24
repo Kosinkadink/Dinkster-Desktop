@@ -143,6 +143,7 @@ try {
           'development-frontend-git': 'Frontend Git source',
           'development-frontend-dev': 'Frontend dev server',
         }[id],
+        { exact: true },
       )
       .fill(value)
   await manager

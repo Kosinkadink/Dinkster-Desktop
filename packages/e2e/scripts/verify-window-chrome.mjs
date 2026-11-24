@@ -127,14 +127,21 @@ try {
   const page = await opened
   const bar = page.locator('.dinkster-window-toolbar-host')
   await expect(bar).toHaveAttribute('data-desktop-chrome', '')
-  // Only the editor window stays on screen for captures and pointer input.
-  await app.evaluate(({ BrowserWindow }, url) => {
+  // Only the editor window stays on screen for captures and pointer input,
+  // whole, with room left to drag it.
+  await app.evaluate(({ BrowserWindow, screen }, url) => {
     for (const window of BrowserWindow.getAllWindows())
       if (!window.webContents.getURL().startsWith(url)) window.hide()
     const editor = BrowserWindow.getAllWindows().find((window) =>
       window.webContents.getURL().startsWith(url),
     )
-    editor.setBounds({ x: 40, y: 60, width: 1280, height: 760 })
+    const area = screen.getPrimaryDisplay().workArea
+    editor.setBounds({
+      x: area.x + 40,
+      y: area.y + 40,
+      width: Math.min(1280, area.width - 140),
+      height: Math.min(760, area.height - 120),
+    })
     editor.focus()
   }, url)
 

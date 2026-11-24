@@ -88,7 +88,7 @@ jobs:
                 smoke=true ;;
             esac
             case "$path" in
-              packages/desktop/src/environment.ts|packages/desktop/src/environment-tools-release.json|packages/desktop/src/main.ts|packages/desktop/src/project-dialog.ts|packages/desktop/src/projects.ts|packages/desktop/src/window-chrome.ts|packages/desktop/resources/projects.html|packages/e2e/scripts/verify-development-project.mjs)
+              packages/desktop/src/environment.ts|packages/desktop/src/environment-tools-release.json|packages/desktop/src/main.ts|packages/desktop/src/preload.ts|packages/desktop/src/projects.ts|packages/desktop/src/types.ts|packages/desktop/src/window-chrome.ts|scripts/frontend-release.json|packages/e2e/scripts/verify-development-project.mjs)
                 development=true ;;
             esac
             case "$path" in

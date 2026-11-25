@@ -160,7 +160,7 @@ try {
           process.platform === 'win32'
             ? window.getNativeWindowHandle().readBigUInt64LE().toString()
             : '',
-        pid: window.webContents.getOSProcessId(),
+        pid: process.pid,
         maximized: window.isMaximized(),
         fullScreen: window.isFullScreen(),
         focused: window.isFocused(),

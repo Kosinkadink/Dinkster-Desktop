@@ -163,6 +163,7 @@ try {
         pid: window.webContents.getOSProcessId(),
         maximized: window.isMaximized(),
         fullScreen: window.isFullScreen(),
+        focused: window.isFocused(),
         buttons:
           process.platform === 'darwin'
             ? window.getWindowButtonPosition()
@@ -179,6 +180,7 @@ try {
         if (action === 'restore') window.unmaximize()
         if (action === 'fullscreen') window.setFullScreen(true)
         if (action === 'leave-fullscreen') window.setFullScreen(false)
+        window.show()
         window.focus()
       },
       { url, action },
@@ -267,6 +269,10 @@ try {
   }
 
   async function pointer(action, x, y, endX = x, endY = y) {
+    // Windows sends input only to the foreground window, which the editor
+    // can lose while other Desktop windows load.
+    await setWindow('focus')
+    await expect.poll(async () => (await windowState()).focused).toBe(true)
     const window = await windowState()
     if (process.platform === 'linux') {
       const steps = Array.from({ length: 10 }, (_, index) => [

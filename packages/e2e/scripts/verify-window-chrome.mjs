@@ -367,7 +367,11 @@ try {
     signedIn = account
     await page.reload()
     await expect(bar).toHaveAttribute('data-desktop-chrome', '')
-    const accountCell = bar.locator('.dinkster-window-toolbar-account')
+    // The account control sits in the bar or, in newer editors, in the left
+    // icon bar.
+    const accountCell = page
+      .locator('.dinkster-window-toolbar-account, .sidebar-account')
+      .first()
     await expect(accountCell.locator('button')).toBeVisible()
     await expect(accountCell.locator('.dinkster-sign-in')).toHaveCount(
       account ? 0 : 1,

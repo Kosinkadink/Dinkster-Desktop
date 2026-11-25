@@ -35,7 +35,7 @@ import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult, typ
 import { DesktopLibrary, type LibraryFork } from './library.js'
 import { WslHost, wslLinuxPath, wslLocation } from './wsl.js'
 import toolsRelease from './environment-tools-release.json' with { type: 'json' }
-import { detectNvidiaGpus, planVariant } from './hardware.js'
+import { projectHardware } from './hardware.js'
 import { createWebHost, type WebHost } from './web-host.js'
 import { createProjectGateway, PROJECT_INSTALL_HEADER, type ProjectGateway } from './project-gateway.js'
 import { writeFileAtomic } from './atomic-file.js'
@@ -557,14 +557,13 @@ ipcMain.handle('desktop:projects-remove', (event, projectId: unknown) => seriali
 }))
 ipcMain.handle('desktop:projects-inspect', (event, input: EnvironmentRequest) => serializeLifecycle(async () => {
   trustedProjectIpc(event)
-  const request: EnvironmentRequest = { root: input.root, operation: 'catalog',
+  const request: EnvironmentRequest = { root: input.root, operation: 'catalog', hardware: true,
+    ...(input.gpus === undefined ? {} : { gpus: input.gpus }),
     ...(input.channel === undefined ? {} : { channel: input.channel }),
     ...(input.mirrors === undefined ? {} : { mirrors: input.mirrors }) }
   const result = await environmentClient.run(request)
-  const wsl = wslLocation(request.root)
-  const hardware = wsl ? await wslHost.hardware() : await detectNvidiaGpus()
-  const plan = planVariant((result.variants ?? []).map((entry) => entry.manifest), hardware, input.gpus ?? [], wsl ? 'linux' : process.platform)
-  return { result, hardware, plan }
+  if (!result.hardware) throw new Error('dinkster-env did not return hardware selection')
+  return { result, ...projectHardware(result.hardware) }
 }))
 
 function localEngineUrl(project: DesktopProject, engineId: string, result: EnvironmentResult): string {

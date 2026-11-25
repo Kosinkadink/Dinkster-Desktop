@@ -77,6 +77,31 @@ async function commandFixture(): Promise<{ root: string; client: EnvironmentClie
 }
 
 describe('Desktop dinkster-env command client', () => {
+  it('requests tools-owned catalog hardware with assigned devices and refuses missing facts', async () => {
+    const { root, client } = await commandFixture()
+    const script = join(root, 'command.cjs')
+    const response = { format: 'dinkster.environment-result/1', operation: 'catalog', status: 'clean',
+      root, current: null, plan: [], variants: [], hardware: {
+        detectedCards: null, choices: null, variant: null, buildLabel: null, buildReason: null,
+        gpus: [], refusal: { code: 'hardware-unavailable', message: 'Repair the driver.' },
+      } }
+    await writeFile(script, `
+      const fs=require('node:fs'),path=require('node:path');
+      fs.writeFileSync(path.join(${JSON.stringify(root)},'arguments.json'),JSON.stringify(process.argv.slice(2)));
+      console.log(${JSON.stringify(JSON.stringify(response))});
+    `)
+    const request = { root, operation: 'catalog' as const, hardware: true, gpus: ['1', '3'] }
+    expect((await client.run(request)).hardware).toEqual(response.hardware)
+    expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual([
+      '--root', root, 'catalog', '--hardware', '--gpu', '1', '--gpu', '3', '--json',
+    ])
+    await writeFile(script, `console.log(${JSON.stringify(JSON.stringify({ ...response, hardware: undefined }))})`)
+    await expect(client.run(request)).rejects.toThrow('hardware response')
+    await expect(client.run({ root, operation: 'status', hardware: true })).rejects.toThrow('hardware selection requires catalog')
+    await expect(client.run({ root, operation: 'fork', destination: join(root, 'copy'), historyEntry: 1, hardware: true })).rejects.toThrow('hardware selection requires catalog')
+    await client.dispose()
+  })
+
   it('reads software history without activation flags and refuses malformed or wrong-root history', async () => {
     const { root, client } = await commandFixture()
     try {

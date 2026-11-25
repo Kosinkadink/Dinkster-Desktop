@@ -4,7 +4,7 @@ import { delimiter, dirname, isAbsolute, join, relative, toNamespacedPath } from
 import { isIP } from 'node:net'
 import { setTimeout } from 'node:timers/promises'
 import { promisify } from 'node:util'
-import type { VariantHardware } from './hardware.js'
+import { parseHardwareSelection, type HardwareSelection, type VariantHardware } from './hardware.js'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
 import { channelTools } from './environment-channel.js'
 import { parseDesktopServices } from './services.js'
@@ -50,6 +50,7 @@ export interface LibraryProject {
 }
 
 export interface EnvironmentRequest {
+  readonly hardware?: boolean
   readonly projectRevision?: number
   readonly libraryKind?: LibraryListKind
   readonly libraryProject?: string
@@ -160,6 +161,7 @@ export interface SandboxReadiness {
 
 /** Validated command response; WSL filesystem paths use the native host spelling. */
 export interface EnvironmentResult {
+  readonly hardware?: HardwareSelection
   readonly history?: readonly EnvironmentHistoryEntry[]
   readonly project?: LibraryProject
   readonly environment?: { readonly id: string; readonly snapshot: string } | null
@@ -262,6 +264,7 @@ export function parseDevelopmentSources(value: unknown): DevelopmentSources {
 
 function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[] {
   if (!isAbsolute(request.root)) throw new Error('the project root must be absolute')
+  if (request.hardware !== undefined && (request.operation !== 'catalog' || typeof request.hardware !== 'boolean')) throw new Error('hardware selection requires catalog')
   if (request.operation === 'history') {
     if (confirmed || Object.keys(request).some((key) => !['root', 'operation', 'channel'].includes(key))) throw new Error('environment history is read-only')
     if (request.channel !== undefined && request.channel !== 'stable' && request.channel !== 'nightly') throw new Error('unsupported channel')
@@ -487,6 +490,7 @@ function argumentsFor(request: EnvironmentRequest, confirmed: boolean): string[]
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(request.engine)) throw new Error('invalid engine name')
     args.push('--engine', request.engine)
   }
+  if (request.hardware) args.push('--hardware')
   for (const gpu of request.gpus ?? []) {
     if (!/^(?:\d+|GPU-[a-fA-F0-9-]+)$/.test(gpu)) throw new Error('invalid GPU device')
     args.push('--gpu', gpu)
@@ -712,6 +716,7 @@ function resultFrom(text: string, request: EnvironmentRequest, confirmed: boolea
     }
   }
   if (operation === 'catalog' && row['status'] !== 'error') {
+    if (request.hardware) parseHardwareSelection(row['hardware'])
     if (row['status'] !== 'clean' || !Array.isArray(row['variants']) || !row['variants'].every((entry: unknown) => {
       if (!entry || typeof entry !== 'object') return false
       const candidate = entry as Record<string, unknown>

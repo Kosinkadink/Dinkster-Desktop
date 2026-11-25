@@ -1,58 +1,74 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron'
 import { desktopTitle, type DesktopServices } from './services.js'
 
-export function windowChromeOptions(platform: NodeJS.Platform = process.platform): BrowserWindowConstructorOptions {
-  return {
-    titleBarStyle: 'hidden',
-    ...(platform === 'darwin'
-      ? { trafficLightPosition: { x: 14, y: 16 } }
-      : { titleBarOverlay: { color: '#202020', symbolColor: '#ededed', height: 48 } }),
+export interface WindowChrome {
+  readonly css: string
+  readonly script: string
+  readonly native: {
+    readonly overlay: Record<'dark' | 'light', { color: string; symbolColor: string; height: number }>
+    readonly trafficLightPosition: { x: number; y: number }
   }
 }
 
-/** Reserve native controls in the existing bar, including server-served frontends. */
-export function installWindowChrome(window: BrowserWindow, development: () => boolean = () => false, services: DesktopServices = 'production'): void {
-  const left = process.platform === 'darwin' ? '80px' : 'env(titlebar-area-x, 0px)'
-  const css = `
-    .topbar, .dinkster-topbar, body > header {
-      -webkit-app-region: drag;
-      min-height: max(54px, env(titlebar-area-height, 54px));
-      padding-left: calc(${left} + 12px);
-      padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 12px);
+export function readWindowChrome(directory: string): WindowChrome {
+  const metadata = JSON.parse(readFileSync(join(directory, 'desktop-chrome.json'), 'utf8')) as Omit<WindowChrome, 'script'>
+  return { ...metadata, script: readFileSync(join(directory, 'desktop-chrome.js'), 'utf8') }
+}
+
+export function windowChromeOptions(chrome: WindowChrome, platform: NodeJS.Platform = process.platform): BrowserWindowConstructorOptions {
+  return {
+    titleBarStyle: 'hidden',
+    ...(platform === 'darwin'
+      ? { trafficLightPosition: chrome.native.trafficLightPosition }
+      : { titleBarOverlay: chrome.native.overlay.dark }),
+  }
+}
+
+// Dinkster pages are dark unless the page itself says it is light.
+const pageTheme = "(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')"
+
+/** The shared DOM installer has no access to Electron or the preload bridge. */
+export function installWindowChrome(window: BrowserWindow, chrome: WindowChrome, development: () => boolean = () => false, services: DesktopServices = 'production'): void {
+  // A script still waiting in a page that has gone never settles, so each
+  // page's loop also ends when the next page loads or the window closes.
+  let leave = (): void => {}
+  let screenChanged = (): void => {}
+  window.on('enter-full-screen', () => screenChanged())
+  window.on('leave-full-screen', () => screenChanged())
+  const inPage = (code: string): Promise<unknown> => window.webContents.executeJavaScriptInIsolatedWorld(1001, [{ code }])
+  const follow = async (left: Promise<void>): Promise<void> => {
+    let active = true
+    void left.then(() => { active = false })
+    while (active && !window.isDestroyed()) {
+      const unpublished = development()
+      const fullScreenChanged = new Promise<void>((resolve) => { screenChanged = resolve })
+      window.setTitle(desktopTitle(services, unpublished))
+      const theme = await inPage(`if (!globalThis.DinksterDesktopChrome) { ${chrome.script} }
+        DinksterDesktopChrome.install({ ...${JSON.stringify({
+          title: desktopTitle(services), platform: process.platform,
+          qa: services === 'qa', development: unpublished, fullScreen: window.isFullScreen(),
+        })}, theme: ${pageTheme} });
+        ${pageTheme}`) === 'light' ? 'light' : 'dark'
+      if (!active || window.isDestroyed()) return
+      if (process.platform !== 'darwin') window.setTitleBarOverlay(chrome.native.overlay[theme])
+      // The app switches its theme without reloading, and macOS hides the
+      // traffic lights in full screen; wait for either, then match it.
+      await Promise.race([left, fullScreenChanged, inPage(`new Promise((resolve) => {
+        const changed = () => ${pageTheme} !== ${JSON.stringify(theme)}
+        if (changed()) return resolve()
+        const observer = new MutationObserver(() => { if (changed()) { observer.disconnect(); resolve() } })
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+      })`)])
     }
-    .topbar > *, .dinkster-topbar > *, body > header > * { -webkit-app-region: no-drag; }
-    body:not(:has(.topbar, .dinkster-topbar, > header)) { padding-top: 54px; }
-    body:not(:has(.topbar, .dinkster-topbar, > header))::before {
-      content: '${desktopTitle(services)}';
-      position: fixed; top: 0; left: 0; right: 0; height: 54px; z-index: 2147483647;
-      display: flex; align-items: center;
-      padding-left: calc(${left} + 12px);
-      color: #ededed; background: #202020; font: 14px system-ui, sans-serif;
-      -webkit-app-region: drag;
-    }
-  `
+  }
   window.webContents.on('did-finish-load', () => {
-    if (window.isDestroyed()) return
-    const unpublished = development()
-    window.setTitle(desktopTitle(services, unpublished))
-    const marking = unpublished ? `
-      body::after {
-        content: 'Development project - unpublished sources';
-        position: fixed; bottom: 8px; right: 12px; z-index: 2147483647;
-        padding: 6px 10px; border: 1px solid #f3cf80; border-radius: 5px;
-        color: #f3cf80; background: #202020; font: 12px system-ui, sans-serif;
-        pointer-events: none; -webkit-app-region: no-drag;
-      }
-    ` : ''
-    const servicesMark = services === 'qa' ? `
-      .topbar > .topbar-group-left::after, .dinkster-topbar .dinkster-brand::after, body > header::after {
-        content: '[QA]'; flex-shrink: 0; margin-left: 8px;
-        color: #ededed; font: bold 12px system-ui, sans-serif;
-        pointer-events: none; -webkit-app-region: no-drag;
-      }
-    ` : ''
-    void window.webContents.insertCSS(css + marking + servicesMark).catch(() => {
+    leave()
+    const left = new Promise<void>((resolve) => { leave = resolve })
+    void window.webContents.insertCSS(chrome.css).then(() => follow(left)).catch(() => {
       if (!window.isDestroyed()) console.warn('Desktop window chrome could not be applied.')
     })
   })
+  window.on('closed', () => leave())
 }

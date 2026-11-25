@@ -54,6 +54,35 @@ try {
   }
   const source = resolve(root, 'static')
   await readFile(resolve(source, 'index.html'))
+  const site = resolve(source, 'site')
+  const siteManifest = JSON.parse(
+    await readFile(resolve(site, 'manifest.json'), 'utf8'),
+  )
+  const chrome = JSON.parse(
+    await readFile(resolve(site, 'desktop-chrome.json'), 'utf8'),
+  )
+  if (
+    siteManifest.format !== 'dinkster.site/1' ||
+    chrome.format !== 'dinkster.desktop-chrome/1' ||
+    chrome.installer !== 'desktop-chrome.js' ||
+    typeof chrome.css !== 'string' ||
+    !chrome.css ||
+    !siteManifest.files['desktop-chrome.js'] ||
+    !siteManifest.files['desktop-chrome.json']
+  ) {
+    throw new Error(
+      'Frontend wheel is missing its shared Desktop chrome contract',
+    )
+  }
+  for (const [name, digest] of Object.entries(siteManifest.files)) {
+    if (
+      createHash('sha256')
+        .update(await readFile(resolve(site, name)))
+        .digest('hex') !== digest
+    ) {
+      throw new Error(`Frontend site digest differs for ${name}`)
+    }
+  }
   await rm(destination, { recursive: true, force: true })
   await mkdir(destination, { recursive: true })
   await cp(source, destination, { recursive: true })

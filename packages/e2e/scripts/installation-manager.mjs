@@ -2,12 +2,18 @@ import { expect } from '@playwright/test'
 
 /** Reach installation management through the same native command as the user. */
 export async function installationManager(app) {
+  // Desktop sets its menu only after its first window has loaded, which a
+  // busy Windows runner can take well over five seconds to do.
   await expect
-    .poll(() =>
-      app.evaluate(
-        ({ Menu }) =>
-          !!Menu.getApplicationMenu()?.getMenuItemById('desktop-installations'),
-      ),
+    .poll(
+      () =>
+        app.evaluate(
+          ({ Menu }) =>
+            !!Menu.getApplicationMenu()?.getMenuItemById(
+              'desktop-installations',
+            ),
+        ),
+      { timeout: 60_000 },
     )
     .toBe(true)
   const existing = app

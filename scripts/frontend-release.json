@@ -1,8 +1,8 @@
 {
   "repository": "Kosinkadink/Dinkster-Frontend",
-  "version": "0.1.1.dev596",
-  "url": "https://files.pythonhosted.org/packages/05/60/23aec1bbd61ed71f388ea0568df9cbec98c86af9114315e518675d51aa33/dinkster_frontend-0.1.1.dev596-py3-none-any.whl",
-  "sha256": "bb78c4b6b1536989842528a9e7442134c78fcd8033c885562f4bdeee1216e0fd",
-  "size": 7537477,
+  "version": "0.1.1.dev604",
+  "url": "https://files.pythonhosted.org/packages/fc/aa/02030dfdf504841841273289ba2ffef02eb76982132d478583a7f7bb1190/dinkster_frontend-0.1.1.dev604-py3-none-any.whl",
+  "sha256": "6a75a46ccdfbdc2de41b057543481375263ebc1c3755ecaf6256749afa4bc65b",
+  "size": 7540274,
   "engineApi": { "min": 1, "max": 1 }
 }

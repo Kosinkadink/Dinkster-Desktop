@@ -150,18 +150,15 @@ async function mark(page, selection, kind) {
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const elements = [
-          document.body,
-          ...document.querySelectorAll(
-            'body > header, .topbar > .topbar-group-left, .dinkster-topbar .dinkster-brand',
-          ),
-        ]
+        // The shared bar marks QA in its identity; the fallback bar and the
+        // About page carry it in their title.
         return (
-          elements.some((element) =>
-            ['::before', '::after'].some((pseudo) =>
-              getComputedStyle(element, pseudo).content.includes('[QA]'),
+          [
+            ...document.querySelectorAll(
+              '[data-desktop-chrome] .dinkster-window-identity-wide',
             ),
-          ) || document.body.textContent.includes('Dinkster Desktop [QA]')
+          ].some((identity) => identity.textContent.includes('[QA]')) ||
+          document.body.textContent.includes('Dinkster Desktop [QA]')
         )
       }),
     )
@@ -830,12 +827,11 @@ try {
         await expect
           .poll(() =>
             manager.evaluate(() =>
-              getComputedStyle(
-                document.querySelector(
-                  'body > header, .dinkster-topbar .dinkster-brand',
+              [
+                ...document.querySelectorAll(
+                  '[data-desktop-chrome] .dinkster-window-identity-wide',
                 ),
-                '::after',
-              ).content.includes('[QA]'),
+              ].some((identity) => identity.textContent.includes('[QA]')),
             ),
           )
           .toBe(selection === 'qa')

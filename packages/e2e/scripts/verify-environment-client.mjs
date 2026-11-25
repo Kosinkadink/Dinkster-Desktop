@@ -331,6 +331,11 @@ console.log(JSON.stringify(row));
     [
       'PATH',
       'HOME',
+      'DINKSTER_HOME',
+      'XDG_DATA_HOME',
+      'TMPDIR',
+      'CUDA_VISIBLE_DEVICES',
+      'DINKSTER_ACCELERATOR',
       'DISPLAY',
       'XAUTHORITY',
       'XDG_RUNTIME_DIR',

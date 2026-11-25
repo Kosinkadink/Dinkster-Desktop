@@ -117,10 +117,8 @@ existing header controls, follows late/replaced headers, and supplies a shared
 fallback bar when no header exists. QA and Development labels stay stacked in
 the bar, leaving the bottom-right toast corner clear. Chrome follows the page's
 theme as it changes and drops the macOS traffic-light inset in full screen;
-page content retains its own theme and CSP. The local
-installation page permits only embedded data fonts for the shared bar; remote
-page policies are not broadened. Navigation, window-open and IPC policies do not
-change.
+page content retains its own theme and CSP, and no page policy is broadened.
+Navigation, window-open and IPC policies do not change.
 
 ## Projects and engines
 

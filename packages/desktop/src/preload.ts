@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { ProjectDialogBridge } from './project-dialog.js'
 import type { DesktopLibraryBridge } from './library.js'
 import type { DesktopProjects } from './projects.js'
 import type {
@@ -14,6 +13,7 @@ import type {
   DesktopSystemCheck,
   DesktopWindowContext,
   DesktopWindowLayout,
+  ProjectDialogBridge,
 } from './types.js'
 
 const bridge: DesktopBridge = {

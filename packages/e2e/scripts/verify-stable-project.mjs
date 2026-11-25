@@ -184,9 +184,12 @@ try {
   )
   manager = await installationManager(app)
   await manager
-    .getByRole('heading', { name: 'Projects', exact: true })
+    .getByRole('heading', { name: 'Environments', exact: true })
     .waitFor()
-  assert.equal(await manager.locator('#local-channel').inputValue(), 'stable')
+  assert.equal(
+    await manager.getByLabel('Channel', { exact: true }).inputValue(),
+    'stable',
+  )
   const project = {
     id: 'stable-project',
     name: 'Fresh Stable project',

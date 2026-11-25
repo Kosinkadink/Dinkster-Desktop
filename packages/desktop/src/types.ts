@@ -1,3 +1,23 @@
+import type { DesktopProject, DesktopProjects } from './projects.js'
+import type { EnvironmentRequest, EnvironmentResult, SandboxReadiness } from './environment.js'
+import type { HardwareDetection, VariantPlan } from './hardware.js'
+import type { WslStatus } from './wsl.js'
+
+export interface ProjectDialogBridge {
+  wslStatus(): Promise<WslStatus>
+  prepareWsl(): Promise<WslStatus>
+  wslProjectRoot(id: string): Promise<string>
+  copyWslModels(): Promise<string | undefined>
+  list(): Promise<DesktopProjects>
+  save(project: DesktopProject): Promise<void>
+  sandbox(root: string): Promise<SandboxReadiness | undefined>
+  remove(projectId: string): Promise<void>
+  open(projectId: string, engineId: string): Promise<void>
+  inspect(request: EnvironmentRequest): Promise<{ result: EnvironmentResult; hardware: HardwareDetection; plan: VariantPlan }>
+  plan(project: DesktopProject, request: EnvironmentRequest): Promise<{ token?: string; result: EnvironmentResult }>
+  apply(token: string): Promise<EnvironmentResult>
+}
+
 export interface DesktopInfo {
   readonly appVersion: string
   readonly storageBytes: number

@@ -119,9 +119,12 @@ try {
     timeout: 60_000,
   })
   const projects = await installationManager(app)
-  await projects.locator('#name').fill('Window buttons')
-  await projects.locator('#url').fill(url)
-  await projects.getByRole('button', { name: 'Save remote project' }).click()
+  await projects
+    .getByText('Connect a remote environment', { exact: true })
+    .click()
+  await projects.getByLabel('Remote environment name').fill('Window buttons')
+  await projects.getByLabel('Server URL').fill(url)
+  await projects.getByRole('button', { name: 'Save remote binding' }).click()
   const opened = app.waitForEvent('window')
   await projects.getByRole('button', { name: 'Open Remote engine' }).click()
   const page = await opened
@@ -414,6 +417,40 @@ try {
   await setWindow('leave-fullscreen')
   await expect.poll(async () => (await windowState()).fullScreen).toBe(false)
   await check('left-full-screen')
+
+  // The Environments window wears the same single bar.
+  await app.evaluate(({ BrowserWindow }, url) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (window.webContents.getURL().startsWith(url)) window.hide()
+      else if (
+        window.webContents.getURL().endsWith('/desktop-environments.html')
+      ) {
+        window.show()
+        window.focus()
+      }
+    }
+  }, url)
+  const environments = projects.locator('[data-desktop-chrome]')
+  await expect(environments).toHaveCount(1)
+  await page.waitForTimeout(1500)
+  const environmentsBar = await environments.evaluate((bar) => {
+    const rect = bar.getBoundingClientRect()
+    return {
+      top: rect.top,
+      height: rect.height,
+      topElementInBar: bar.contains(
+        document.elementFromPoint(innerWidth / 2, 1),
+      ),
+      bodyPaddingTop: getComputedStyle(document.body).paddingTop,
+    }
+  })
+  results.push({ name: 'environments', ...environmentsBar })
+  await capture('environments')
+  assert.deepEqual(
+    environmentsBar,
+    { top: 0, height: barHeight, topElementInBar: true, bodyPaddingTop: '0px' },
+    'environments: one bar at the top of the window',
+  )
   console.log(`Verified window buttons in the top bar on ${process.platform}`)
 } finally {
   await writeFile(

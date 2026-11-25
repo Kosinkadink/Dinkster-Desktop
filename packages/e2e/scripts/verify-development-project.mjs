@@ -110,15 +110,17 @@ try {
     env,
   })
   const manager = await installationManager(app)
+  await manager.getByText('Advanced settings', { exact: true }).click()
   await manager
-    .getByText('Manage a local installation', { exact: true })
-    .click()
-  await manager.locator('#local-name').fill('Contributor development')
-  await manager.locator('#local-root').fill(project)
-  await manager.locator('#local-mirrors').fill('https://releases.dinkster.org')
-  await manager.locator('#local-data').fill(join(scratch, 'store'))
-  await manager.locator('#local-port').fill(String(port))
-  await manager.locator('#local-kind').selectOption('development')
+    .getByLabel('Environment name', { exact: true })
+    .fill('Contributor development')
+  await manager.getByLabel('Install location').fill(project)
+  await manager
+    .getByLabel('Mirrors, in order')
+    .fill('https://releases.dinkster.org')
+  await manager.getByLabel('Wheel store').fill(join(scratch, 'store'))
+  await manager.getByLabel('Supervisor port').fill(String(port))
+  await manager.getByLabel('Source kind').selectOption('development')
   for (const [id, value] of Object.entries({
     'development-engine': sources.engine,
     'development-inference': sources.inference,
@@ -130,42 +132,63 @@ try {
         ? { 'development-frontend-dev': frontendDev }
         : { 'development-frontend': sources.frontend }),
   }))
-    await manager.locator(`#${id}`).fill(value)
+    await manager
+      .getByLabel(
+        {
+          'development-engine': 'Engine source',
+          'development-inference': 'dinkster-inference source (optional)',
+          'development-helper': 'dinkster-pack-helpers source (optional)',
+          'development-packs': 'Pack sources (one per line, optional)',
+          'development-frontend': 'Built frontend folder (optional)',
+          'development-frontend-git': 'Frontend Git source',
+          'development-frontend-dev': 'Frontend dev server',
+        }[id],
+        { exact: true },
+      )
+      .fill(value)
   await manager
     .getByRole('button', { name: 'Inspect hardware and variants' })
     .click()
   const variant = process.platform === 'win32' ? 'win-cpu' : 'linux-cpu'
   await expect(
-    manager.locator(`#local-variant option[value="${variant}"]`),
+    manager
+      .getByLabel('Hardware variant')
+      .locator(`option[value="${variant}"]`),
   ).toHaveCount(1, { timeout: 120_000 })
-  await manager.locator('#local-variant').selectOption(variant)
-  await manager
-    .locator('#local-settings')
-    .screenshot({ path: join(scratch, 'development-setup.png') })
+  await manager.getByLabel('Hardware variant').selectOption(variant)
+  await manager.screenshot({ path: join(scratch, 'development-setup.png') })
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
-  await expect(manager.locator('#apply')).toBeVisible({ timeout: 120_000 })
+  await expect(
+    manager.getByRole('button', { name: 'Confirm and apply' }),
+  ).toBeVisible({ timeout: 120_000 })
   await manager
-    .locator('#plan-panel')
+    .getByLabel('Reviewed environment details')
     .screenshot({ path: join(scratch, 'development-plan.png') })
   await assert.rejects(readFile(join(project, 'current')), /ENOENT/)
   await manager.getByRole('button', { name: 'Dismiss', exact: true }).click()
-  await expect(manager.locator('#apply')).toBeHidden()
+  await expect(
+    manager.getByRole('button', { name: 'Confirm and apply' }),
+  ).toBeHidden()
   await assert.rejects(readFile(join(project, 'current')), /ENOENT/)
   await manager.getByRole('button', { name: 'Review environment plan' }).click()
-  await expect(manager.locator('#apply')).toBeVisible({ timeout: 120_000 })
+  await expect(
+    manager.getByRole('button', { name: 'Confirm and apply' }),
+  ).toBeVisible({ timeout: 120_000 })
   await manager.getByRole('button', { name: 'Confirm and apply' }).click()
   await manager.waitForFunction(
     () =>
       document
-        .querySelector('#projects')
-        ?.textContent.includes('Development - unpublished sources') ||
-      document.querySelector('#message')?.textContent.trim(),
+        .querySelector('ul[aria-label="Saved environments"]')
+        ?.textContent?.includes('Development - unpublished sources') ||
+      document.querySelector('[role="alert"]')?.textContent.trim(),
     null,
     { timeout: 1_200_000 },
   )
-  await expect(manager.locator('#projects')).toContainText(
-    'Development - unpublished sources',
-  )
+  await expect(
+    manager
+      .getByRole('list', { name: 'Saved environments' })
+      .getByText('Development - unpublished sources'),
+  ).toBeVisible()
   const generation = join(
     project,
     'builds',
@@ -331,7 +354,7 @@ try {
     engine.getByText('27 node schemas', { exact: true }),
   ).toBeVisible({ timeout: 120_000 })
   await manager
-    .locator('#projects')
+    .getByRole('list', { name: 'Saved environments' })
     .screenshot({ path: join(scratch, 'development-project-list.png') })
   await engine.screenshot({ path: join(scratch, 'development-engine.png') })
   receipt.status = 'passed'
@@ -342,7 +365,7 @@ try {
   const manager = app?.windows()[0]
   if (manager && !manager.isClosed()) {
     receipt.message = await manager
-      .locator('#message')
+      .getByRole('alert')
       .textContent()
       .catch(() => '')
     await manager

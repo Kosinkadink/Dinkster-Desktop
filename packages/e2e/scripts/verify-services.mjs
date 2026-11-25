@@ -822,15 +822,16 @@ try {
           .toBeGreaterThan(0)
         const manager = browser.contexts()[0].pages()[0]
         await manager
-          .getByRole('heading', { name: 'Environments', exact: true })
+          .getByRole('heading', { name: 'Projects', exact: true })
           .waitFor()
         await expect
           .poll(() =>
-            manager.evaluate(
-              () =>
-                document
-                  .querySelector('[data-desktop-chrome]')
-                  ?.textContent.includes('Dinkster Desktop [QA]') ?? false,
+            manager.evaluate(() =>
+              [
+                ...document.querySelectorAll(
+                  '[data-desktop-chrome] .dinkster-window-identity-wide',
+                ),
+              ].some((identity) => identity.textContent.includes('[QA]')),
             ),
           )
           .toBe(selection === 'qa')

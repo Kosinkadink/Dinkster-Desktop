@@ -3,8 +3,11 @@ import { parseHardwareSelection, projectHardware, type HardwareSelection } from 
 
 const selection: HardwareSelection = {
   detectedCards: [{ id: '1', name: 'Compute card', driver: '595.84', computeCapability: '8.9', memoryMiB: 24576 }],
-  choices: [{ variant: 'linux-nvidia', label: 'Linux with NVIDIA graphics', reason: 'Compatible card and driver.' }],
-  variant: 'linux-nvidia', buildLabel: 'Linux with NVIDIA graphics', buildReason: 'Compatible card and driver.',
+  choices: [
+    { variant: 'linux-nvidia', label: 'NVIDIA graphics', reason: 'Compatible card and driver.' },
+    { variant: 'linux-cpu', label: 'CPU only', reason: 'Does not use the graphics card and is much slower.' },
+  ],
+  variant: 'linux-nvidia', buildLabel: 'NVIDIA graphics', buildReason: 'Compatible card and driver.',
   gpus: ['1'], refusal: null,
 }
 
@@ -13,7 +16,21 @@ describe('tools-owned hardware selection', () => {
     expect(projectHardware(parseHardwareSelection(selection))).toEqual({
       hardware: { gpus: selection.detectedCards },
       plan: { selected: 'linux-nvidia', reason: 'Compatible card and driver.',
-        choices: [{ variant: 'linux-nvidia', supported: true, reason: 'Compatible card and driver.' }] },
+        choices: [
+          { variant: 'linux-nvidia', supported: true, reason: 'Compatible card and driver.' },
+          { variant: 'linux-cpu', supported: true, reason: 'Does not use the graphics card and is much slower.' },
+        ] },
+    })
+  })
+
+  it('keeps the tools CPU default when no supported card is found', () => {
+    const cpu = { ...selection, detectedCards: [], choices: [selection.choices![1]!],
+      variant: 'linux-cpu', buildLabel: 'CPU only',
+      buildReason: 'Does not use the graphics card and is much slower.', gpus: [] }
+    expect(projectHardware(parseHardwareSelection(cpu))).toEqual({
+      hardware: { gpus: [] },
+      plan: { selected: 'linux-cpu', reason: 'Does not use the graphics card and is much slower.',
+        choices: [{ variant: 'linux-cpu', supported: true, reason: 'Does not use the graphics card and is much slower.' }] },
     })
   })
 

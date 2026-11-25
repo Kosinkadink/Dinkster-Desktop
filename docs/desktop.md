@@ -284,7 +284,9 @@ GPU indexes, then use **Inspect hardware and variants**. Desktop calls the
 read-only `catalog --hardware` command for that prospective root. The tools
 detect cards and select supported builds from the published base manifests;
 Desktop displays their choice and reason without another hardware policy.
-CPU is offered only when no supported graphics-card build exists. Editing the root, channel,
+Published native CPU builds are offered last, with graphics recommended when
+supported and CPU selected by default only without a supported graphics build.
+Editing the root, channel,
 mirrors or assigned GPUs clears the choice and requires another inspection.
 Setup passes the selected engine name, port and assigned devices to dinkster-env
 so it starts only that binding. Changing a running binding's devices or port

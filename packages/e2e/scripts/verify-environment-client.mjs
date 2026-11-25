@@ -264,6 +264,8 @@ if (operation === 'status') {
 if (operation === 'catalog') {
   const base = 'sha256:' + 'a'.repeat(64);
   console.log(JSON.stringify({format:'dinkster.environment-result/1',operation,status:'clean',root,current:null,plan:[],channel:'stable',
+    hardware:{detectedCards:[],choices:[{variant:'linux-cpu',label:'CPU only',reason:'Does not use the graphics card and is much slower.'}],
+      variant:'linux-cpu',buildLabel:'CPU only',buildReason:'Does not use the graphics card and is much slower.',gpus:[],refusal:null},
     variants:[{variant:'linux-cpu',base,downloadBytes:123456789,manifest:{format:'dinkster.base/1',id:base,variant:'linux-cpu',
       platform:{os:'linux',arch:'x86_64'},nvidia:null,parts:[]}}]}));
   process.exit(0);
@@ -410,11 +412,13 @@ console.log(JSON.stringify(row));
   await expect(
     manager.getByLabel('Hardware variant').locator('option[value="linux-cpu"]'),
   ).toHaveCount(1)
-  await expect(manager.getByLabel('Hardware variant')).toHaveValue('')
+  await expect(manager.getByLabel('Hardware variant')).toHaveValue('linux-cpu')
   await manager.getByLabel('Hardware variant').selectOption('linux-cpu')
   await expect(manager.getByLabel('Hardware variant')).toHaveValue('linux-cpu')
   await expect(
-    manager.getByText('CPU runs locally without an NVIDIA GPU.').last(),
+    manager
+      .getByText('Does not use the graphics card and is much slower.')
+      .last(),
   ).toContainText('123,456,789 bytes')
   if (artifacts)
     await manager.screenshot({
@@ -1196,14 +1200,14 @@ console.log(JSON.stringify(row));
     'journal',
   ])
     assert(!dataFiles.includes(forbidden))
-  // Windows detection is mocked here; the UI and variant rule run unchanged.
+  // Replay tools responses; hardware policy is tested by the tools producer.
   for (const driver of ['524.99', '580.10']) {
     await app.evaluate(
       async ({ ipcMain }, input) => {
         const require = process
           .getBuiltinModule('node:module')
           .createRequire(input.module)
-        const { planVariant } = require(input.module)
+        const { projectHardware } = require(input.module)
         ipcMain.removeHandler('desktop:projects-inspect')
         ipcMain.handle('desktop:projects-inspect', (_event, request) => {
           const platform = { os: 'windows', arch: 'x86_64' }
@@ -1228,25 +1232,56 @@ console.log(JSON.stringify(row));
             },
             { variant: 'win-cpu', platform, nvidia: null },
           ]
-          const hardware = {
-            gpus: [
+          const cpu = {
+            variant: 'win-cpu',
+            label: 'CPU only',
+            reason: 'Does not use the graphics card and is much slower.',
+          }
+          const selection = {
+            detectedCards: [
               {
                 id: '0',
                 name: 'Display GPU',
                 driver: input.driver,
                 computeCapability: '6.1',
+                memoryMiB: null,
               },
               {
                 id: '1',
                 name: 'Compute GPU',
                 driver: input.driver,
                 computeCapability: '8.9',
+                memoryMiB: null,
               },
             ],
+            choices:
+              input.driver === '524.99'
+                ? [cpu]
+                : [
+                    {
+                      variant: 'win-nvidia',
+                      label: 'NVIDIA graphics',
+                      reason: 'Needs NVIDIA driver 580 or newer.',
+                    },
+                    {
+                      variant: 'win-nvidia-cu126',
+                      label: 'NVIDIA graphics, older drivers',
+                      reason: 'Needs NVIDIA driver 525 or newer.',
+                    },
+                    cpu,
+                  ],
+            variant: input.driver === '524.99' ? 'win-cpu' : 'win-nvidia',
+            buildLabel:
+              input.driver === '524.99' ? cpu.label : 'NVIDIA graphics',
+            buildReason:
+              input.driver === '524.99'
+                ? cpu.reason
+                : 'Needs NVIDIA driver 580 or newer.',
+            gpus: input.driver === '524.99' ? [] : ['1'],
+            refusal: null,
           }
           return {
-            hardware,
-            plan: planVariant(manifests, hardware, request.gpus, 'win32'),
+            ...projectHardware(selection),
             result: {
               format: 'dinkster.environment-result/1',
               operation: 'catalog',
@@ -1254,6 +1289,7 @@ console.log(JSON.stringify(row));
               root: request.root,
               current: null,
               plan: [],
+              hardware: selection,
               variants: manifests.map((manifest) => ({
                 variant: manifest.variant,
                 downloadBytes: 123456789,
@@ -1273,9 +1309,11 @@ console.log(JSON.stringify(row));
       .getByRole('button', { name: 'Inspect hardware and variants' })
       .click()
     if (driver === '524.99') {
-      await expect(manager.getByLabel('Hardware variant')).toHaveValue('')
+      await expect(manager.getByLabel('Hardware variant')).toHaveValue(
+        'win-cpu',
+      )
       await expect(manager.getByLabel('Hardware guidance')).toContainText(
-        'Requires NVIDIA driver 525',
+        'Does not use the graphics card and is much slower.',
       )
       await expect(
         manager
@@ -1292,14 +1330,16 @@ console.log(JSON.stringify(row));
         'win-cpu',
       )
       await expect(
-        manager.getByText('CPU runs locally without an NVIDIA GPU.').last(),
+        manager
+          .getByText('Does not use the graphics card and is much slower.')
+          .last(),
       ).toBeVisible()
     } else {
       await expect(manager.getByLabel('Hardware variant')).toHaveValue(
         'win-nvidia',
       )
       await expect(manager.getByLabel('Hardware guidance')).toContainText(
-        'lowest compute capability 8.9',
+        'Needs NVIDIA driver 580 or newer.',
       )
       if (artifacts)
         await manager
@@ -1313,11 +1353,7 @@ console.log(JSON.stringify(row));
         'win-nvidia-cu126',
       )
       await expect(
-        manager
-          .getByText(
-            'Assigned GPUs meet driver 525; lowest compute capability 8.9 meets 5.0.',
-          )
-          .last(),
+        manager.getByText('Needs NVIDIA driver 525 or newer.').last(),
       ).toBeVisible()
       if (artifacts)
         await manager

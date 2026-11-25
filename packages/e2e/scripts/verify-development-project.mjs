@@ -280,15 +280,11 @@ try {
         connected.push(new URL(socket.url()).origin)
     })
   })
-  await expect
-    .poll(
-      () =>
-        engine
-          .locator('body')
-          .evaluate((body) => getComputedStyle(body, '::after').content),
-      { timeout: 120_000 },
-    )
-    .toBe('"Development project - unpublished sources"')
+  await expect(
+    engine.locator(
+      '[data-desktop-chrome] .dinkster-window-identity-wide [title="Development project - unpublished sources"]',
+    ),
+  ).toHaveCount(1, { timeout: 120_000 })
   assert.equal(
     await engine.evaluate(() => typeof window.dinksterProjects),
     'undefined',

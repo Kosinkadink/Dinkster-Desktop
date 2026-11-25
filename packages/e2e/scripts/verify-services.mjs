@@ -150,18 +150,15 @@ async function mark(page, selection, kind) {
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const elements = [
-          document.body,
-          ...document.querySelectorAll(
-            'body > header, .topbar > .topbar-group-left, .dinkster-topbar .dinkster-brand',
-          ),
-        ]
+        // The shared bar marks QA in its identity; the fallback bar and the
+        // About page carry it in their title.
         return (
-          elements.some((element) =>
-            ['::before', '::after'].some((pseudo) =>
-              getComputedStyle(element, pseudo).content.includes('[QA]'),
+          [
+            ...document.querySelectorAll(
+              '[data-desktop-chrome] .dinkster-window-identity-wide',
             ),
-          ) || document.body.textContent.includes('Dinkster Desktop [QA]')
+          ].some((identity) => identity.textContent.includes('[QA]')) ||
+          document.body.textContent.includes('Dinkster Desktop [QA]')
         )
       }),
     )
@@ -825,17 +822,15 @@ try {
           .toBeGreaterThan(0)
         const manager = browser.contexts()[0].pages()[0]
         await manager
-          .getByRole('heading', { name: 'Projects', exact: true })
+          .getByRole('heading', { name: 'Environments', exact: true })
           .waitFor()
         await expect
           .poll(() =>
-            manager.evaluate(() =>
-              getComputedStyle(
-                document.querySelector(
-                  'body > header, .dinkster-topbar .dinkster-brand',
-                ),
-                '::after',
-              ).content.includes('[QA]'),
+            manager.evaluate(
+              () =>
+                document
+                  .querySelector('[data-desktop-chrome]')
+                  ?.textContent.includes('Dinkster Desktop [QA]') ?? false,
             ),
           )
           .toBe(selection === 'qa')

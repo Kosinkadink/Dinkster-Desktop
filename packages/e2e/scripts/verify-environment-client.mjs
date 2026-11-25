@@ -452,13 +452,10 @@ console.log(JSON.stringify(row));
   const engine = await opened
   await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
   const engineOrigin = new URL(engine.url()).origin
-  await expect
-    .poll(() =>
-      engine
-        .locator('body')
-        .evaluate((body) => getComputedStyle(body, '::before').content),
-    )
-    .toBe('"Dinkster Desktop"')
+  // A page without its own header gets the shared fallback bar.
+  await expect(
+    engine.locator('.dinkster-window-fallback [data-desktop-chrome]'),
+  ).toContainText('Dinkster Desktop')
   if (artifacts)
     await engine.screenshot({
       path: join(artifacts, 'chrome-remote-fallback.png'),
@@ -963,13 +960,11 @@ console.log(JSON.stringify(row));
     'Development - unpublished sources',
   )
   await engine.getByRole('heading', { name: 'Original supervisor' }).waitFor()
-  await expect
-    .poll(() =>
-      engine
-        .locator('body')
-        .evaluate((body) => getComputedStyle(body, '::after').content),
-    )
-    .toBe('"Development project - unpublished sources"')
+  await expect(
+    engine.locator(
+      '[data-desktop-chrome] .dinkster-window-identity-wide [title="Development project - unpublished sources"]',
+    ),
+  ).toHaveCount(1)
   assert(
     await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().some(

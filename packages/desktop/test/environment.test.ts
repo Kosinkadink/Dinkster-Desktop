@@ -116,6 +116,10 @@ describe('Desktop dinkster-env command client', () => {
       await writeFile(script, response)
       expect((await client.run({ root, operation: 'history' })).history).toEqual([entry])
       expect(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))).toEqual(['--root', root, 'history', '--json'])
+      const largeEntry = { ...entry, snapshot: { ...entry.snapshot,
+        metadata: { 'installed-wheels.json': 'x'.repeat(5 * 1024 * 1024) } } }
+      await writeFile(script, response.replace(JSON.stringify([entry]), JSON.stringify([largeEntry])))
+      expect((await client.run({ root, operation: 'history' })).history).toEqual([largeEntry])
       await expect(client.run({ root, operation: 'history' }, true)).rejects.toThrow('read-only')
       for (const extra of [{ repair: true }, { historyEntry: 7 }, { automaticCleanup: false }, { libraryProject: 'film' }]) {
         await expect(client.run({ root, operation: 'history', ...extra })).rejects.toThrow('read-only')

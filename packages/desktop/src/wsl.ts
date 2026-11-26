@@ -56,7 +56,8 @@ export class WslHost {
   private async wsl(args: readonly string[]): Promise<string> {
     try {
       const result = await execute('wsl.exe', [...args], {
-        encoding: 'buffer', windowsHide: true, timeout: 30 * 60_000, maxBuffer: 4 * 1024 * 1024,
+        // Environment history and restore results grow with sealed software inventories.
+        encoding: 'buffer', windowsHide: true, timeout: 30 * 60_000, maxBuffer: Infinity,
       })
       return decode(result.stdout)
     } catch (error) {

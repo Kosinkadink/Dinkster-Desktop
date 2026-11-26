@@ -552,6 +552,59 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
     reveal: false,
     resolvePath: false,
   }
+  receipt.nativeFiles.invalidProjects = []
+  await app.evaluate(({ dialog }) => {
+    globalThis.originalFolderDialog = dialog.showOpenDialog
+    globalThis.invalidFolderRequests = 0
+    dialog.showOpenDialog = async () => {
+      globalThis.invalidFolderRequests++
+      return { canceled: true, filePaths: [] }
+    }
+  })
+  try {
+    for (const query of [
+      '',
+      '?dinksterProject=',
+      '?dinksterProject=invalid_project',
+      '?dinksterProject=default&dinksterProject=default',
+      '?dinksterProject=default&dinksterProject=another-project',
+    ]) {
+      const invalidUrl = new URL(projectUrl)
+      invalidUrl.search = query
+      await page.goto(invalidUrl.href)
+      const result = await page.evaluate(async (url) => {
+        const capabilities = await window.dinksterDesktop.fileCapabilities(url)
+        try {
+          await window.dinksterDesktop.chooseDirectory(url)
+          return { capabilities, accepted: true }
+        } catch (error) {
+          return { capabilities, error: error.message }
+        }
+      }, backendUrl)
+      assert.deepEqual(result.capabilities, denied)
+      assert.equal(result.accepted, undefined)
+      assert.equal(typeof result.error, 'string')
+      receipt.nativeFiles.invalidProjects.push({ query, ...result })
+    }
+    assert.equal(await app.evaluate(() => globalThis.invalidFolderRequests), 0)
+  } finally {
+    await app.evaluate(({ dialog }) => {
+      dialog.showOpenDialog = globalThis.originalFolderDialog
+      delete globalThis.originalFolderDialog
+      delete globalThis.invalidFolderRequests
+    })
+  }
+  await page.goto(projectUrl.href)
+  assert.equal(
+    await page.evaluate(
+      (url) =>
+        window.dinksterDesktop
+          .fileCapabilities(url)
+          .then((value) => value.nativeFolderChoice),
+      backendUrl,
+    ),
+    true,
+  )
   assert.deepEqual(
     await page.evaluate(
       (url) => window.dinksterDesktop.fileCapabilities(url),
@@ -578,7 +631,13 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
     ),
     /requesting project/,
   )
-  for (const change of ['none', 'restart', 'project', 'stop']) {
+  for (const change of [
+    'none',
+    'restart',
+    'project',
+    'project-return',
+    'stop',
+  ]) {
     await app.evaluate(({ dialog }) => {
       globalThis.originalFolderDialog = dialog.showOpenDialog
       globalThis.folderDialogEntered = false
@@ -624,10 +683,26 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
           assert.equal((await response.json()).state, 'stopped')
         }
       }
-      if (change === 'project')
+      if (change === 'project' || change === 'project-return') {
+        const navigated = page.waitForEvent('framenavigated', {
+          timeout: 30_000,
+        })
         await page.evaluate(() =>
           history.replaceState(null, '', '?dinksterProject=another-project'),
         )
+        await navigated
+        if (change === 'project-return') {
+          const returned = page.waitForEvent('framenavigated', {
+            timeout: 30_000,
+          })
+          await page.evaluate(
+            (url) => history.replaceState(null, '', url),
+            projectUrl.href,
+          )
+          await returned
+          assert.equal(page.url(), projectUrl.href)
+        }
+      }
     } finally {
       await app.evaluate(({ dialog }, path) => {
         dialog.showOpenDialog = globalThis.originalFolderDialog

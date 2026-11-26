@@ -467,12 +467,25 @@ try {
       await served.text(),
       await readFile(join(sources.frontend, 'index.html'), 'utf8'),
     )
-  await expect(engine.getByText('connected', { exact: true })).toBeVisible({
+  const connection = engine.getByTestId('status-connection')
+  await expect(connection).toHaveAttribute('data-state', 'connected', {
     timeout: 120_000,
   })
+  const catalogResponse = await engine.request.get(
+    new URL('/api/nodes', engine.url()).href,
+  )
+  assert(catalogResponse.ok())
+  const catalog = await catalogResponse.json()
+  assert(catalog.nodes && typeof catalog.nodes === 'object')
+  const nodeCount = Object.keys(catalog.nodes).length
+  assert(nodeCount > 0, 'The managed engine must provide node types')
+  await connection.click()
   await expect(
-    engine.getByText('27 node schemas', { exact: true }),
+    engine
+      .getByTestId('backends-panel')
+      .getByText(new RegExp(`, ${nodeCount} node types?$`)),
   ).toBeVisible({ timeout: 120_000 })
+  receipt.nodeTypes = nodeCount
   await manager
     .getByRole('list', { name: 'Saved environments' })
     .screenshot({ path: join(scratch, 'development-project-list.png') })

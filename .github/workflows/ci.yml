@@ -110,6 +110,16 @@ jobs:
           sudo apt-get install -y xvfb openbox xdotool
           mkdir -p .amp/in
           xvfb-run -a -s '-screen 0 1600x1000x24' sh -c 'openbox & sleep 2; node packages/e2e/scripts/verify-window-chrome.mjs'
+      - name: Packaged shared Home startup and restart on Linux
+        if: runner.os == 'Linux'
+        env:
+          DINKSTER_DESKTOP_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ github.workspace }}/.amp/in/installed
+        run: |
+          pnpm --filter @dinkster/desktop prepare:tools
+          pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
+          node packages/desktop/scripts/verify-installed-tools.mjs packages/desktop/release/linux-unpacked/resources
+          xvfb-run -a node packages/e2e/scripts/verify-desktop-install.mjs
       - name: Real window on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -127,3 +137,6 @@ jobs:
           path: |
             .amp/in/window-chrome/*.png
             .amp/in/window-chrome/*.json
+            .amp/in/installed/*.png
+            .amp/in/installed/*.json
+            .amp/in/installed/*.log

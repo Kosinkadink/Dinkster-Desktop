@@ -394,6 +394,11 @@ try {
     }
     await secondInstance(selection)
     await mark(home, selection, 'home')
+    const workflowClosed = workflow.waitForEvent('close')
+    await workflow
+      .evaluate(() => window.dinksterDesktop.redockWindow())
+      .catch(() => undefined)
+    await workflowClosed
     await assert.rejects(
       stat(join(env.DINKSTER_DESKTOP_DATA, 'projects.json')),
       { code: 'ENOENT' },

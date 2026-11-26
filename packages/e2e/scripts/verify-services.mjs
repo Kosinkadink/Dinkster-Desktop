@@ -169,6 +169,20 @@ async function launch(selection) {
   return page
 }
 
+async function quit() {
+  const closed = app.waitForEvent('close')
+  await app
+    .evaluate(({ Menu }) => {
+      Menu.getApplicationMenu()
+        .items[0].submenu.items.find((item) => item.label === 'Quit')
+        .click()
+    })
+    .catch(() => undefined)
+  await closed
+  app = undefined
+  await expect.poll(homeStopped, { timeout: 30_000 }).toBe(true)
+}
+
 async function mark(page, selection, kind) {
   const title =
     selection === 'qa' ? 'Dinkster Desktop [QA]' : 'Dinkster Desktop'
@@ -409,17 +423,7 @@ try {
       inherited: selection === 'qa' ? 'production' : 'qa',
       oppositeInstanceRefused: true,
     })
-    const closed = app.waitForEvent('close')
-    await app
-      .evaluate(({ Menu }) => {
-        Menu.getApplicationMenu()
-          .items[0].submenu.items.find((item) => item.label === 'Quit')
-          .click()
-      })
-      .catch(() => undefined)
-    await closed
-    app = undefined
-    await expect.poll(homeStopped, { timeout: 30_000 }).toBe(true)
+    await quit()
     const saved = await configuration(env.DINKSTER_DESKTOP_DATA)
     if (desktopBaseline) {
       assert.deepEqual(
@@ -550,43 +554,44 @@ try {
     )
     if (invalid.exitCode === null) invalid.kill()
   }
-  if (!sourceOnly) {
+  if (!sourceOnly && wsl) {
+    const home = await launch('production')
+    const prepared = await home.evaluate(() =>
+      window.dinksterDesktop.prepareWsl(),
+    )
+    assert.equal(prepared.ready, true)
+    const status = await home.evaluate(() => window.dinksterDesktop.wslStatus())
+    assert.equal(status.ready, true)
+    assert.equal(status.distribution, prepared.distribution)
+    const projectRoot = await home.evaluate(() =>
+      window.dinksterDesktop.wslProjectRoot('services-check'),
+    )
+    assert(projectRoot.includes(prepared.distribution))
+    await app.evaluate(({ dialog }) => {
+      globalThis.servicesOpenDialog = dialog.showOpenDialog
+      dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
+    })
+    try {
+      assert.equal(
+        await home.evaluate(() => window.dinksterDesktop.copyWslModels()),
+        undefined,
+      )
+    } finally {
+      await app.evaluate(({ dialog }) => {
+        dialog.showOpenDialog = globalThis.servicesOpenDialog
+        delete globalThis.servicesOpenDialog
+      })
+    }
+    receipt.wsl = { prepared, status, projectRoot, cancelledCopy: true }
+    await quit()
+  }
+  if (!sourceOnly && !wsl) {
     for (const channel of ['stable', 'nightly']) {
       progress('setup started', channel)
-      const portProbe = createServer()
-      await new Promise((done) => portProbe.listen(0, '127.0.0.1', done))
-      const port = portProbe.address().port
-      await new Promise((done) => portProbe.close(done))
-      const manager = await launch('production')
-      let guest
-      if (wsl) {
-        await manager.evaluate(async () => {
-          const status = await window.dinksterProjects.prepareWsl()
-          if (!status.ready) throw new Error(status.detail)
-        })
-        const { WslHost } = await import('../../desktop/dist/wsl.js')
-        const pin = JSON.parse(
-          await readFile(
-            join(
-              repository,
-              'packages/desktop/src/environment-tools-release.json',
-            ),
-            'utf8',
-          ),
-        )
-        guest = new WslHost(env.DINKSTER_DESKTOP_DATA, {
-          manifest: `https://releases.dinkster.org/tools/${pin.label}/tools-manifest.json`,
-          release: `https://releases.dinkster.org/tools/${pin.label}`,
-          sha256: pin.manifest.sha256,
-        })
-        receipt.distribution = guest.distribution
-      }
+      const home = await launch('production')
       const project = {
-        id: channel,
-        name: `${channel} services check`,
         channel,
-        root: guest ? guest.projectRoot(channel) : join(root, channel),
-        engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [], port }],
+        root: join(root, channel),
       }
       runtimeRoots.set(channel, join(project.root, 'runtime'))
       const request = {
@@ -594,30 +599,45 @@ try {
         operation: 'setup',
         channel,
         mirrors: ['https://releases.dinkster.org'],
-        port,
-        variant: wsl
-          ? 'linux-cpu'
-          : { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
-              process.platform
-            ],
-        data: guest ? guest.projectRoot('store') : join(root, 'store'),
-        engine: 'main',
-        gpus: [],
+        variant: { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
+          process.platform
+        ],
       }
-      const planned = await manager.evaluate(
-        ({ project, request }) =>
-          window.dinksterProjects.plan(project, request),
-        { project, request },
+      const planResponse = await home.request.get(
+        `${homeUrl}/supervisor/setup`,
+        {
+          params: { root: project.root, channel, variant: request.variant },
+          timeout: 120_000,
+        },
       )
-      assert.equal(planned.result.status, 'planned')
-      const applied = await manager.evaluate(
-        (token) => window.dinksterProjects.apply(token),
-        planned.token,
-      )
-      assert.equal(applied.status, 'applied')
+      assert.equal(planResponse.status(), 200)
+      const { plan } = await planResponse.json()
+      assert.equal(plan.refusal, null)
+      const started = await home.request.post(`${homeUrl}/supervisor/setup`, {
+        data: { planId: plan.id },
+      })
+      assert.equal(started.status(), 202)
+      const job = await started.json()
+      await expect
+        .poll(
+          async () => {
+            const response = await home.request.get(
+              `${homeUrl}/supervisor/setup/${job.id}`,
+            )
+            assert.equal(response.status(), 200)
+            const current = await response.json()
+            assert.notEqual(
+              current.state,
+              'failed',
+              JSON.stringify(current.error),
+            )
+            return current.state
+          },
+          { timeout: 30 * 60_000 },
+        )
+        .toBe('completed')
       progress('setup applied; closing Desktop', channel)
-      await app.close()
-      app = undefined
+      await quit()
       progress('Desktop closed; reading baseline', channel)
       const baseline = await configuration(project.root)
       progress('baseline read', channel)
@@ -637,87 +657,64 @@ try {
         ).version,
       )
       assert(toolsInput)
-      const tools = guest
-        ? undefined
-        : await acquireEnvironmentTools({
-            ...toolsInput,
-            cacheRoot: join(root, 'foreign-tools'),
-          })
-      async function runTools(args, services = 'production') {
-        if (guest) {
-          const { wslLinuxPath } = await import('../../desktop/dist/wsl.js')
-          return JSON.parse(
-            await guest.run(
-              [
-                '--root',
-                wslLinuxPath(guest.distribution, project.root),
-                ...args,
-              ],
-              toolsInput,
-              services,
-            ),
-          )
-        }
-        const result = await promisify(execFile)(
-          tools.python,
-          [
-            '-I',
-            '-m',
-            'dinkster_supervisor.environment',
-            '--root',
-            project.root,
-            ...args,
-          ],
-          {
-            env: { ...env, DINKSTER_SERVICES: services },
-            timeout: 120_000,
-            maxBuffer: 4 * 1024 * 1024,
-          },
-        )
-        return JSON.parse(result.stdout)
-      }
-      const installed = await runTools(['status', '--json'])
+      const tools = await acquireEnvironmentTools({
+        ...toolsInput,
+        cacheRoot: join(root, 'foreign-tools'),
+      })
+      const result = await promisify(execFile)(
+        tools.python,
+        [
+          '-I',
+          '-m',
+          'dinkster_supervisor.environment',
+          '--root',
+          project.root,
+          'status',
+          '--json',
+        ],
+        {
+          env,
+          timeout: 120_000,
+          maxBuffer: 4 * 1024 * 1024,
+        },
+      )
+      const installed = JSON.parse(result.stdout)
       assert.equal(installed.status, 'clean')
       assert.equal(typeof installed.engine?.version, 'string')
       assert.match(installed.engine.release, /^sha256:[a-f0-9]{64}$/)
       receipt.installations.push({ channel, engine: installed.engine })
-      let previous
       for (const selection of ['production', 'qa', 'production']) {
-        appendFileSync(
-          join(root, 'desktop-stderr.log'),
-          `\nStarting ${channel} ${selection}; previous: ${previous ?? 'none'}\n`,
-        )
-        if (previous) {
-          progress('starting previous services', channel, selection)
-          const result = await runTools(
-            [
-              'start',
-              '--engine',
-              'main',
-              '--port',
-              String(port),
-              '--json',
-              '--yes',
-            ],
-            previous,
-          )
-          assert.equal(result.status, 'applied')
-          const foreign = await fetch(
-            `http://127.0.0.1:${port}/api/nodes?wire=1`,
-          ).then((response) => response.json())
-          assert.equal(foreign.dinkster.services.name, previous)
-        }
         progress('launching Desktop', channel, selection)
-        const manager = await launch(selection)
+        const engine = await launch(selection)
         progress('opening engine', channel, selection)
-        const opened = app.waitForEvent('window', { timeout: 120_000 })
-        const [, engine] = await Promise.all([
-          manager.evaluate(
-            (id) => window.dinksterProjects.open(id, 'main'),
-            channel,
-          ),
-          opened,
-        ])
+        const opened = await engine.request.post(
+          `${homeUrl}/supervisor/engine`,
+          {
+            data: { root: project.root, engine: 'main' },
+          },
+        )
+        assert.equal(opened.status(), 200)
+        let installationFrontend
+        await expect
+          .poll(
+            async () => {
+              const response = await engine.request.get(
+                `${homeUrl}/supervisor/status`,
+              )
+              const status = await response.json()
+              assert.equal(status.open.root, project.root)
+              assert.notEqual(status.state, 'failed', JSON.stringify(status))
+              installationFrontend = status.installationFrontend
+              return status.state
+            },
+            { timeout: 120_000 },
+          )
+          .toBe('ready')
+        assert.equal(typeof installationFrontend, 'string')
+        await engine.evaluate((url) => {
+          location.href = url
+        }, installationFrontend)
+        await expect(engine).toHaveURL(new URL(installationFrontend).href)
         progress('engine opened; checking canvas', channel, selection)
         await expect(engine.getByTestId('graph-canvas')).toBeVisible({
           timeout: 120_000,
@@ -766,14 +763,11 @@ try {
           channel,
           selection,
           reported: selection,
-          restartedFrom: previous ?? null,
           announcedPacks: Object.keys(composition.packs).length,
           qaServicesBadge: await badge.isVisible(),
         })
-        previous = selection
         progress('engine verified; closing Desktop', channel, selection)
-        await app.close()
-        app = undefined
+        await quit()
         progress(
           'Desktop closed; checking environment configuration',
           channel,
@@ -862,13 +856,13 @@ try {
         await expect
           .poll(() => browser.contexts()[0]?.pages().length ?? 0)
           .toBeGreaterThan(0)
-        const manager = browser.contexts()[0].pages()[0]
-        await expect(manager).toHaveURL(
+        const home = browser.contexts()[0].pages()[0]
+        await expect(home).toHaveURL(
           new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),
         )
         await expect
           .poll(() =>
-            manager.evaluate(() =>
+            home.evaluate(() =>
               [
                 ...document.querySelectorAll(
                   '[data-desktop-chrome] .dinkster-window-identity-wide',
@@ -877,8 +871,8 @@ try {
             ),
           )
           .toBe(selection === 'qa')
-        await manager.screenshot({
-          path: join(root, `${selection}-shortcut-manager.png`),
+        await home.screenshot({
+          path: join(root, `${selection}-shortcut-home.png`),
           fullPage: true,
         })
       } finally {
@@ -914,5 +908,9 @@ try {
     for (const [channel, directory] of runtimeRoots) {
       await retainRuntimeLogs(directory, join(root, 'runtime-logs', channel))
     }
+    await copyFile(
+      join(env.DINKSTER_DESKTOP_DATA, 'home.log'),
+      join(root, 'home.log'),
+    ).catch(() => undefined)
   }
 }

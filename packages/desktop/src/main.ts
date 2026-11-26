@@ -113,7 +113,7 @@ async function currentHome(): Promise<HomeStatus> {
 }
 
 async function managedFiles(event: Electron.IpcMainInvokeEvent, _backendUrl: unknown): Promise<{
-  url: string; project: string; distribution?: string; revalidate(): Promise<void>
+  url: string; project: string; execution: string; distribution?: string; revalidate(): Promise<void>
 }> {
   trustedIpc(event)
   throw new Error('Native file access requires execution-bound requests')
@@ -558,7 +558,7 @@ ipcMain.handle('desktop:reveal-model-location', async (event, backendUrl: unknow
 })
 ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown, path: unknown) => {
   const context = await managedFiles(event, backendUrl)
-  return resolveDroppedPath(context.url, path, context.project, context.revalidate, context.distribution)
+  return resolveDroppedPath(context.url, path, context.project, context.revalidate, context.execution, context.distribution)
 })
 ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: unknown) => {
   const context = await managedFiles(event, backendUrl)

@@ -139,7 +139,7 @@ export async function dropResolutionSupported(backendUrl: string): Promise<boole
 }
 
 /** Only advertised support permits sending a native path to the resolver. */
-export async function resolveDroppedPath(backendUrl: string, path: unknown, project: string, authorize: () => Promise<void>, distribution?: string): Promise<DesktopDroppedFileResult> {
+export async function resolveDroppedPath(backendUrl: string, path: unknown, project: string, authorize: () => Promise<void>, execution: string, distribution?: string): Promise<DesktopDroppedFileResult> {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || !validProjectId(project)) {
     throw new Error('Invalid native file resolution request')
   }
@@ -151,7 +151,7 @@ export async function resolveDroppedPath(backendUrl: string, path: unknown, proj
     await authorize()
     if (!supported) return { status: 'refused', reason: 'unsupported-backend' }
     const response = await fetch(url, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', 'X-Dinkster-Execution': execution },
       body: JSON.stringify({ path: enginePath, project, scope: 'local' }),
       redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
     })

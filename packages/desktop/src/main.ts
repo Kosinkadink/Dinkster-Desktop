@@ -290,7 +290,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
     if (windowLayout.workspaces.some((workspace) => workspace.id === id)) {
       const project = new URL(address).searchParams.get('dinksterProject') ?? undefined
       if (project === undefined || validProjectId(project)) {
-        windowLayout = setWorkspaceProject(windowLayout, id, project === 'default' ? undefined : project)
+        windowLayout = setWorkspaceProject(windowLayout, id, project)
         scheduleWindowLayoutWrite()
         sendWindowLayout()
       }
@@ -431,7 +431,7 @@ function applyCredentialHeaders(): void {
 function routeDeepLink(link: DesktopDeepLink): Promise<void> {
   if (!windowsReady) { preReadyLinks.push(link); return Promise.resolve() }
   return windowQueue.run(async () => {
-    const project = link.projectId === 'default' ? undefined : link.projectId
+    const project = link.projectId
     let target = windowLayout.workspaces.find((workspace) => workspace.projectId === project && windows.has(workspace.id))
     if (!target) target = await openWorkspaceWindow(project, windows.get('primary')?.getBounds() ?? { x: 80, y: 80, width: 1280, height: 800 })
     const queue = pendingDeepLinks.get(target.id) ?? []
@@ -490,7 +490,7 @@ ipcMain.handle('desktop:switch-project', (event, projectId: unknown) => windowQu
   const id = senderWindowId(event)
   if (!windowLayout.workspaces.some((workspace) => workspace.id === id)) throw new Error('projects are switched from a workspace window')
   if (!validProjectId(projectId)) throw new Error('invalid project id')
-  const next = projectId === 'default' ? undefined : projectId
+  const next = projectId
   if (windowProject(id) === next) return
   const previousProject = windowProject(id)
   windowLayout = setWorkspaceProject(windowLayout, id, next)
@@ -514,7 +514,7 @@ ipcMain.handle('desktop:switch-project', (event, projectId: unknown) => windowQu
 ipcMain.handle('desktop:open-project-window', (event, projectId: unknown) => windowQueue.run(async () => {
   trustedIpc(event)
   if (!validProjectId(projectId)) throw new Error('invalid project id')
-  await openWorkspaceWindow(projectId === 'default' ? undefined : projectId, windows.get(senderWindowId(event))!.getBounds())
+  await openWorkspaceWindow(projectId, windows.get(senderWindowId(event))!.getBounds())
 }))
 ipcMain.handle('desktop:take-deep-links', (event) => {
   trustedIpc(event)

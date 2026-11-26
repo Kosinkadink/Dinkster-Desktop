@@ -391,6 +391,46 @@ try {
   await expect.poll(async () => (await state()).fullScreen).toBe(false)
   await check('left-full-screen')
 
+  await page.evaluate(() => window.dinksterDesktop.openProjectWindow('default'))
+  await expect.poll(() => app.windows().length).toBe(2)
+  const projectPage = app.windows().find((candidate) => candidate !== page)
+  await expect(projectPage).toHaveURL(/dinksterProject=default/)
+  await expect
+    .poll(() =>
+      projectPage.evaluate(
+        async () =>
+          (await window.dinksterDesktop.windowLayout()).windows.length,
+      ),
+    )
+    .toBe(1)
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async () =>
+          (await window.dinksterDesktop.windowLayout()).windows.length,
+      ),
+    )
+    .toBe(1)
+  await projectPage.evaluate(() =>
+    window.dinksterDesktop.openWorkflowWindow('default-project-workflow'),
+  )
+  await expect.poll(() => app.windows().length).toBe(3)
+  const workflowPage = app
+    .windows()
+    .find((candidate) => candidate !== page && candidate !== projectPage)
+  await expect(workflowPage).toHaveURL(/dinksterProject=default/)
+  await workflowPage.close()
+  await projectPage.close()
+  await expect.poll(() => app.windows().length).toBe(1)
+  await page
+    .evaluate(() => window.dinksterDesktop.switchProject('default'))
+    .catch((error) => {
+      if (!error.message.includes('Execution context was destroyed'))
+        throw error
+    })
+  await expect(page).toHaveURL(/dinksterProject=default/)
+  results.push({ name: 'explicit-default-project-routing', url: page.url() })
+
   await app.evaluate(({ Menu, BrowserWindow }) => {
     const items = Menu.getApplicationMenu().items[0].submenu.items
     const keep = items.find(

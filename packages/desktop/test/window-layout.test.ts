@@ -48,11 +48,13 @@ describe('window layout model', () => {
       { id: 'primary', ...placement, projectId: 'default' },
       { id: 'workspace-a', ...placement, projectId: 'p-alpha' },
       { id: 'workspace-b', ...placement, projectId: 'NOT VALID!' },
+      { id: 'projects', ...placement },
     ] })
     expect(decoded?.workspaces).toEqual([
-      { id: 'primary', ...placement },
+      { id: 'primary', ...placement, projectId: 'default' },
       { id: 'workspace-a', ...placement, projectId: 'p-alpha' },
       { id: 'workspace-b', ...placement },
+      { id: 'projects', ...placement },
     ])
   })
 

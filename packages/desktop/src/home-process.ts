@@ -56,6 +56,14 @@ export interface HomeStatus {
   readonly installationFrontend?: string
   readonly state: string
   readonly open?: { readonly root: string; readonly engine: string }
+  readonly homeId?: string
+  readonly execution?: {
+    readonly project: { readonly id: string; readonly revision: number } | null
+    readonly host: { readonly kind: string; readonly distribution: string | null }
+    readonly installation: { readonly id: string; readonly root: string } | null
+    readonly engine: { readonly name: string; readonly generation: number; readonly instance: string; readonly url: string } | null
+    readonly filesystem: { readonly binding: string } | null
+  } | null
 }
 
 export class HomeProcess {

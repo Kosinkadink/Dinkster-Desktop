@@ -67,6 +67,7 @@ if (process.env.DINKSTER_DEVELOPMENT_TOOLS_PYTHON)
     process.env.DINKSTER_DEVELOPMENT_TOOLS_PYTHON,
   )
 let app
+let manager
 let frontendServer
 let originalFrontend
 const receipt = {
@@ -109,7 +110,7 @@ try {
     ],
     env,
   })
-  const manager = await installationManager(app)
+  manager = await installationManager(app)
   await manager.getByText('Advanced settings', { exact: true }).click()
   await manager
     .getByLabel('Environment name', { exact: true })
@@ -358,8 +359,8 @@ try {
 } catch (error) {
   receipt.status = 'failed'
   receipt.error = String(error)
-  const manager = app?.windows()[0]
   if (manager && !manager.isClosed()) {
+    receipt.visibleText = await manager.locator('body').innerText().catch(() => '')
     receipt.message = await manager
       .getByRole('alert')
       .textContent()
@@ -368,6 +369,7 @@ try {
       .screenshot({ path: join(scratch, 'failure.png'), fullPage: true })
       .catch(() => {})
     console.error(receipt.message)
+    console.error(receipt.visibleText)
   }
   throw error
 } finally {

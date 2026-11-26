@@ -38,6 +38,17 @@ describe('tools-owned hardware selection', () => {
     expect(projectHardware(parseHardwareSelection({ ...cpu, detectedCards: selection.detectedCards })).plan.gpus).toEqual([])
   })
 
+  it('preserves each tools choice assignment independently of the detected inventory and current selection', () => {
+    const choices = [
+      { variant: 'win-nvidia', label: 'NVIDIA graphics', reason: 'Current.', gpus: ['0', '1'] },
+      { variant: 'win-nvidia-older', label: 'Older NVIDIA graphics', reason: 'Older.', gpus: ['1'] },
+      { variant: 'win-cpu', label: 'CPU only', reason: 'Slower.', gpus: [] },
+    ]
+    expect(projectHardware(parseHardwareSelection({ ...selection, choices })).plan.choices).toEqual(
+      choices.map(({ variant, reason, gpus }) => ({ variant, reason, gpus, supported: true })),
+    )
+  })
+
   it('preserves a failed check as a diagnostic with no selected build or invented CPU alternative', () => {
     const unknown = { detectedCards: null, choices: null, variant: null, buildLabel: null, buildReason: null,
       gpus: [], refusal: { code: 'hardware-unavailable', message: 'Repair the driver and retry.' } }
@@ -51,6 +62,7 @@ describe('tools-owned hardware selection', () => {
   })
 
   it.each([undefined, {}, { ...selection, choices: [{}] }, { ...selection, gpus: [1] },
+    ...[null, ['1', 2], '1'].map((gpus) => ({ ...selection, choices: [{ ...selection.choices![0], gpus }] })),
     { ...selection, detectedCards: [{ id: '1', name: 'GPU' }] }, { ...selection, refusal: {} }])(
     'refuses an absent or malformed tools response', (value) => {
       expect(() => parseHardwareSelection(value)).toThrow('hardware response')

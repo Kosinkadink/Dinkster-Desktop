@@ -37,6 +37,7 @@ import { createWebHost, type WebHost } from './web-host.js'
 import { createProjectGateway, PROJECT_INSTALL_HEADER, type ProjectGateway } from './project-gateway.js'
 import { writeFileAtomic } from './atomic-file.js'
 import { denyRendererPermissions, secureWebPreferences } from './security.js'
+import { installTextContextMenu } from './text-context-menu.js'
 import { installWindowChrome, readWindowChrome, windowChromeOptions } from './window-chrome.js'
 import {
   addChildWindow,
@@ -63,6 +64,7 @@ import type {
 } from './types.js'
 
 const { autoUpdater } = updater
+app.on('browser-window-created', (_event, window) => installTextContextMenu(window))
 const services = parseDesktopServices(process.argv)
 // Child tools inherit only this launch's selection, never an inherited engine choice.
 process.env['DINKSTER_SERVICES'] = services

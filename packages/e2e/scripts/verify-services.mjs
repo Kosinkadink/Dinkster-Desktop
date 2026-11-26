@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict'
-import { installationManager } from './installation-manager.mjs'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  readdir,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -47,22 +53,41 @@ const env = Object.fromEntries(
   ),
 )
 Object.assign(env, {
+  HOME: join(root, 'home'),
+  USERPROFILE: join(root, 'home'),
+  DINKSTER_HOME: join(root, 'home'),
   DINKSTER_DESKTOP_DATA: join(root, 'data'),
   DINKSTER_ACCELERATOR: 'cpu',
   CUDA_VISIBLE_DEVICES: '',
   XDG_DATA_HOME: join(root, 'xdg-data'),
+  XDG_CONFIG_HOME: join(root, 'xdg-config'),
   XDG_CACHE_HOME: join(root, 'xdg-cache'),
   APPDATA: join(root, 'app-data'),
   LOCALAPPDATA: join(root, 'local-app-data'),
 })
-const fixture = createServer((_request, response) => {
-  response.setHeader('Content-Type', 'text/html')
-  response.end(
-    '<!doctype html><title>Remote content title</title><style>body{background:#202020;color:#ededed;font:18px sans-serif;margin:24px}</style><h1>Remote engine fixture</h1>',
-  )
-})
-await new Promise((done) => fixture.listen(0, '127.0.0.1', done))
-const fixtureUrl = `http://127.0.0.1:${fixture.address().port}`
+await mkdir(env.DINKSTER_HOME)
+await writeFile(
+  join(env.DINKSTER_HOME, 'model-settings.json'),
+  JSON.stringify({ locations: [] }),
+)
+const homeUrl = 'http://127.0.0.1:3638'
+async function homeStopped() {
+  try {
+    await fetch(`${homeUrl}/supervisor/status`, {
+      signal: AbortSignal.timeout(2000),
+    })
+    return false
+  } catch (error) {
+    if (error.cause?.code === 'ECONNREFUSED') return true
+    if (error.cause?.code === 'ECONNRESET') return false
+    throw error
+  }
+}
+assert.equal(
+  await homeStopped(),
+  true,
+  'Leave an existing process on port 3638 alone',
+)
 const receipt = {
   sourceOnly,
   platform: process.platform,
@@ -128,11 +153,20 @@ async function launch(selection) {
     await app.evaluate(() => process.env.DINKSTER_SERVICES),
     selection,
   )
-  const manager = await installationManager(app)
-  await manager
-    .getByRole('heading', { name: 'Environments', exact: true })
-    .waitFor()
-  return manager
+  const page = await app.firstWindow({ timeout: 180_000 })
+  await expect(page).toHaveURL(
+    new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),
+  )
+  await expect(page.locator('.dinkster-window-toolbar-host')).toHaveAttribute(
+    'data-desktop-chrome',
+    '',
+  )
+  const status = await fetch(`${homeUrl}/supervisor/status`).then((response) =>
+    response.json(),
+  )
+  assert.equal(status.role, 'home')
+  assert.equal(status.state, 'stopped')
+  return page
 }
 
 async function mark(page, selection, kind) {
@@ -241,6 +275,7 @@ async function configuration(directory) {
           'logs',
           'cache',
           'environment-tools',
+          'home-tools',
           'library',
           'stores',
           'store',
@@ -292,43 +327,35 @@ async function configuration(directory) {
 }
 
 try {
-  let savedProjects
   let desktopBaseline
   for (const selection of ['production', 'qa', 'production']) {
-    const manager = await launch(selection)
-    await mark(manager, selection, 'manager')
+    const home = await launch(selection)
+    await mark(home, selection, 'home')
     assert.equal(
-      await manager
+      await home
         .locator('input, select, button, label')
         .filter({ hasText: /services|QA services/i })
         .count(),
       0,
     )
-    if (!savedProjects) {
-      await manager.evaluate(
-        (url) =>
-          window.dinksterProjects.save({
-            id: 'remote',
-            name: 'Remote fixture',
-            channel: 'stable',
-            engines: [{ id: 'remote', name: 'Remote', kind: 'remote', url }],
-          }),
-        fixtureUrl,
-      )
-      savedProjects = await readFile(
-        join(env.DINKSTER_DESKTOP_DATA, 'projects.json'),
-        'utf8',
-      )
-    }
-    const opened = app.waitForEvent('window')
-    await manager.evaluate(() =>
-      window.dinksterProjects.open('remote', 'remote'),
+    assert.deepEqual(
+      await home.evaluate(() => ({
+        projects: typeof window.dinksterProjects,
+        library: typeof window.dinksterLibrary,
+      })),
+      { projects: 'undefined', library: 'undefined' },
     )
-    const remote = await opened
-    await remote
-      .getByRole('heading', { name: 'Remote engine fixture' })
-      .waitFor()
-    await mark(remote, selection, 'fallback')
+    await assert.rejects(
+      stat(join(env.DINKSTER_DESKTOP_DATA, 'projects.json')),
+      { code: 'ENOENT' },
+    )
+    const opened = app.waitForEvent('window')
+    await home.evaluate(() =>
+      window.dinksterDesktop.openWorkflowWindow('services-check'),
+    )
+    const workflow = await opened
+    await expect(workflow).toHaveURL(/dinksterWorkflow=services-check/)
+    await mark(workflow, selection, 'workflow')
     const aboutOpened = app.waitForEvent('window')
     await app.evaluate(async ({ app }, selection) => {
       const require = process
@@ -366,10 +393,10 @@ try {
       )
     }
     await secondInstance(selection)
-    await mark(manager, selection, 'manager')
-    assert.equal(
-      await readFile(join(env.DINKSTER_DESKTOP_DATA, 'projects.json'), 'utf8'),
-      savedProjects,
+    await mark(home, selection, 'home')
+    await assert.rejects(
+      stat(join(env.DINKSTER_DESKTOP_DATA, 'projects.json')),
+      { code: 'ENOENT' },
     )
     await configuration(env.DINKSTER_DESKTOP_DATA)
     receipt.launches.push({
@@ -377,8 +404,17 @@ try {
       inherited: selection === 'qa' ? 'production' : 'qa',
       oppositeInstanceRefused: true,
     })
-    await app.close()
+    const closed = app.waitForEvent('close')
+    await app
+      .evaluate(({ Menu }) => {
+        Menu.getApplicationMenu()
+          .items[0].submenu.items.find((item) => item.label === 'Quit')
+          .click()
+      })
+      .catch(() => undefined)
+    await closed
     app = undefined
+    await expect.poll(homeStopped, { timeout: 30_000 }).toBe(true)
     const saved = await configuration(env.DINKSTER_DESKTOP_DATA)
     if (desktopBaseline) {
       assert.deepEqual(
@@ -822,9 +858,9 @@ try {
           .poll(() => browser.contexts()[0]?.pages().length ?? 0)
           .toBeGreaterThan(0)
         const manager = browser.contexts()[0].pages()[0]
-        await manager
-          .getByRole('heading', { name: 'Projects', exact: true })
-          .waitFor()
+        await expect(manager).toHaveURL(
+          new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),
+        )
         await expect
           .poll(() =>
             manager.evaluate(() =>
@@ -870,12 +906,8 @@ try {
   try {
     await app?.close()
   } finally {
-    try {
-      for (const [channel, directory] of runtimeRoots) {
-        await retainRuntimeLogs(directory, join(root, 'runtime-logs', channel))
-      }
-    } finally {
-      await new Promise((done) => fixture.close(done))
+    for (const [channel, directory] of runtimeRoots) {
+      await retainRuntimeLogs(directory, join(root, 'runtime-logs', channel))
     }
   }
 }

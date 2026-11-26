@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { open, mkdir } from 'node:fs/promises'
 import { Agent, request } from 'node:http'
+import { Socket } from 'node:net'
 import { delimiter, dirname, isAbsolute, join, toNamespacedPath } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
@@ -145,7 +146,10 @@ export class HomeProcess {
       }
       // Shutdown must use the connection that answered status. A new connection
       // could reach an unrelated process that replaced it on the same port.
-      agent.createConnection = () => { throw new Error('The owned Dinkster process connection closed before shutdown') }
+      agent.createConnection = (_options, callback) => {
+        callback?.(new Error('The owned Dinkster process connection closed before shutdown'), new Socket())
+        return undefined
+      }
       const response = await this.json('/supervisor/shutdown', 'POST', agent)
       const result = response.value as { status?: string } | null
       if (!response.ok || result?.status !== 'stopped') throw new Error('Dinkster did not stop every engine it started')

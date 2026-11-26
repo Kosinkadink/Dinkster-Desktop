@@ -38,6 +38,43 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+  home-process:
+    name: Dinkster process ownership on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Start, adopt and stop the verified native tools
+        env:
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ runner.temp }}/home-process
+        run: pnpm --filter @dinkster/e2e exec node --import tsx scripts/verify-home-process.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: home-process-${{ runner.os }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/home-process/results.json
+            ${{ runner.temp }}/home-process/home.log
+
   window-chrome:
     name: Window buttons in the top bar on ${{ matrix.os }}
     if: github.event_name == 'pull_request'

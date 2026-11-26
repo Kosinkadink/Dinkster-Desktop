@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
-import { installationManager } from './installation-manager.mjs'
+import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { _electron as electron, expect } from '@playwright/test'
 import { WslHost, wslLocation, wslWindowsPath } from '../../desktop/dist/wsl.js'
-import { EnvironmentClient } from '../../desktop/dist/environment.js'
 
 assert.equal(
   process.platform,
@@ -36,85 +36,168 @@ const tools = {
 }
 const data = join(scratch, 'desktop')
 const host = new WslHost(data, tools)
-const client = new EnvironmentClient(
-  'dinkster-env',
-  [],
-  undefined,
-  undefined,
-  undefined,
-  host,
-)
 const receipt = { distribution: host.distribution, data, tools, steps: [] }
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
-    ([name]) =>
+    ([name, value]) =>
+      value !== undefined &&
       !/TOKEN|SECRET|PASSWORD|CREDENTIAL|ELECTRON_RUN_AS_NODE|^DINKSTER_|^UV_|^PYTHON|^VIRTUAL_ENV$|^GIT_/i.test(
         name,
       ),
   ),
 )
-env.DINKSTER_DESKTOP_DATA = data
-env.CUDA_VISIBLE_DEVICES = ''
-env.DINKSTER_ACCELERATOR = 'cpu'
+Object.assign(env, {
+  HOME: join(scratch, 'home'),
+  USERPROFILE: join(scratch, 'home'),
+  DINKSTER_HOME: join(scratch, 'home'),
+  DINKSTER_DESKTOP_DATA: data,
+  XDG_DATA_HOME: join(scratch, 'xdg-data'),
+  XDG_CONFIG_HOME: join(scratch, 'xdg-config'),
+  XDG_CACHE_HOME: join(scratch, 'xdg-cache'),
+  APPDATA: join(scratch, 'app-data'),
+  LOCALAPPDATA: join(scratch, 'local-app-data'),
+  CUDA_VISIBLE_DEVICES: '',
+  DINKSTER_ACCELERATOR: 'cpu',
+})
+await mkdir(env.DINKSTER_HOME)
+await writeFile(
+  join(env.DINKSTER_HOME, 'model-settings.json'),
+  JSON.stringify({ locations: [] }),
+)
+const homeUrl = 'http://127.0.0.1:3638'
+async function homeStopped() {
+  try {
+    await fetch(`${homeUrl}/supervisor/status`, {
+      signal: AbortSignal.timeout(2000),
+    })
+    return false
+  } catch (error) {
+    if (error.cause?.code === 'ECONNREFUSED') return true
+    if (error.cause?.code === 'ECONNRESET') return false
+    throw error
+  }
+}
+assert.equal(
+  await homeStopped(),
+  true,
+  'Leave an existing Home on port 3638 alone',
+)
 let app
-let manager
-let root
-let setupStarted = false
+let page
+let restoreOwner = false
+let distributionPrepared = false
+async function quit() {
+  const closed = app.waitForEvent('close')
+  await app
+    .evaluate(({ Menu }) => {
+      Menu.getApplicationMenu()
+        .items[0].submenu.items.find((item) => item.label === 'Quit')
+        .click()
+    })
+    .catch(() => undefined)
+  await closed
+  app = undefined
+  await expect.poll(homeStopped, { timeout: 30_000 }).toBe(true)
+}
+async function setOwner(owner) {
+  await promisify(execFile)(
+    'wsl.exe',
+    [
+      '--distribution',
+      host.distribution,
+      '--user',
+      'root',
+      '--cd',
+      '/',
+      '--exec',
+      '/bin/sh',
+      '-ec',
+      'printf "%s\\n" "$1" > /etc/dinkster-desktop-owner',
+      'owner-check',
+      owner,
+    ],
+    { timeout: 30_000, windowsHide: true },
+  )
+}
 try {
-  const initial = await host.status()
-  receipt.initial = initial
-  assert.equal(initial.available, true, initial.detail)
+  receipt.initial = await host.status()
+  assert.equal(receipt.initial.available, true, receipt.initial.detail)
   assert.equal(
-    initial.ready,
+    receipt.initial.ready,
     false,
     'Use a fresh data directory, never an existing private distribution',
   )
+  const { stdout } = await promisify(execFile)(
+    'wsl.exe',
+    ['--list', '--quiet'],
+    { encoding: 'buffer', timeout: 30_000, windowsHide: true },
+  )
+  const distributions = stdout
+    .toString(stdout.includes(0) ? 'utf16le' : 'utf8')
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+  assert.equal(
+    distributions.some(
+      (name) => name.trim().toLowerCase() === host.distribution.toLowerCase(),
+    ),
+    false,
+    'Never prepare or terminate a pre-existing distribution',
+  )
   app = await electron.launch({
-    executablePath: createRequire(
-      join(repository, 'packages/desktop/package.json'),
-    )('electron'),
+    executablePath: process.env.DINKSTER_DESKTOP_EXECUTABLE
+      ? resolve(process.env.DINKSTER_DESKTOP_EXECUTABLE)
+      : createRequire(join(repository, 'packages/desktop/package.json'))(
+          'electron',
+        ),
     args: [
-      join(repository, 'packages/desktop'),
+      ...(process.env.DINKSTER_DESKTOP_EXECUTABLE
+        ? []
+        : [join(repository, 'packages/desktop')]),
       `--user-data-dir=${join(scratch, 'chromium')}`,
     ],
     env,
+    timeout: 180_000,
   })
-  manager = await installationManager(app)
-  await manager.getByText('Advanced settings', { exact: true }).click()
-  await manager.getByLabel('Engine host').selectOption('wsl2')
-  await manager.getByRole('button', { name: 'Check WSL2' }).click()
-  await expect(manager.getByText('Prepare a private Ubuntu')).toBeVisible()
-  await manager.screenshot({
-    path: join(scratch, 'before-provisioning.png'),
-    fullPage: true,
-  })
-  await manager
-    .getByRole('button', { name: 'Prepare private distribution' })
-    .click()
-  await expect(
-    manager.getByText('Private WSL2 distribution ready'),
-  ).toBeVisible({
-    timeout: 30 * 60_000,
-  })
-  receipt.ready = await host.status()
+  page = await app.firstWindow({ timeout: 180_000 })
+  await expect(page).toHaveURL(
+    new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),
+  )
+  await expect(page.locator('.dinkster-window-toolbar-host')).toHaveAttribute(
+    'data-desktop-chrome',
+    '',
+  )
+  const initial = await page.evaluate(() => window.dinksterDesktop.wslStatus())
+  assert.equal(initial.distribution, host.distribution)
+  assert.equal(initial.ready, false)
+  distributionPrepared = true
+  receipt.ready = await page.evaluate(() => window.dinksterDesktop.prepareWsl())
   assert.equal(receipt.ready.ready, true)
+  assert.equal(receipt.ready.distribution, host.distribution)
+  assert.equal(
+    (await page.evaluate(() => window.dinksterDesktop.wslStatus())).ready,
+    true,
+  )
   receipt.steps.push(
-    'Explicit UI preparation created a private WSL2 distribution',
+    'Shared Home native bridge prepared its derived private distribution',
   )
 
-  await manager
-    .getByLabel('Environment name', { exact: true })
-    .fill('Private WSL acceptance')
-  await manager
-    .getByRole('button', { name: 'Use Linux environment folder' })
-    .click()
-  await expect(manager.getByLabel('Install location')).toHaveValue(
-    /\\\\wsl\.localhost\\Dinkster-Desktop-/,
+  const projectRoot = await page.evaluate(() =>
+    window.dinksterDesktop.wslProjectRoot('wsl-check'),
   )
-  root = await manager.getByLabel('Install location').inputValue()
-  assert.equal(wslLocation(root).distribution, host.distribution)
-  receipt.root = root
-
+  assert.deepEqual(wslLocation(projectRoot), {
+    distribution: host.distribution,
+    path: '/home/dinkster/projects/wsl-check',
+  })
+  receipt.root = projectRoot
+  await app.evaluate(({ dialog }) => {
+    globalThis.wslOriginalDialog = dialog.showOpenDialog
+    dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
+  })
+  assert.equal(
+    await page.evaluate(() => window.dinksterDesktop.copyWslModels()),
+    undefined,
+  )
+  receipt.cancelledCopy = true
   const source = join(scratch, 'models')
   await mkdir(source)
   const bytes = Buffer.from('Desktop WSL model-copy acceptance\n')
@@ -126,28 +209,20 @@ try {
       filePaths: [source],
     })
   }, source)
-  await manager
-    .getByRole('button', { name: 'Copy Windows model folder' })
-    .click()
-  await expect(
-    manager
-      .getByRole('status')
-      .filter({ hasText: /Models copied|already exists/ }),
-  ).toContainText('Models copied to /home/dinkster/models/models')
+  assert.equal(
+    await page.evaluate(() => window.dinksterDesktop.copyWslModels()),
+    '/home/dinkster/models/models',
+  )
   const copied = wslWindowsPath(
     host.distribution,
     '/home/dinkster/models/models/sentinel.safetensors',
   )
   assert.deepEqual(await readFile(copied), bytes)
   assert.deepEqual(await readFile(join(source, 'sentinel.safetensors')), bytes)
-  await manager
-    .getByRole('button', { name: 'Copy Windows model folder' })
-    .click()
-  await expect(
-    manager
-      .getByRole('status')
-      .filter({ hasText: /Models copied|already exists/ }),
-  ).toContainText('already exists')
+  await assert.rejects(
+    page.evaluate(() => window.dinksterDesktop.copyWslModels()),
+    /already exists/,
+  )
   assert.deepEqual(await readFile(copied), bytes)
   receipt.copy = {
     source,
@@ -159,82 +234,77 @@ try {
     'Real Windows-to-WSL copy preserved originals and refused replacement',
   )
 
-  await manager
-    .getByLabel('Mirrors, in order')
-    .fill('https://releases.dinkster.org')
-  await manager.getByLabel('Channel', { exact: true }).selectOption('nightly')
-  await manager
-    .getByRole('button', { name: 'Inspect hardware and variants' })
-    .click()
-  await expect(
-    manager.getByLabel('Hardware variant').locator('option[value="linux-cpu"]'),
-  ).toHaveCount(1, { timeout: 10 * 60_000 })
-  // CPU is explicit; no device is admitted by this Desktop lifecycle check.
+  const revokedSource = join(scratch, 'revoked-models')
+  await mkdir(revokedSource)
+  await writeFile(join(revokedSource, 'sentinel.safetensors'), bytes)
+  await app.evaluate(({ dialog }) => {
+    globalThis.wslDialogEntered = false
+    dialog.showOpenDialog = () =>
+      new Promise((done) => {
+        globalThis.wslFinishDialog = done
+        globalThis.wslDialogEntered = true
+      })
+  })
+  const pending = page.evaluate(async () => {
+    try {
+      return { path: await window.dinksterDesktop.copyWslModels() }
+    } catch (error) {
+      return { error: error.message }
+    }
+  })
+  await expect
+    .poll(() => app.evaluate(() => globalThis.wslDialogEntered))
+    .toBe(true)
+  restoreOwner = true
+  await setOwner('unrecognized-owner')
+  try {
+    await app.evaluate(
+      (source) =>
+        globalThis.wslFinishDialog({ canceled: false, filePaths: [source] }),
+      revokedSource,
+    )
+    const refused = await pending
+    assert.match(refused.error, /not owned/)
+    assert.equal(refused.path, undefined)
+    assert.equal(
+      (await page.evaluate(() => window.dinksterDesktop.wslStatus())).ready,
+      false,
+    )
+    await assert.rejects(
+      page.evaluate(() => window.dinksterDesktop.wslProjectRoot('wsl-check')),
+      /not owned/,
+    )
+    await assert.rejects(
+      page.evaluate(() => window.dinksterDesktop.prepareWsl()),
+      /not owned/,
+    )
+    receipt.ownerReplacementRefused = true
+  } finally {
+    await setOwner(host.distribution)
+    restoreOwner = false
+  }
   assert.equal(
-    await manager.getByLabel('Assigned NVIDIA devices').inputValue(),
-    '',
+    (await page.evaluate(() => window.dinksterDesktop.wslStatus())).ready,
+    true,
   )
-  await manager.getByLabel('Hardware variant').selectOption('linux-cpu')
-  await manager
-    .getByLabel('Supervisor port')
-    .fill(process.env.DINKSTER_WSL_PORT ?? '54796')
-  await manager
-    .getByRole('button', { name: 'Review environment plan', exact: true })
-    .click()
-  await expect(
-    manager.getByRole('button', { name: 'Confirm and apply' }),
-  ).toBeVisible({ timeout: 10 * 60_000 })
-  await manager.screenshot({
-    path: join(scratch, 'install-plan.png'),
-    fullPage: true,
-  })
-  setupStarted = true
-  await manager.getByRole('button', { name: 'Confirm and apply' }).click()
-  await expect(
-    manager.getByRole('button', { name: 'Open main', exact: true }),
-  ).toBeVisible({ timeout: 30 * 60_000 })
-  const status = await client.run({ root, operation: 'status' })
-  assert.notEqual(status.current, null)
-  assert.equal(status.root, root)
-  receipt.installed = status
-  const settings = JSON.parse(
-    await readFile(join(root, 'environment.json'), 'utf8'),
+  assert.deepEqual(await readFile(copied), bytes)
+  await assert.rejects(
+    stat(
+      wslWindowsPath(host.distribution, '/home/dinkster/models/revoked-models'),
+    ),
+    { code: 'ENOENT' },
   )
-  assert.equal(settings.variant, 'linux-cpu')
   receipt.steps.push(
-    'UI installed the Linux engine through verified Linux tools and wsl.exe',
+    'Changed distribution ownership during folder choice denied copy, root and preparation; restored ownership recovered readiness',
   )
-
-  const opened = app.waitForEvent('window')
-  await manager.getByRole('button', { name: 'Open main', exact: true }).click()
-  const frontend = await opened
-  await frontend.waitForLoadState('domcontentloaded')
-  await expect(frontend.locator('body')).not.toBeEmpty({ timeout: 60_000 })
-  const health = await fetch(
-    `http://127.0.0.1:${process.env.DINKSTER_WSL_PORT ?? '54796'}/api/health`,
-  )
-  assert(
-    health.ok,
-    'The selected Linux engine must answer its health endpoint through WSL localhost forwarding',
-  )
-  receipt.health = await health.json()
-  assert.equal(receipt.health.ok, true)
-  assert.equal(receipt.health.compositionState.failed, 0)
-  const url = new URL(frontend.url())
-  assert(
-    ['127.0.0.1', 'localhost'].includes(url.hostname),
-    'Desktop must reach the Linux engine on localhost',
-  )
-  await frontend.screenshot({
-    path: join(scratch, 'linux-engine-open.png'),
-    fullPage: true,
+  await app.evaluate(({ dialog }) => {
+    dialog.showOpenDialog = globalThis.wslOriginalDialog
+    delete globalThis.wslOriginalDialog
+    delete globalThis.wslFinishDialog
+    delete globalThis.wslDialogEntered
   })
-  receipt.frontend = { url: frontend.url(), title: await frontend.title() }
-  receipt.steps.push('Desktop opened the real Linux-engine frontend')
-  await manager.screenshot({
-    path: join(scratch, 'installed-project.png'),
-    fullPage: true,
-  })
+  await quit()
+  receipt.ownedShutdown = true
   receipt.result = 'pass'
 } catch (error) {
   receipt.result = 'fail'
@@ -243,22 +313,39 @@ try {
     message: error.message,
     stack: error.stack,
   }
-  if (manager)
-    await manager
-      .screenshot({ path: join(scratch, 'failure.png'), fullPage: true })
-      .catch(() => undefined)
   throw error
 } finally {
-  if (setupStarted && root) {
-    try {
-      receipt.stop = await client.run({ root, operation: 'stop' }, true)
-    } catch (error) {
-      receipt.stopError = error.message
+  if (restoreOwner)
+    await setOwner(host.distribution).catch((error) => {
+      receipt.restoreError = String(error)
       process.exitCode = 1
-    }
+    })
+  if (app) {
+    await app
+      .evaluate(({ dialog }) => {
+        if (globalThis.wslOriginalDialog)
+          dialog.showOpenDialog = globalThis.wslOriginalDialog
+        globalThis.wslFinishDialog?.({ canceled: true, filePaths: [] })
+      })
+      .catch(() => undefined)
+    await quit().catch(async (error) => {
+      receipt.stopError = String(error)
+      process.exitCode = 1
+      await app?.close().catch(() => undefined)
+    })
   }
-  await app?.close().catch(() => undefined)
-  await client.dispose()
+  if (distributionPrepared)
+    await promisify(execFile)('wsl.exe', ['--terminate', host.distribution], {
+      timeout: 30_000,
+      windowsHide: true,
+    }).catch((error) => {
+      receipt.terminateError = String(error)
+      process.exitCode = 1
+    })
+  await writeFile(
+    join(scratch, 'home.log'),
+    await readFile(join(data, 'home.log'), 'utf8').catch(() => ''),
+  )
   await writeFile(
     join(scratch, 'receipt.json'),
     JSON.stringify(receipt, null, 2) + '\n',

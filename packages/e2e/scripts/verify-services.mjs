@@ -555,35 +555,27 @@ try {
     if (invalid.exitCode === null) invalid.kill()
   }
   if (!sourceOnly && wsl) {
-    const home = await launch('production')
-    const prepared = await home.evaluate(() =>
-      window.dinksterDesktop.prepareWsl(),
+    const artifacts = join(root, 'wsl')
+    const result = await promisify(execFile)(
+      process.execPath,
+      [join(repository, 'packages/e2e/scripts/verify-wsl-project.mjs')],
+      {
+        env: {
+          ...env,
+          DINKSTER_WSL_ARTIFACTS: artifacts,
+          DINKSTER_DESKTOP_EXECUTABLE: executablePath,
+        },
+        timeout: 35 * 60_000,
+        maxBuffer: 4 * 1024 * 1024,
+      },
     )
-    assert.equal(prepared.ready, true)
-    const status = await home.evaluate(() => window.dinksterDesktop.wslStatus())
-    assert.equal(status.ready, true)
-    assert.equal(status.distribution, prepared.distribution)
-    const projectRoot = await home.evaluate(() =>
-      window.dinksterDesktop.wslProjectRoot('services-check'),
+    await writeFile(join(root, 'wsl-output.log'), result.stdout + result.stderr)
+    const entries = await readdir(artifacts)
+    assert.equal(entries.length, 1)
+    receipt.wsl = JSON.parse(
+      await readFile(join(artifacts, entries[0], 'receipt.json'), 'utf8'),
     )
-    assert(projectRoot.includes(prepared.distribution))
-    await app.evaluate(({ dialog }) => {
-      globalThis.servicesOpenDialog = dialog.showOpenDialog
-      dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
-    })
-    try {
-      assert.equal(
-        await home.evaluate(() => window.dinksterDesktop.copyWslModels()),
-        undefined,
-      )
-    } finally {
-      await app.evaluate(({ dialog }) => {
-        dialog.showOpenDialog = globalThis.servicesOpenDialog
-        delete globalThis.servicesOpenDialog
-      })
-    }
-    receipt.wsl = { prepared, status, projectRoot, cancelledCopy: true }
-    await quit()
+    assert.equal(receipt.wsl.result, 'pass')
   }
   if (!sourceOnly && !wsl) {
     for (const channel of ['stable', 'nightly']) {

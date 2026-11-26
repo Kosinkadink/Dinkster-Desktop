@@ -16,6 +16,7 @@ on:
       - 'packages/e2e/scripts/verify-desktop-install.mjs'
       - 'packages/e2e/scripts/verify-development-project.mjs'
       - 'packages/e2e/scripts/verify-services.mjs'
+      - 'packages/e2e/scripts/verify-wsl-project.mjs'
       - 'packages/e2e/scripts/verify-stable-project.mjs'
       - 'packages/e2e/scripts/forward-mirror.mjs'
       - 'packages/e2e/scripts/verify-shell-update.mjs'
@@ -98,7 +99,7 @@ jobs:
                 updater=true ;;
             esac
             case "$path" in
-              .github/workflows/verify-services.yml|packages/desktop/src/*|packages/e2e/scripts/verify-services.mjs|scripts/frontend-release.json)
+              .github/workflows/verify-services.yml|packages/desktop/src/*|packages/e2e/scripts/verify-services.mjs|packages/e2e/scripts/verify-wsl-project.mjs|scripts/frontend-release.json)
                 if [ "$EVENT" = pull_request ]; then services=true; fi ;;
             esac
           done < "$RUNNER_TEMP/desktop-changed-paths"

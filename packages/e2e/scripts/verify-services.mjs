@@ -263,10 +263,11 @@ async function configuration(directory) {
           !/DINKSTER_SERVICES|"services"\s*:|\[QA\]/.test(bytes.toString()),
           `Persisted services in ${name}`,
         )
-        // Process state, attachment locks and derived mount indexes change on
-        // engine start, but must still pass the persisted-services scan above.
+        // Process state, node tables, attachment locks and derived mount indexes
+        // change on engine start, but must pass the persisted-services scan above.
         if (
           !name.startsWith('runtime/') &&
+          !name.startsWith('node-tables/') &&
           name !== 'dinkster-library/.engine.lock' &&
           !/^dinkster-library\/engine-lifetime-[0-9a-f]{32}-[0-9a-f]{32}\.lock$/.test(
             name,

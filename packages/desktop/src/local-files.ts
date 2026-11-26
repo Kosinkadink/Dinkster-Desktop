@@ -208,6 +208,7 @@ export async function revealGrantedFile(
   const target = await grantedFile(path, roots)
   await authorize()
   if (await grantedFile(path, roots) !== target) throw new Error('The local file changed during verification')
+  await authorize()
   if (platform === 'win32' || platform === 'darwin') {
     shell.showItemInFolder(target)
     return { mode: 'selected' }

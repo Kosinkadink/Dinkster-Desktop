@@ -1,10 +1,13 @@
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import * as filesystem from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from '../src/local-files.js'
+
+vi.mock('node:fs/promises', async (original) => ({ ...await original<typeof filesystem>() }))
 
 describe('local file authority', () => {
   it('binds capabilities and requests to the running managed connection only', () => {
@@ -214,6 +217,53 @@ describe('local file authority', () => {
       await expect(resolveDroppedPath(url, path, '../project', authorize)).rejects.toThrow('Invalid')
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('does not reveal a file when authority is revoked during final filesystem verification', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop reveal '))
+    try {
+      const file = join(root, 'output.png')
+      await writeFile(file, 'image')
+      for (const platform of ['win32', 'linux'] as const) {
+        let authorized = true
+        let verifying = false
+        let entered!: () => void
+        let release!: () => void
+        const pending = new Promise<void>((resolve) => { entered = resolve })
+        const resume = new Promise<void>((resolve) => { release = resolve })
+        const nativeRealpath = filesystem.realpath
+        const lookup = vi.spyOn(filesystem, 'realpath').mockImplementation(async (path, options) => {
+          if (verifying) {
+            entered()
+            await resume
+          }
+          return nativeRealpath(path, options)
+        })
+        const selected: string[] = []
+        const opened: string[] = []
+        const result = revealGrantedFile(file, [root], {
+          showItemInFolder: (path) => { selected.push(path) },
+          openExternal: async (url) => { opened.push(url) },
+        }, async () => {
+          if (!authorized) throw new Error('revoked')
+          verifying = true
+        }, platform)
+        const rejected = expect(result).rejects.toThrow('revoked')
+        try {
+          await pending
+          authorized = false
+          release()
+          await rejected
+          expect(selected).toEqual([])
+          expect(opened).toEqual([])
+        } finally {
+          release()
+          lookup.mockRestore()
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 

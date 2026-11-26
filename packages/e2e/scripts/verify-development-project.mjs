@@ -479,13 +479,26 @@ try {
   assert(catalog.nodes && typeof catalog.nodes === 'object')
   const nodeCount = Object.keys(catalog.nodes).length
   assert(nodeCount > 0, 'The managed engine must provide node types')
+  const projectCatalogUrl = new URL('/api/nodes', engine.url())
+  projectCatalogUrl.searchParams.set(
+    'project',
+    new URL(engine.url()).searchParams.get('dinksterProject') ?? 'default',
+  )
+  const projectCatalogResponse = await engine.request.get(
+    projectCatalogUrl.href,
+  )
+  assert(projectCatalogResponse.ok())
+  const projectCatalog = await projectCatalogResponse.json()
+  assert(projectCatalog.nodes && typeof projectCatalog.nodes === 'object')
+  const projectNodeCount = Object.keys(projectCatalog.nodes).length
   await connection.click()
   await expect(
     engine
       .getByTestId('backends-panel')
-      .getByText(new RegExp(`, ${nodeCount} node types?$`)),
+      .getByText(new RegExp(`, ${projectNodeCount} node types?$`)),
   ).toBeVisible({ timeout: 120_000 })
   receipt.nodeTypes = nodeCount
+  receipt.projectNodeTypes = projectNodeCount
   await manager
     .getByRole('list', { name: 'Saved environments' })
     .screenshot({ path: join(scratch, 'development-project-list.png') })

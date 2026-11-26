@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { installationManager } from './installation-manager.mjs'
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { createRequire } from 'node:module'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { _electron as electron, expect } from '@playwright/test'
@@ -60,6 +62,12 @@ if (process.env.GITHUB_TOKEN) env.GITHUB_TOKEN = process.env.GITHUB_TOKEN
 env.CUDA_VISIBLE_DEVICES = ''
 env.DINKSTER_ACCELERATOR = 'cpu'
 env.DINKSTER_DESKTOP_DATA = join(scratch, 'desktop')
+env.DINKSTER_HOME = join(scratch, 'home')
+await mkdir(env.DINKSTER_HOME)
+await writeFile(
+  join(env.DINKSTER_HOME, 'model-settings.json'),
+  JSON.stringify({ version: 1, locations: [], downloadLocation: null }),
+)
 env.XDG_DATA_HOME = join(scratch, 'user-data')
 env.LOCALAPPDATA = join(scratch, 'user-data')
 if (process.env.DINKSTER_DEVELOPMENT_TOOLS_PYTHON)
@@ -295,12 +303,127 @@ try {
     [
       'chooseDirectory',
       'fileCapabilities',
+      'importFile',
       'resolveDroppedFile',
       'revealFile',
       'revealModelLocation',
       'saveFile',
     ],
   )
+  const nativeSource = process.env.DINKSTER_DEVELOPMENT_IMPORT_SOURCE
+  if (nativeSource) {
+    const file = resolve(nativeSource)
+    const size = (await stat(file)).size
+    const mediaType = process.env.DINKSTER_DEVELOPMENT_IMPORT_TYPE
+    assert(
+      mediaType,
+      'DINKSTER_DEVELOPMENT_IMPORT_TYPE is required with a source',
+    )
+    const address = new URL(engine.url())
+    const backend = address.origin
+    const libraryProject =
+      address.searchParams.get('dinksterProject') ?? 'default'
+    const capabilities = await engine.evaluate(
+      (backend) => window.dinksterDesktop.fileCapabilities(backend),
+      backend,
+    )
+    assert.equal(capabilities.importFile, true)
+    await app.evaluate(() => {
+      globalThis.developmentImportProof = { requests: 0, bytes: 0 }
+      const original = globalThis.fetch
+      globalThis.fetch = (url, options) => {
+        if (new URL(url).pathname === '/api/mounts/import-file') {
+          globalThis.developmentImportProof.requests += 1
+          globalThis.developmentImportProof.bytes += Buffer.byteLength(
+            options.body,
+          )
+        }
+        return original(url, options)
+      }
+    })
+    const expected = createHash('sha256')
+    for await (const chunk of createReadStream(file)) expected.update(chunk)
+    const digest = expected.digest('hex')
+    await engine.evaluate(() => {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.id = 'development-native-source'
+      input.hidden = true
+      document.body.append(input)
+      for (const method of ['arrayBuffer', 'text']) {
+        const original = Blob.prototype[method]
+        Blob.prototype[method] = function (...args) {
+          if (this.size > 64 * 1024)
+            throw new Error('Whole-file page read is forbidden')
+          return original.apply(this, args)
+        }
+      }
+      for (const method of [
+        'readAsArrayBuffer',
+        'readAsText',
+        'readAsDataURL',
+        'readAsBinaryString',
+      ]) {
+        const original = FileReader.prototype[method]
+        FileReader.prototype[method] = function (blob, ...args) {
+          if (blob.size > 64 * 1024)
+            throw new Error('Whole-file page read is forbidden')
+          return original.call(this, blob, ...args)
+        }
+      }
+    })
+    await engine.locator('#development-native-source').setInputFiles(file)
+    const result = await engine.evaluate(
+      async ({ backend, mediaType }) => {
+        const file = document.querySelector('#development-native-source')
+          .files[0]
+        return window.dinksterDesktop.importFile(backend, file, {
+          name: file.name,
+          mediaType,
+        })
+      },
+      { backend, mediaType },
+    )
+    assert.equal(result.status, 'imported')
+    assert.equal(result.asset.size, size)
+    assert.equal(result.asset.name, basename(file))
+    assert.match(result.asset.virtualPath, /^mounts\//)
+    const proof = await app.evaluate(() => globalThis.developmentImportProof)
+    assert.equal(proof.requests, 1)
+    assert.ok(
+      proof.bytes < size,
+      'Native import must send path metadata, not source bytes',
+    )
+    const readbackUrl = new URL(
+      `/api/assets/${encodeURIComponent(result.asset.digest)}`,
+      backend,
+    )
+    readbackUrl.search = new URLSearchParams({
+      scope: 'local',
+      project: libraryProject,
+    }).toString()
+    const readback = await fetch(readbackUrl, {
+      signal: AbortSignal.timeout(180_000),
+    })
+    assert.equal(readback.status, 200)
+    const actual = createHash('sha256')
+    let copied = 0
+    for await (const chunk of readback.body) {
+      actual.update(chunk)
+      copied += chunk.length
+    }
+    assert.equal(copied, size)
+    assert.equal(actual.digest('hex'), digest)
+    receipt.nativeImport = {
+      size,
+      copied,
+      sha256: digest,
+      asset: result.asset,
+      capabilities,
+      importRequests: proof.requests,
+      requestBytes: proof.bytes,
+    }
+  }
   const served = await fetch(`http://127.0.0.1:${port}/`)
   if (frontendDev) {
     assert((await served.text()).includes('/@vite/client'))

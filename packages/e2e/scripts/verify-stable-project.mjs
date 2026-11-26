@@ -631,6 +631,139 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
     ),
     /requesting project/,
   )
+  const dropFolder = join(root, 'native-drop')
+  const dropPath = join(dropFolder, 'capture.txt')
+  const dropContent = 'asymmetric actual native file\n'
+  await mkdir(dropFolder)
+  await writeFile(dropPath, dropContent)
+  const mount = await page.request.post(`${homeUrl}/api/mounts`, {
+    data: {
+      id: 'native-drop',
+      path: dropFolder,
+      mode: 'read',
+      project: 'default',
+      shared: false,
+    },
+  })
+  assert.equal(mount.status(), 200)
+  await page.evaluate(() => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.id = 'native-drop'
+    document.body.append(input)
+  })
+  await page.locator('#native-drop').setInputFiles(dropPath)
+  const resolveFile = () =>
+    page.evaluate(async (url) => {
+      try {
+        return {
+          value: await window.dinksterDesktop.resolveDroppedFile(
+            url,
+            document.querySelector('#native-drop').files[0],
+          ),
+        }
+      } catch (error) {
+        return { error: error.message }
+      }
+    }, backendUrl)
+  const resolved = await resolveFile()
+  assert.equal(resolved.value?.status, 'resolved', JSON.stringify(resolved))
+  assert.equal(
+    resolved.value.asset.digest,
+    'blake3:e2c93bfe1d783b866199a510a026b7da32d081996d43207758036de903093992',
+  )
+  assert.equal(resolved.value.asset.name, 'capture.txt')
+  assert.equal(resolved.value.asset.size, Buffer.byteLength(dropContent))
+  assert.equal(
+    resolved.value.asset.virtualPath,
+    'mounts/native-drop/capture.txt',
+  )
+  const originalExecution = await page.request
+    .get(`${homeUrl}/supervisor/status?project=default`)
+    .then((response) => {
+      assert.equal(response.status(), 200)
+      return response.json()
+    })
+  await app.evaluate(() => {
+    globalThis.originalResolverFetch = globalThis.fetch
+    globalThis.fetch = async (...args) => {
+      if (new URL(String(args[0])).pathname !== '/api/mounts/resolve-path')
+        return globalThis.originalResolverFetch(...args)
+      globalThis.heldResolverRequest = {
+        headers: args[1].headers,
+        body: args[1].body,
+      }
+      await new Promise((done) => {
+        globalThis.releaseResolver = done
+      })
+      const response = await globalThis.originalResolverFetch(...args)
+      globalThis.heldResolverResponse = {
+        status: response.status,
+        cacheControl: response.headers.get('cache-control'),
+        body: await response.clone().json(),
+      }
+      return response
+    }
+  })
+  const heldResolution = resolveFile()
+  try {
+    await expect
+      .poll(() => app.evaluate(() => typeof globalThis.releaseResolver), {
+        timeout: 30_000,
+      })
+      .toBe('function')
+    const request = await app.evaluate(() => globalThis.heldResolverRequest)
+    assert.deepEqual(
+      JSON.parse(request.headers['X-Dinkster-Execution']),
+      originalExecution.execution,
+    )
+    assert.deepEqual(JSON.parse(request.body), {
+      path: dropPath,
+      project: 'default',
+      scope: 'local',
+    })
+    const changed = await page.request.patch(
+      `${homeUrl}/api/projects/default`,
+      {
+        data: {
+          revision: originalExecution.execution.project.revision,
+          patch: { name: 'Native file request revision' },
+        },
+      },
+    )
+    assert.equal(changed.status(), 200)
+    await app.evaluate(() => globalThis.releaseResolver())
+    const resolverResult = await heldResolution
+    const response = await app.evaluate(() => globalThis.heldResolverResponse)
+    assert.equal(response.status, 409)
+    assert.equal(response.cacheControl, 'no-store')
+    assert.equal(response.body.error, 'execution-binding-mismatch')
+    assert.match(
+      resolverResult.error,
+      /Mounted file resolution failed; no upload fallback was authorized/,
+    )
+    receipt.nativeFiles.resolver = {
+      resolved,
+      request,
+      response,
+      result: resolverResult,
+      original: originalExecution.execution,
+      changedProject: await changed.json(),
+    }
+  } finally {
+    await app.evaluate(() => {
+      globalThis.fetch = globalThis.originalResolverFetch
+      globalThis.releaseResolver?.()
+    })
+    await heldResolution
+    await app.evaluate(() => {
+      delete globalThis.originalResolverFetch
+      delete globalThis.releaseResolver
+      delete globalThis.heldResolverRequest
+      delete globalThis.heldResolverResponse
+    })
+  }
+  assert.deepEqual(await resolveFile(), resolved)
   for (const change of [
     'none',
     'restart',

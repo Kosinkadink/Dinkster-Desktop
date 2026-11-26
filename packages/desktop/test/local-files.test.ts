@@ -136,7 +136,7 @@ describe('local file authority', () => {
     const execution = JSON.stringify({
       project: { id: 'work', revision: 7 },
       host: { kind: 'native', distribution: null },
-      installation: { id: 'studio', root: join(tmpdir(), 'installation') },
+      installation: { id: 'studio', root: join(tmpdir(), 'installation-\u65e5\u672c') },
       engine: { name: 'main', generation: 3, instance: 'original-engine', url: 'http://127.0.0.1:5011' },
       filesystem: { binding: `blake3:${'b3'.repeat(32)}` },
     })
@@ -174,7 +174,8 @@ describe('local file authority', () => {
     try {
       expect(await resolveDroppedPath(url, path, 'work', authorize, execution)).toEqual({ status: 'resolved', asset })
       expect(request).toEqual({ path, project: 'work', scope: 'local' })
-      expect(requestExecution).toBe(execution)
+      expect(JSON.parse(requestExecution as string)).toEqual(JSON.parse(execution))
+      expect(requestExecution).toMatch(/^[\x20-\x7e]+$/)
       body = { status: 'resolved', asset: { ...asset, size: 0 } }
       expect(await resolveDroppedPath(url, path, 'work', authorize, execution)).toEqual(body)
       body = { status: 'refused', reason: 'not-resolvable' }
@@ -206,7 +207,7 @@ describe('local file authority', () => {
         expect(error).toBeInstanceOf(Error)
         expect(String(error)).toContain('no upload fallback')
         expect(String(error)).not.toContain(path)
-        expect(requestExecution).toBe(execution)
+        expect(JSON.parse(requestExecution as string)).toEqual(JSON.parse(execution))
       }
       status = 200
       for (const malformed of [

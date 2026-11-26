@@ -130,18 +130,25 @@ try {
       }
     })
   const setWindow = (action) =>
-    app.evaluate(({ BrowserWindow }, action) => {
+    app.evaluate(({ BrowserWindow, screen }, action) => {
       const window = BrowserWindow.getAllWindows().find((item) =>
         item.webContents.getURL().startsWith('http://127.0.0.1:3638/'),
       )
+      window.show()
+      window.focus()
       if (action === 'maximize') window.maximize()
       if (action === 'restore') window.unmaximize()
       if (action === 'fullscreen') window.setFullScreen(true)
       if (action === 'leave-fullscreen') window.setFullScreen(false)
-      if (action === 'size')
-        window.setBounds({ x: 100, y: 80, width: 1120, height: 760 })
-      window.show()
-      window.focus()
+      if (action === 'size') {
+        const area = screen.getPrimaryDisplay().workArea
+        window.setBounds({
+          x: area.x + 40,
+          y: area.y + 40,
+          width: Math.min(1120, area.width - 140),
+          height: Math.min(760, area.height - 140),
+        })
+      }
     }, action)
   async function capture(name) {
     const png = await app.evaluate(async ({ desktopCapturer, screen }) => {
@@ -236,51 +243,59 @@ try {
   })
   const x = Math.round(before.content.x + drag.x)
   const y = Math.round(before.content.y + drag.y)
-  if (process.platform === 'linux')
-    execFileSync('xdotool', [
-      'mousemove',
-      String(x),
-      String(y),
-      'mousedown',
-      '1',
-      'sleep',
-      '0.2',
-      'mousemove',
-      String(x + 90),
-      String(y + 80),
-      'sleep',
-      '0.2',
-      'mouseup',
-      '1',
-    ])
-  else if (process.platform === 'win32')
-    execFileSync('powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      join(dirname(fileURLToPath(import.meta.url)), 'native-window-mouse.ps1'),
-      '-Handle',
-      before.handle,
-      '-ProcessId',
-      String(before.pid),
-      '-Action',
-      'Drag',
-      '-X',
-      String(x),
-      '-Y',
-      String(y),
-      '-EndX',
-      String(x + 90),
-      '-EndY',
-      String(y + 80),
-    ])
-  else
-    execFileSync('cliclick', [
-      `dd:${x},${y}`,
-      `dm:${x + 90},${y + 80}`,
-      `du:${x + 90},${y + 80}`,
-    ])
+  async function pointer(action, x, y, endX = x, endY = y) {
+    await expect.poll(async () => (await state()).focused).toBe(true)
+    const window = await state()
+    if (process.platform === 'linux')
+      execFileSync('xdotool', [
+        'mousemove',
+        String(x),
+        String(y),
+        'mousedown',
+        '1',
+        'sleep',
+        '0.2',
+        'mousemove',
+        String(endX),
+        String(endY),
+        'sleep',
+        '0.2',
+        'mouseup',
+        '1',
+      ])
+    else if (process.platform === 'win32')
+      execFileSync('powershell.exe', [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        join(
+          dirname(fileURLToPath(import.meta.url)),
+          'native-window-mouse.ps1',
+        ),
+        '-Handle',
+        window.handle,
+        '-ProcessId',
+        String(window.pid),
+        '-Action',
+        action,
+        '-X',
+        String(x),
+        '-Y',
+        String(y),
+        '-EndX',
+        String(endX),
+        '-EndY',
+        String(endY),
+      ])
+    else
+      execFileSync('cliclick', [
+        `dd:${x},${y}`,
+        `dm:${endX},${endY}`,
+        `du:${endX},${endY}`,
+      ])
+  }
+  await pointer('Drag', x, y, x + 90, y + 80)
   await expect
     .poll(async () => {
       const after = await state()
@@ -303,6 +318,17 @@ try {
     )
   }
   results.push({ name: 'native-toolbar-drag', before, after })
+  const control = await bar.locator('button').first().boundingBox()
+  assert(control, 'The toolbar must have an interactive control')
+  const controlX = Math.round(after.content.x + control.x + control.width / 2)
+  const controlY = Math.round(after.content.y + control.y + control.height / 2)
+  await pointer('Drag', controlX, controlY, controlX + 90, controlY + 80)
+  assert.deepEqual(
+    (await state()).bounds,
+    after.bounds,
+    'A toolbar control must not drag the window',
+  )
+  await page.keyboard.press('Escape')
   await setWindow('maximize')
   await expect.poll(async () => (await state()).maximized).toBe(true)
   await check('maximized')

@@ -31,11 +31,12 @@ async function requireOwnedConnection(child: ChildProcess, socket: Socket): Prom
     owned = rows.some((row) => row[1] === address(port) && row[3] === '0A')
       && rows.some((row) => row[1] === address(port) && row[2] === address(clientPort) && row[3] === '01')
   } else if (process.platform === 'win32') {
-    const powershell = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    const { stdout } = await execute(powershell, ['-NoProfile', '-NonInteractive', '-Command',
-      `$rows = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ${port} -OwningProcess ${pid} -ErrorAction Stop); [bool]((@($rows | Where-Object { $_.State -eq 'Listen' }).Count -gt 0) -and (@($rows | Where-Object { $_.State -eq 'Established' -and $_.RemoteAddress -eq '127.0.0.1' -and $_.RemotePort -eq ${clientPort} }).Count -eq 1))`,
-    ], { windowsHide: true, timeout: 10_000 })
-    owned = stdout.trim() === 'True'
+    const netstat = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'netstat.exe')
+    const { stdout } = await execute(netstat, ['-ano', '-p', 'tcp'], { windowsHide: true, timeout: 10_000 })
+    const rows = stdout.trim().split('\n').map((line) => line.trim().split(/\s+/))
+      .filter((row) => row[0] === 'TCP' && row[1] === `127.0.0.1:${port}` && row[4] === String(pid))
+    owned = rows.some((row) => row[3] === 'LISTENING')
+      && rows.some((row) => row[2] === `127.0.0.1:${clientPort}` && row[3] === 'ESTABLISHED')
   } else if (process.platform === 'darwin') {
     const states = await Promise.all(['LISTEN', 'ESTABLISHED'].map(async (state) => {
       const { stdout } = await execute('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-iTCP', `-sTCP:${state}`, '-Fn'], { timeout: 10_000 })

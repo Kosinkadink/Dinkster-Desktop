@@ -206,6 +206,7 @@ export class HomeProcess {
         callback?.(new Error('The owned Dinkster process connection closed before shutdown'), new Socket())
         return undefined
       }
+      await this.readStatus(agent, undefined, this.started)
       const response = await this.json('/supervisor/shutdown', 'POST', agent)
       const result = response.value as { status?: string } | null
       if (!response.ok || result?.status !== 'stopped') throw new Error('Dinkster did not stop every engine it started')

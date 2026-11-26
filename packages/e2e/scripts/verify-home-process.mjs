@@ -69,7 +69,7 @@ async function stopped(home) {
     } catch (error) {
       // A listener draining shutdown can reset a late status request. It is
       // not evidence of exit: keep checking until the port refuses connection.
-      if (error.code !== 'ECONNRESET') throw error
+      if (error.code !== 'ECONNRESET' && error.code !== 'EPIPE') throw error
     }
     await setTimeout(50)
   }
@@ -124,20 +124,25 @@ try {
   })
   assert.equal((await shutdown.json()).status, 'stopped')
   await stopped(stale)
-  const replay = createServer((_request, response) =>
+  let replayShutdowns = 0
+  const replay = createServer((request, response) => {
+    if (request.url === '/supervisor/shutdown') replayShutdowns++
     response
       .setHeader('Content-Type', 'application/json')
-      .end(JSON.stringify(old)),
-  )
+      .end(JSON.stringify(old))
+  })
   await new Promise((done) => replay.listen(port, '127.0.0.1', done))
   try {
     assert.equal((await stale.status()).instance, old.instance)
     await assert.rejects(stale.ownedStatus('default'))
+    await assert.rejects(stale.stop())
+    assert.equal(replayShutdowns, 0)
+    assert.equal((await stale.status()).instance, old.instance)
   } finally {
     await new Promise((done) => replay.close(done))
   }
   results.push(
-    'Replaying an owned child HTTP identity on a replacement listener cannot authorize native files',
+    'Replaying an owned child HTTP identity cannot authorize native files or send shutdown to a replacement listener',
   )
   const replacement = client()
   const next = await replacement.start()

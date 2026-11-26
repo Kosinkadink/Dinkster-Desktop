@@ -232,12 +232,17 @@ try {
     const rect = element.getBoundingClientRect()
     for (let x = 180; x < rect.width - 180; x += 20) {
       const target = document.elementFromPoint(x, rect.height / 2)
-      if (
-        target &&
-        !target.closest('button, input, a, [role="button"]') &&
-        getComputedStyle(target).webkitAppRegion === 'drag'
-      )
-        return { x, y: rect.height / 2 }
+      if (!target || target.closest('button, input, a, [role="button"]'))
+        continue
+      for (
+        let parent = target;
+        parent && element.contains(parent);
+        parent = parent.parentElement
+      ) {
+        const region = getComputedStyle(parent).webkitAppRegion
+        if (region === 'no-drag') break
+        if (region === 'drag') return { x, y: rect.height / 2 }
+      }
     }
     throw new Error('No native drag area in the process page toolbar')
   })
@@ -347,8 +352,10 @@ try {
     const keep = items.find(
       (item) => item.label === 'Keep running when the window closes',
     )
-    keep.checked = true
+    if (keep.checked) throw new Error('Keep running must start off')
     keep.click()
+    if (!keep.checked)
+      throw new Error('The menu click must turn Keep running on')
     BrowserWindow.getAllWindows()
       .find((item) =>
         item.webContents.getURL().startsWith('http://127.0.0.1:3638/'),

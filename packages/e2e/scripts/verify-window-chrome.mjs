@@ -106,6 +106,40 @@ try {
     url: page.url(),
   })
 
+  if (process.platform !== 'win32') {
+    const wslStatus = await page.evaluate(() =>
+      window.dinksterDesktop.wslStatus(),
+    )
+    assert.equal(wslStatus.available, false)
+    assert.equal(wslStatus.ready, false)
+    await assert.rejects(
+      page.evaluate(() => window.dinksterDesktop.prepareWsl()),
+      /Windows x64/,
+    )
+    await assert.rejects(
+      page.evaluate(() =>
+        window.dinksterDesktop.wslProjectRoot('native-window-check'),
+      ),
+      /Windows x64/,
+    )
+    await app.evaluate(({ dialog }) => {
+      globalThis.originalOpenDialog = dialog.showOpenDialog
+      dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
+    })
+    try {
+      assert.equal(
+        await page.evaluate(() => window.dinksterDesktop.copyWslModels()),
+        undefined,
+      )
+    } finally {
+      await app.evaluate(({ dialog }) => {
+        dialog.showOpenDialog = globalThis.originalOpenDialog
+        delete globalThis.originalOpenDialog
+      })
+    }
+    results.push({ name: 'wsl-unavailable-through-home', status: wslStatus })
+  }
+
   const state = () =>
     app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows().find((item) =>
@@ -172,48 +206,58 @@ try {
           () => document.documentElement.dataset.theme ?? 'dark',
         ),
       )
-    const measured = await bar.evaluate((element) => {
-      const rect = element.getBoundingClientRect()
-      const style = getComputedStyle(element)
-      const overlay = navigator.windowControlsOverlay
-      const area = overlay?.visible ? overlay.getTitlebarAreaRect() : undefined
-      return {
-        top: rect.top,
-        height: rect.height,
-        platform: element.dataset.platform,
-        paddingLeft: parseFloat(style.paddingLeft),
-        paddingRight: parseFloat(style.paddingRight),
-        overlay: area && { x: area.x, width: area.width, height: area.height },
-        innerWidth,
-        paddingTop: getComputedStyle(document.body).paddingTop,
-        topInBar: element.contains(
-          document.elementFromPoint(innerWidth / 2, 1),
-        ),
-      }
-    })
-    assert.equal(measured.top, 0)
-    assert.equal(measured.height, chrome.native.overlay.dark.height)
-    assert.equal(measured.paddingTop, '0px')
-    assert.equal(measured.topInBar, true)
-    assert.equal(measured.platform, process.platform)
-    const window = await state()
-    if (process.platform === 'darwin') {
-      if (fullscreen) assert.equal(measured.paddingLeft, 12)
-      else
-        assert(
-          measured.paddingLeft >= window.buttons.x + 52 + 12,
-          'Content must clear the traffic lights',
+    let measured
+    let window
+    await expect(async () => {
+      measured = await bar.evaluate((element) => {
+        const rect = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        const overlay = navigator.windowControlsOverlay
+        const area = overlay?.visible
+          ? overlay.getTitlebarAreaRect()
+          : undefined
+        return {
+          top: rect.top,
+          height: rect.height,
+          platform: element.dataset.platform,
+          paddingLeft: parseFloat(style.paddingLeft),
+          paddingRight: parseFloat(style.paddingRight),
+          overlay: area && {
+            x: area.x,
+            width: area.width,
+            height: area.height,
+          },
+          innerWidth,
+          paddingTop: getComputedStyle(document.body).paddingTop,
+          topInBar: element.contains(
+            document.elementFromPoint(innerWidth / 2, 1),
+          ),
+        }
+      })
+      assert.equal(measured.top, 0)
+      assert.equal(measured.height, chrome.native.overlay.dark.height)
+      assert.equal(measured.paddingTop, '0px')
+      assert.equal(measured.topInBar, true)
+      assert.equal(measured.platform, process.platform)
+      window = await state()
+      if (process.platform === 'darwin') {
+        if (fullscreen) assert.equal(measured.paddingLeft, 12)
+        else
+          assert(
+            measured.paddingLeft >= window.buttons.x + 52 + 12,
+            'Content must clear the traffic lights',
+          )
+      } else if (fullscreen) assert.equal(measured.paddingRight, 12)
+      else {
+        assert(measured.overlay, 'Native controls must be visible')
+        assert.equal(measured.overlay.x, 0)
+        assert.equal(measured.overlay.height, chrome.native.overlay.dark.height)
+        assert.equal(
+          measured.paddingRight,
+          measured.innerWidth - measured.overlay.width + 12,
         )
-    } else if (fullscreen) assert.equal(measured.paddingRight, 12)
-    else {
-      assert(measured.overlay, 'Native controls must be visible')
-      assert.equal(measured.overlay.x, 0)
-      assert.equal(measured.overlay.height, chrome.native.overlay.dark.height)
-      assert.equal(
-        measured.paddingRight,
-        measured.innerWidth - measured.overlay.width + 12,
-      )
-    }
+      }
+    }).toPass({ timeout: 30_000 })
     results.push({ name, measured, window })
     await capture(name)
   }

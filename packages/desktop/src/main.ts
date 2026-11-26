@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { rm, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, session, shell, Tray } from 'electron'
@@ -9,7 +9,7 @@ import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { HomeProcess, type HomeStatus } from './home-process.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
-import { assetLocations, chooseDirectory, dropResolutionSupported, resolveDroppedPath, revealGrantedFile, revealModelLocation } from './local-files.js'
+import { assetLocations, chooseDirectory, dropResolutionSupported, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from './local-files.js'
 import { saveFile } from './save-file.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
@@ -112,11 +112,53 @@ async function currentHome(): Promise<HomeStatus> {
   return status
 }
 
-async function managedFiles(event: Electron.IpcMainInvokeEvent, _backendUrl: unknown): Promise<{
+async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unknown): Promise<Awaited<ReturnType<typeof captureManagedFiles>>> {
+  await captureManagedFiles(event, backendUrl)
+  throw new Error('Native file access requires execution-bound requests')
+}
+
+async function captureManagedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unknown): Promise<{
   url: string; project: string; execution: string; distribution?: string; revalidate(): Promise<void>
 }> {
   trustedIpc(event)
-  throw new Error('Native file access requires execution-bound requests')
+  const id = senderWindowId(event)
+  const document = documents.get(id)
+  const href = event.senderFrame!.url
+  const project = new URL(href).searchParams.get('dinksterProject')
+  if (!validProjectId(project) || new URL(href).searchParams.getAll('dinksterProject').length !== 1) throw new Error('Invalid folder-project context')
+  requireLocalFiles(backendUrl, href, true)
+  const url = new URL(backendUrl as string).origin
+  const currentBinding = async (): Promise<{ binding: string; execution: string }> => {
+    trustedIpc(event)
+    if (documents.get(id) !== document || event.senderFrame!.url !== href) throw new Error('The requesting project document changed')
+    const status = await home.ownedStatus(project)
+    trustedIpc(event)
+    if (documents.get(id) !== document || event.senderFrame!.url !== href) throw new Error('The requesting project document changed')
+    const execution = status.execution
+    const engine = execution?.engine
+    const installation = execution?.installation
+    if (status.state !== 'ready' || typeof status.homeId !== 'string' || !status.homeId
+      || execution?.host?.kind !== 'native' || execution.host.distribution !== null
+      || execution.project?.id !== project || !Number.isSafeInteger(execution.project.revision) || execution.project.revision < 1
+      || typeof installation?.id !== 'string' || !installation.id || typeof installation.root !== 'string' || !isAbsolute(installation.root)
+      || installation.root !== status.open?.root || engine?.name !== status.open.engine
+      || typeof engine?.name !== 'string' || !engine.name || !Number.isSafeInteger(engine.generation) || engine.generation < 1
+      || typeof engine.instance !== 'string' || !engine.instance || typeof engine.url !== 'string'
+      || typeof execution.filesystem?.binding !== 'string' || !/^blake3:[a-f0-9]{64}$/.test(execution.filesystem.binding)) {
+      throw new Error('Native file access requires authoritative execution-host and filesystem provenance')
+    }
+    const target = new URL(engine.url)
+    if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1' || target.href !== `${target.origin}/`
+      || (url !== new URL(home.url).origin && url !== new URL(status.installationFrontend ?? '').origin)) {
+      throw new Error('The document is not served by the verified native execution context')
+    }
+    const snapshot = JSON.stringify(execution)
+    return { execution: snapshot, binding: JSON.stringify([status.homeId, snapshot, status.installationFrontend ?? null]) }
+  }
+  const initial = await currentBinding()
+  return { url, project, execution: initial.execution, async revalidate() {
+    if ((await currentBinding()).binding !== initial.binding) throw new Error('The native execution context changed')
+  } }
 }
 
 function windowContext(id: string): DesktopWindowContext {

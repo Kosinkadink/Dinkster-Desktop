@@ -441,7 +441,7 @@ try {
     page.evaluate(() =>
       window.dinksterDesktop.chooseDirectory(location.origin),
     ),
-    /execution-bound requests/,
+    /authoritative execution-host and filesystem provenance/,
   )
   await assert.rejects(
     page.evaluate(() =>
@@ -451,7 +451,7 @@ try {
         project: 'default',
       }),
     ),
-    /execution-bound requests/,
+    /authoritative execution-host and filesystem provenance/,
   )
   results.push({ name: 'missing-provenance-denies-native-files' })
 

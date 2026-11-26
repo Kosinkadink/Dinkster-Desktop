@@ -1,6 +1,7 @@
 import { readdir, stat, statfs, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import type { EnvironmentClient } from './environment.js'
 
 export function defaultDataDirectory(): string {
   if (process.platform === 'win32') {
@@ -37,16 +38,23 @@ export async function desktopStorageBytes(dataDirectory: string): Promise<number
 
 export async function systemCheck(
   dataDirectory: string,
-  gpu: SystemCheck['gpu'],
+  environment: EnvironmentClient,
 ): Promise<SystemCheck> {
   await mkdir(dataDirectory, { recursive: true })
   const disk = await statfs(dataDirectory, { bigint: true })
+  const hardware = await environment.run({ root: join(dataDirectory, 'hardware-check'), operation: 'catalog', hardware: true,
+    mirrors: ['https://releases.dinkster.org'] })
+    .then((result) => result.hardware).catch(() => undefined)
+  const card = hardware?.detectedCards?.find((card) => hardware.gpus.includes(card.id)
+    && (hardware.graphicsVendor === undefined || hardware.graphicsVendor === null || card.vendor === hardware.graphicsVendor))
   return {
     platform: process.platform,
     architecture: process.arch,
     freeBytes: Number(disk.bavail * disk.bsize),
     totalBytes: Number(disk.blocks * disk.bsize),
-    gpu,
+    gpu: card ? { available: true, name: card.name,
+      ...(card.driver === null ? {} : { driver: card.driver }),
+      ...(card.memoryMiB === null ? {} : { memoryMiB: card.memoryMiB }) } : { available: false },
   }
 }
 

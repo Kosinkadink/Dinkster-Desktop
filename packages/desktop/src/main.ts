@@ -1,10 +1,8 @@
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
 import { readFile, rm, writeFile } from 'node:fs/promises'
-import { promisify } from 'node:util'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, session, shell, Tray } from 'electron'
 import updater from 'electron-updater'
 import { applicationIcon, showAbout, trayIcon, windowBackground } from './branding.js'
@@ -13,7 +11,6 @@ import {
   desktopStorageBytes,
   redactDiagnosticText,
   systemCheck,
-  type SystemCheck,
 } from './desktop-manager.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
@@ -109,7 +106,6 @@ const shellUpdater = new ShellUpdater({ target: autoUpdater, dataDirectory, curr
 const lifecycleQueue = new LifecycleQueue()
 const windowQueue = new LifecycleQueue()
 const layoutPersistenceQueue = new LifecycleQueue()
-const executeFile = promisify(execFile)
 const shellLog = new RotatingLog(join(dataDirectory, 'logs', 'desktop.log'))
 
 function windowContext(id: string): DesktopWindowContext {
@@ -898,20 +894,6 @@ async function openManagedProject(projectId: unknown, engineId: unknown, prepare
   } catch (error) { remote.destroy(); throw error }
 }
 
-async function gpuCheck(): Promise<SystemCheck['gpu']> {
-  try {
-    const { stdout } = await executeFile('nvidia-smi', [
-      '--query-gpu=name,driver_version,memory.total', '--format=csv,noheader,nounits',
-    ], { windowsHide: true, timeout: 5000 })
-    const [name, driver, memory] = stdout.trim().split(',').map((part) => part.trim())
-    if (!name) return { available: false }
-    const memoryMiB = Number(memory)
-    return { available: true, name, ...(driver ? { driver } : {}), ...(Number.isFinite(memoryMiB) ? { memoryMiB } : {}) }
-  } catch {
-    return { available: false }
-  }
-}
-
 async function shutdown(): Promise<void> {
   if (quitting) return
   quitting = true
@@ -1510,7 +1492,7 @@ ipcMain.handle('desktop:save-file', async (event, bytes: unknown, suggestedName:
 })
 ipcMain.handle('desktop:system-check', async (event) => {
   trustedIpc(event)
-  return systemCheck(dataDirectory, await gpuCheck())
+  return systemCheck(dataDirectory, environmentClient)
 })
 ipcMain.handle('desktop:clear-cache', (event) => serializeLifecycle(async () => {
   trustedIpc(event)
@@ -1530,7 +1512,7 @@ ipcMain.handle('desktop:export-support-report', (event) => serializeLifecycle(as
     platform: process.platform,
     architecture: process.arch,
     desktop: await desktopInfo(),
-    system: await systemCheck(dataDirectory, await gpuCheck()),
+    system: await systemCheck(dataDirectory, environmentClient),
     logs: {
       desktop: await shellLog.readTail(),
     },

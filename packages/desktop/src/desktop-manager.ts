@@ -38,13 +38,14 @@ export async function desktopStorageBytes(dataDirectory: string): Promise<number
 
 export async function systemCheck(
   dataDirectory: string,
-  environment: Pick<EnvironmentClient, 'run'>,
+  environment: EnvironmentClient,
 ): Promise<SystemCheck> {
   await mkdir(dataDirectory, { recursive: true })
   const disk = await statfs(dataDirectory, { bigint: true })
-  const { hardware } = await environment.run({ root: join(dataDirectory, 'hardware-check'), operation: 'catalog', hardware: true })
-  if (!hardware) throw new Error('dinkster-env did not return hardware selection')
-  const card = hardware.detectedCards?.find((card) => hardware.gpus.includes(card.id)
+  const hardware = await environment.run({ root: join(dataDirectory, 'hardware-check'), operation: 'catalog', hardware: true,
+    mirrors: ['https://releases.dinkster.org'] })
+    .then((result) => result.hardware).catch(() => undefined)
+  const card = hardware?.detectedCards?.find((card) => hardware.gpus.includes(card.id)
     && (hardware.graphicsVendor === undefined || hardware.graphicsVendor === null || card.vendor === hardware.graphicsVendor))
   return {
     platform: process.platform,

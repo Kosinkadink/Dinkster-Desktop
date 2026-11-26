@@ -26,6 +26,8 @@ describe('desktop engine management', () => {
       await writeFile(script, `console.log(${JSON.stringify(JSON.stringify({ ...response,
         hardware: { ...hardware, variant: null, buildLabel: null, buildReason: null, graphicsVendor: null, gpus: [] } }))})`)
       expect((await systemCheck(root, client)).gpu).toEqual({ available: false })
+      await writeFile(script, 'process.exit(1)')
+      expect((await systemCheck(root, client)).gpu).toEqual({ available: false })
     } finally {
       await client.dispose()
       await rm(root, { recursive: true, force: true })

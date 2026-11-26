@@ -1427,16 +1427,16 @@ ipcMain.handle('desktop:install-update', async (event) => {
 ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) => {
   let context: Awaited<ReturnType<typeof managedFiles>>
   try { context = await managedFiles(event, backendUrl) }
-  catch { return { nativeFolderChoice: false, reveal: false, resolvePath: false, importFile: false } }
+  catch { return { nativeFolderChoice: false, reveal: false, resolvePath: false, importFile: false, importProgress: false } }
   const { url, project, revalidate, distribution } = context
-  const { resolvePath, importFile } = await nativeFileCapabilities(url)
+  const { resolvePath, importFile, importProgress } = await nativeFileCapabilities(url)
   let exact = false
   try {
     await assetLocations(url, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project, distribution)
     exact = true
   } catch { /* Folder choice does not depend on exact-file lookup support. */ }
   await revalidate()
-  return { nativeFolderChoice: true, reveal: exact, resolvePath, importFile }
+  return { nativeFolderChoice: true, reveal: exact, resolvePath, importFile, importProgress }
 })
 ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) => {
   const context = await managedFiles(event, backendUrl)
@@ -1455,9 +1455,50 @@ ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown
   const context = await managedFiles(event, backendUrl)
   return resolveDroppedPath(context.url, path, context.project, context.revalidate, context.distribution)
 })
-ipcMain.handle('desktop:import-file', async (event, backendUrl: unknown, path: unknown, destination: unknown) => {
-  const context = await managedFiles(event, backendUrl)
-  return importNativeFile(context.url, path, destination, context.project, context.revalidate, context.distribution)
+const fileImports = new Map<string, { controller: AbortController; frame: Electron.WebFrameMain }>()
+ipcMain.handle('desktop:import-file', async (event, backendUrl: unknown, path: unknown, destination: unknown, id: unknown) => {
+  if (id === undefined) {
+    const context = await managedFiles(event, backendUrl)
+    return importNativeFile(context.url, path, destination, context.project, context.revalidate, context.distribution)
+  }
+  if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error('Invalid file import id')
+  const sender = event.sender
+  const frame = event.senderFrame
+  if (!frame || sender.mainFrame !== frame) throw new Error('File import requires the main document')
+  const key = `${sender.id}:${id}`
+  if (fileImports.has(key)) throw new Error('File import id is already in use')
+  const controller = new AbortController()
+  const cancel = () => controller.abort()
+  const navigating = (_event: Electron.Event, _url: string, inPlace: boolean, mainFrame: boolean) => {
+    if (mainFrame && !inPlace) cancel()
+  }
+  // Register before authority discovery so an immediate Stop cannot be lost.
+  fileImports.set(key, { controller, frame })
+  sender.once('destroyed', cancel)
+  sender.on('did-start-navigation', navigating)
+  try {
+    const context = await managedFiles(event, backendUrl)
+    return await importNativeFile(context.url, path, destination, context.project, context.revalidate, context.distribution, {
+      signal: controller.signal,
+      onProgress: (progress) => {
+        if (sender.isDestroyed() || sender.mainFrame !== frame) cancel()
+        controller.signal.throwIfAborted()
+        sender.send('desktop:import-file-progress', id, progress)
+      },
+    })
+  } finally {
+    controller.abort()
+    fileImports.delete(key)
+    sender.removeListener('destroyed', cancel)
+    sender.removeListener('did-start-navigation', navigating)
+  }
+})
+ipcMain.handle('desktop:cancel-file-import', (event, id: unknown) => {
+  if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error('Invalid file import id')
+  const transfer = fileImports.get(`${event.sender.id}:${id}`)
+  if (!transfer) return
+  if (event.senderFrame !== transfer.frame || event.sender.mainFrame !== transfer.frame) throw new Error('File import belongs to another document')
+  transfer.controller.abort()
 })
 ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: unknown) => {
   const context = await managedFiles(event, backendUrl)

@@ -301,6 +301,7 @@ try {
   assert.deepEqual(
     await engine.evaluate(() => Object.keys(window.dinksterDesktop).sort()),
     [
+      'cancelFileImport',
       'chooseDirectory',
       'fileCapabilities',
       'importFile',

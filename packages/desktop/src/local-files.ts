@@ -1,7 +1,7 @@
 import { realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { DesktopAssetIdentity, DesktopDroppedFileResult, DesktopFileCapabilities, DesktopFileImport, DesktopFileImportResult } from './types.js'
+import type { DesktopAssetIdentity, DesktopDroppedFileResult, DesktopFileCapabilities, DesktopFileImport, DesktopFileImportProgress, DesktopFileImportResult } from './types.js'
 import { validProjectId } from './window-layout.js'
 import { wslLinuxPath, wslWindowsPath } from './wsl.js'
 
@@ -120,10 +120,10 @@ export async function revealModelLocation(
 }
 
 /** The operator capability response stays in main; only its booleans are public. */
-export async function nativeFileCapabilities(backendUrl: string): Promise<{ resolvePath: boolean; importFile: boolean }> {
+export async function nativeFileCapabilities(backendUrl: string, signal?: AbortSignal): Promise<{ resolvePath: boolean; importFile: boolean; importProgress: boolean }> {
   try {
     const response = await fetch(new URL('/api/mounts/locations', backendUrl), {
-      redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
+      redirect: 'error', cache: 'no-store', signal: AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]),
     })
     if (response.status !== 200) throw new Error()
     const body = await response.json()
@@ -131,8 +131,9 @@ export async function nativeFileCapabilities(backendUrl: string): Promise<{ reso
       || typeof body.restartRequired !== 'boolean' || !Array.isArray(body.pendingRemovals)
       || (body.vault !== undefined && (typeof body.vault !== 'string' || !isAbsolute(body.vault)))
       || (body.resolvePath !== undefined && typeof body.resolvePath !== 'boolean')
-      || (body.importFile !== undefined && typeof body.importFile !== 'boolean')) throw new Error()
-    return { resolvePath: body.resolvePath === true, importFile: body.importFile === true }
+      || (body.importFile !== undefined && typeof body.importFile !== 'boolean')
+      || (body.importProgress !== undefined && typeof body.importProgress !== 'boolean')) throw new Error()
+    return { resolvePath: body.resolvePath === true, importFile: body.importFile === true, importProgress: body.importFile === true && body.importProgress === true }
   } catch {
     throw new Error('Mounted file capability verification failed')
   }
@@ -178,8 +179,50 @@ export async function resolveDroppedPath(backendUrl: string, path: unknown, proj
   }
 }
 
+async function readImportProgress(response: Response, progress: (value: DesktopFileImportProgress) => void): Promise<unknown> {
+  if (response.headers.get('content-type')?.split(';')[0] !== 'application/x-ndjson' || !response.body) throw new Error()
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  let pending = ''
+  let received = 0
+  let publishing = false
+  let result: { status: number; body: unknown } | undefined
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      pending += decoder.decode(chunk.value, { stream: !chunk.done })
+      let newline: number
+      while ((newline = pending.indexOf('\n')) !== -1) {
+        const line = pending.slice(0, newline)
+        pending = pending.slice(newline + 1)
+        if (line.length > 65_536 || result) throw new Error()
+        const event = JSON.parse(line) as Record<string, unknown>
+        if (!event || typeof event !== 'object' || Array.isArray(event)) throw new Error()
+        if (event.type === 'result') {
+          if (event.status !== 200 && event.status !== 201) throw new Error()
+          result = { status: event.status, body: event.body }
+        } else if (event.type === 'progress') {
+          if (publishing || (event.phase !== 'copying' && event.phase !== 'publishing')
+            || typeof event.received !== 'number' || !Number.isSafeInteger(event.received) || event.received < received
+            || (event.total !== null && (typeof event.total !== 'number' || !Number.isSafeInteger(event.total) || event.total < 0))) throw new Error()
+          received = event.received
+          publishing = event.phase === 'publishing'
+          progress({ phase: event.phase, received, total: event.total as number | null })
+        } else throw new Error()
+      }
+      if (pending.length > 65_536) throw new Error()
+      if (chunk.done) break
+    }
+    if (pending || !result) throw new Error()
+    return result.body
+  } finally {
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+}
+
 /** Import is an explicit write, never a fallback from mounted-path resolution. */
-export async function importNativeFile(backendUrl: string, path: unknown, destination: unknown, project: string, authorize: () => Promise<void>, distribution?: string): Promise<DesktopFileImportResult> {
+export async function importNativeFile(backendUrl: string, path: unknown, destination: unknown, project: string, authorize: () => Promise<void>, distribution?: string, transfer?: { signal: AbortSignal; onProgress(progress: DesktopFileImportProgress): void }): Promise<DesktopFileImportResult> {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || !validProjectId(project)
     || !destination || typeof destination !== 'object') throw new Error('Invalid native file import request')
   const target = destination as DesktopFileImport
@@ -197,10 +240,12 @@ export async function importNativeFile(backendUrl: string, path: unknown, destin
     catch { return { status: 'refused', reason: 'not-native-file' } }
   }
   try {
+    transfer?.signal.throwIfAborted()
     await authorize()
-    const supported = (await nativeFileCapabilities(backendUrl)).importFile
+    const supported = await nativeFileCapabilities(backendUrl, transfer?.signal)
     await authorize()
-    if (!supported) return { status: 'refused', reason: 'unsupported-backend' }
+    transfer?.signal.throwIfAborted()
+    if (!supported.importFile || (transfer && !supported.importProgress)) return { status: 'refused', reason: 'unsupported-backend' }
     const url = new URL('/api/mounts/import-file', backendUrl)
     url.search = new URLSearchParams({ scope: 'local', project, name: target.name,
       ...(target.kind !== undefined ? { kind: target.kind } : {}),
@@ -209,29 +254,35 @@ export async function importNativeFile(backendUrl: string, path: unknown, destin
     }).toString()
     // A host copy may take longer than capability discovery; do not time it out.
     const response = await fetch(url, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', ...(transfer ? { accept: 'application/x-ndjson' } : {}) },
       body: JSON.stringify({ path: enginePath, mediaType: target.mediaType }),
-      redirect: 'error', cache: 'no-store',
+      redirect: 'error', cache: 'no-store', signal: transfer?.signal ?? null,
     })
-    await authorize()
-    if (response.status !== 200 && response.status !== 201) throw new Error()
-    const body = await response.json()
-    await authorize()
-    const asset = body?.asset
-    if (!body || Object.keys(body).length !== 2
-      || (target.kind !== undefined ? body.kind !== target.kind : body.digest !== asset?.digest)
-      || !asset || Object.keys(asset).length !== 5
-      || Object.keys(asset).some((key) => !['digest', 'name', 'size', 'mediaType', 'virtualPath'].includes(key))
-      || typeof asset.digest !== 'string' || !/^blake3:[a-f0-9]{64}$/.test(asset.digest)
-      || typeof asset.name !== 'string' || !asset.name || /[/\\\0]/.test(asset.name)
-      || !Number.isSafeInteger(asset.size) || asset.size < 0
-      || typeof asset.mediaType !== 'string' || !asset.mediaType
-      || typeof asset.virtualPath !== 'string'
-      || (asset.virtualPath !== '' && (!/^mounts\/[^/]+\/.+/.test(asset.virtualPath)
-        || /[\\\0]/.test(asset.virtualPath) || asset.virtualPath.split('/').some((part: string) => !part || part === '.' || part === '..')
-        || asset.virtualPath.split('/').at(-1) !== asset.name))) throw new Error()
-    return { status: 'imported', asset: { digest: asset.digest, name: asset.name, size: asset.size, mediaType: asset.mediaType, virtualPath: asset.virtualPath } }
+    try {
+      await authorize()
+      if (response.status !== 200 && response.status !== 201) throw new Error()
+      const body = transfer ? await readImportProgress(response, transfer.onProgress) : await response.json()
+      await authorize()
+      transfer?.signal.throwIfAborted()
+      const asset = body?.asset
+      if (!body || Object.keys(body).length !== 2
+        || (target.kind !== undefined ? body.kind !== target.kind : body.digest !== asset?.digest)
+        || !asset || Object.keys(asset).length !== 5
+        || Object.keys(asset).some((key) => !['digest', 'name', 'size', 'mediaType', 'virtualPath'].includes(key))
+        || typeof asset.digest !== 'string' || !/^blake3:[a-f0-9]{64}$/.test(asset.digest)
+        || typeof asset.name !== 'string' || !asset.name || /[/\\\0]/.test(asset.name)
+        || !Number.isSafeInteger(asset.size) || asset.size < 0
+        || typeof asset.mediaType !== 'string' || !asset.mediaType
+        || typeof asset.virtualPath !== 'string'
+        || (asset.virtualPath !== '' && (!/^mounts\/[^/]+\/.+/.test(asset.virtualPath)
+          || /[\\\0]/.test(asset.virtualPath) || asset.virtualPath.split('/').some((part: string) => !part || part === '.' || part === '..')
+          || asset.virtualPath.split('/').at(-1) !== asset.name))) throw new Error()
+      return { status: 'imported', asset: { digest: asset.digest, name: asset.name, size: asset.size, mediaType: asset.mediaType, virtualPath: asset.virtualPath } }
+    } finally {
+      await response.body?.cancel().catch(() => {})
+    }
   } catch {
+    if (transfer?.signal.aborted) throw new Error('Native file import cancelled')
     throw new Error('Native file import failed; no byte upload fallback was authorized')
   }
 }

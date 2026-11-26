@@ -95,6 +95,7 @@ export interface DesktopFileCapabilities {
   readonly reveal: boolean
   readonly resolvePath?: boolean
   readonly importFile?: boolean
+  readonly importProgress?: boolean
 }
 
 export interface DesktopAssetIdentity {
@@ -117,6 +118,12 @@ export interface DesktopFileImport {
   readonly kind?: string
   readonly mount?: string
   readonly folder?: string
+}
+
+export interface DesktopFileImportProgress {
+  readonly phase: 'copying' | 'publishing'
+  readonly received: number
+  readonly total: number | null
 }
 
 export type DesktopDroppedFileResult =
@@ -142,7 +149,8 @@ export interface DesktopBridge {
   revealFile(backendUrl: string, asset: DesktopAssetIdentity): Promise<{ mode: 'selected' | 'folder' }>
   revealModelLocation(backendUrl: string, location: string): Promise<void>
   resolveDroppedFile(backendUrl: string, file: File): Promise<DesktopDroppedFileResult>
-  importFile(backendUrl: string, file: File, destination: DesktopFileImport): Promise<DesktopFileImportResult>
+  importFile(backendUrl: string, file: File, destination: DesktopFileImport, transfer?: { id: string; onProgress(progress: DesktopFileImportProgress): void }): Promise<DesktopFileImportResult>
+  cancelFileImport(id: string): Promise<void>
   systemCheck(): Promise<DesktopSystemCheck>
   clearCache(): Promise<void>
   exportSupportReport(): Promise<string | undefined>

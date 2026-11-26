@@ -67,10 +67,10 @@ not stored in the frontend or passed in a URL.
 Project-file requests require an explicit valid `dinksterProject` parameter
 on the trusted main frame's current URL, including for `default`. The Projects
 page with no project parameter has no native project-file authority. Requests
-check the selected Home process, root and engine plus the tools' ready snapshot,
-generation and URL. Awaited operations recheck the document and engine before
-returning a path or opening the file manager. A loopback URL alone grants no
-native project-file access.
+are denied until Home supplies authoritative execution-host and filesystem
+provenance. Root, engine, generation and a loopback URL do not establish that
+authority. Native project-file operations remain unavailable until that binding
+can be verified and rechecked across awaited work.
 
 File reveal accepts an asset identity rather than a renderer-selected path.
 The backend supplies the exact location and active mount or vault grant. The

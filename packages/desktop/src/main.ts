@@ -1,4 +1,4 @@
-import { isAbsolute, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { rm, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, session, shell, Tray } from 'electron'
@@ -18,7 +18,7 @@ import { RemoteWorkerFileGrants, RemoteWorkerLifecycle } from './remote-workers.
 import { desktopTitle, parseDesktopServices } from './services.js'
 import { ShellUpdater } from './shell-updater.js'
 import { EnvironmentClient } from './environment.js'
-import { WslHost, wslLinuxPath, wslLocation } from './wsl.js'
+import { WslHost, wslLinuxPath } from './wsl.js'
 import toolsRelease from './environment-tools-release.json' with { type: 'json' }
 import { denyRendererPermissions, secureWebPreferences } from './security.js'
 import { installWindowChrome, readWindowChrome, windowChromeOptions } from './window-chrome.js'
@@ -116,55 +116,12 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
   url: string; project: string; distribution?: string; revalidate(): Promise<void>
 }> {
   trustedIpc(event)
-  const id = senderWindowId(event)
-  const managed = windows.get(id)!
-  const document = documents.get(id)!
   const href = event.senderFrame!.url
-  const url = new URL(href).origin
   const project = new URL(href).searchParams.get('dinksterProject')
   if (!validProjectId(project)) throw new Error('Invalid folder-project context')
   requireLocalFiles(backendUrl, href, true)
-  const selected = await currentHome()
-  if (selected.state !== 'ready' || !selected.open || !isAbsolute(selected.open.root)) {
-    throw new Error('Native file access requires the ready local engine')
-  }
-  const { root, engine } = selected.open
-  let generation: number | undefined
-  let engineUrl: string | undefined
-  const revalidate = async (): Promise<void> => {
-    trustedIpc(event)
-    if (managed.isDestroyed() || documents.get(id) !== document || event.senderFrame!.url !== href) {
-      throw new Error('The local project window changed')
-    }
-    const status = await currentHome()
-    if (status.state !== 'ready' || status.open?.root !== root || status.open.engine !== engine) {
-      throw new Error('The selected local engine changed')
-    }
-    const result = await environmentClient.run({ root, operation: 'status' })
-    const active = result.engines?.find((entry) => entry.name === engine)
-    if (result.status !== 'clean' || result.root !== root || !result.current || active?.state !== 'ready'
-      || active.generation !== result.current || !active.url
-      || (generation !== undefined && active.generation !== generation)
-      || (engineUrl !== undefined && active.url !== engineUrl)) {
-      throw new Error('The local engine is no longer the selected ready snapshot')
-    }
-    generation = active.generation
-    engineUrl = active.url
-    const record = await environmentClient.run({ root, operation: 'project-get', libraryProject: project })
-    if (!record.project || !record.environment || (record.project.environment !== null
-      && record.project.environment.id !== record.environment.id)) {
-      throw new Error('The project is not bound to the selected local installation')
-    }
-    const after = await currentHome()
-    trustedIpc(event)
-    if (after.state !== 'ready' || after.open?.root !== root || after.open.engine !== engine
-      || documents.get(id) !== document || event.senderFrame!.url !== href) {
-      throw new Error('The local project binding changed')
-    }
-  }
-  await revalidate()
-  const location = wslLocation(root)
-  return { url, project, revalidate, ...(location ? { distribution: location.distribution } : {}) }
+  // Root, engine and loopback identity do not establish filesystem authority.
+  throw new Error('Native file access requires authoritative execution-host and filesystem provenance')
 }
 
 function windowContext(id: string): DesktopWindowContext {

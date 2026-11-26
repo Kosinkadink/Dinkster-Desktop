@@ -431,6 +431,30 @@ try {
   await expect(page).toHaveURL(/dinksterProject=default/)
   results.push({ name: 'explicit-default-project-routing', url: page.url() })
 
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.dinksterDesktop.fileCapabilities(location.origin),
+    ),
+    { nativeFolderChoice: false, reveal: false, resolvePath: false },
+  )
+  await assert.rejects(
+    page.evaluate(() =>
+      window.dinksterDesktop.chooseDirectory(location.origin),
+    ),
+    /execution-host and filesystem provenance/,
+  )
+  await assert.rejects(
+    page.evaluate(() =>
+      window.dinksterDesktop.revealFile(location.origin, {
+        digest: `blake3:${'1'.repeat(64)}`,
+        scope: 'local',
+        project: 'default',
+      }),
+    ),
+    /execution-host and filesystem provenance/,
+  )
+  results.push({ name: 'missing-provenance-denies-native-files' })
+
   await app.evaluate(({ Menu, BrowserWindow }) => {
     const items = Menu.getApplicationMenu().items[0].submenu.items
     const keep = items.find(

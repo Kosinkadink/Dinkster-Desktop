@@ -64,7 +64,13 @@ const client = (overrides = {}) => {
 async function stopped(home) {
   const deadline = Date.now() + 15_000
   while (Date.now() < deadline) {
-    if (!(await home.status())) return
+    try {
+      if (!(await home.status())) return
+    } catch (error) {
+      // A listener draining shutdown can reset a late status request. It is
+      // not evidence of exit: keep checking until the port refuses connection.
+      if (error.code !== 'ECONNRESET') throw error
+    }
     await setTimeout(50)
   }
   assert.fail('The real Dinkster process did not release its listener')

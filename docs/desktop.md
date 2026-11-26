@@ -281,10 +281,16 @@ and permission across engine restarts, not Desktop-managed state.
 
 Before setup or a variant change, select the project root, mirrors and assigned
 GPU indexes, then use **Inspect hardware and variants**. Desktop calls the
-read-only catalog command for that prospective root and compares the returned
-base manifests with detected hardware. It displays the choice, reason and
-reported download size. Every platform variant remains available as an explicit
-override; CPU is never selected automatically. Editing the root, channel,
+read-only `catalog --hardware` command for that prospective root. The tools
+detect cards and select supported builds from the published base manifests;
+Desktop displays their choice and reason without another hardware policy.
+Inspection uses Desktop's pinned native tools (or its pinned Linux tools in
+WSL), so older channel tools cannot downgrade that wire contract. Channel
+authentication and minimum Desktop checks still apply; setup, update, start
+and ordinary catalog requests keep using the channel-selected tools.
+Published native CPU builds are offered last, with graphics recommended when
+supported and CPU selected by default only without a supported graphics build.
+Editing the root, channel,
 mirrors or assigned GPUs clears the choice and requires another inspection.
 Setup passes the selected engine name, port and assigned devices to dinkster-env
 so it starts only that binding. Changing a running binding's devices or port

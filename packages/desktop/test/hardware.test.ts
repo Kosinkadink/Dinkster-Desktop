@@ -1,117 +1,71 @@
 import { describe, expect, it } from 'vitest'
-import { detectNvidiaGpus, planVariant, type NvidiaGpu, type VariantHardware } from '../src/hardware.js'
+import { parseHardwareSelection, projectHardware, type HardwareSelection } from '../src/hardware.js'
 
-const manifests: readonly VariantHardware[] = [
-  { variant: 'win-nvidia-cu126', platform: { os: 'windows', arch: 'x86_64' }, nvidia: { minimumDriver: '525', minimumComputeCapability: '5.0', maximumExclusiveComputeCapability: '10.0' } },
-  { variant: 'win-cpu', platform: { os: 'windows', arch: 'x86_64' }, nvidia: null },
-  { variant: 'win-nvidia', platform: { os: 'windows', arch: 'x86_64' }, nvidia: { minimumDriver: '580', minimumComputeCapability: '7.5', maximumExclusiveComputeCapability: null } },
-  { variant: 'linux-cpu', platform: { os: 'linux', arch: 'x86_64' }, nvidia: null },
-  { variant: 'mac-arm64', platform: { os: 'macos', arch: 'arm64' }, nvidia: null },
-]
-const gpus: readonly NvidiaGpu[] = [
-  { id: '0', name: 'Display GPU', driver: '580.10', computeCapability: '6.1' },
-  { id: '1', name: 'Compute GPU', driver: '580.10', computeCapability: '8.9' },
-]
+const selection: HardwareSelection = {
+  detectedCards: [
+    { id: '0', name: 'Other card', driver: '595.84', computeCapability: '8.9', memoryMiB: 12288 },
+    { id: '1', name: 'Compute card', driver: '595.84', computeCapability: '8.9', memoryMiB: 24576 },
+  ],
+  choices: [
+    { variant: 'linux-nvidia', label: 'NVIDIA graphics', reason: 'Compatible card and driver.' },
+    { variant: 'linux-cpu', label: 'CPU only', reason: 'Does not use the graphics card and is much slower.' },
+  ],
+  variant: 'linux-nvidia', buildLabel: 'NVIDIA graphics', buildReason: 'Compatible card and driver.',
+  gpus: ['1'], refusal: null,
+}
 
-describe('project hardware plan', () => {
-  it('selects the native Apple Silicon base without NVIDIA hardware or a CPU fallback', async () => {
-    const hardware = await detectNvidiaGpus('darwin', async () => { throw new Error('NVIDIA detection must not run on macOS') })
-    expect(hardware).toEqual({ gpus: [] })
-    const plan = planVariant(manifests, hardware, [], 'darwin', undefined, 'arm64')
-    expect(plan.selected).toBe('mac-arm64')
-    expect(plan.reason).toContain('MPS')
-    expect(plan.choices).toEqual([{ variant: 'mac-arm64', supported: true, reason: plan.reason }])
-    expect(planVariant(manifests, { gpus }, ['1'], 'darwin', undefined, 'x64').choices).toEqual([])
-    expect(planVariant(manifests, { gpus: [] }, [], 'linux', undefined, 'arm64').choices).toEqual([])
-    const renamed = manifests.map((manifest) => ({ ...manifest, variant: `custom-${manifest.variant}` }))
-    expect(planVariant(renamed, { gpus: [] }, [], 'darwin', undefined, 'arm64').selected).toBe('custom-mac-arm64')
-  })
-
-  it('reads indexes, driver, compute capability and memory for every GPU', async () => {
-    const facts = await detectNvidiaGpus('win32', async (file, args) => {
-      expect(file).toBe('nvidia-smi')
-      expect(args).toEqual(['--query-gpu=index,name,driver_version,compute_cap,memory.total', '--format=csv,noheader'])
-      return '0, Display GPU, 580.10, 6.1, 8192 MiB\r\n1, Compute GPU, 580.10, 8.9, 24576 MiB\r\n'
+describe('tools-owned hardware selection', () => {
+  it('passes the selected build and reasons to the project bridge without adding alternatives', () => {
+    expect(projectHardware(parseHardwareSelection(selection))).toEqual({
+      hardware: { gpus: selection.detectedCards },
+      plan: { selected: 'linux-nvidia', gpus: ['1'], reason: 'Compatible card and driver.',
+        choices: [
+          { variant: 'linux-nvidia', supported: true, reason: 'Compatible card and driver.' },
+          { variant: 'linux-cpu', supported: true, reason: 'Does not use the graphics card and is much slower.' },
+        ] },
     })
-    expect(facts).toEqual({ gpus: [
-      { ...gpus[0], memoryMiB: 8192 }, { ...gpus[1], memoryMiB: 24576 },
-    ] })
   })
 
-  it('uses Windows controller detection only when nvidia-smi is absent', async () => {
-    const facts = await detectNvidiaGpus('win32', async (file) => {
-      if (file === 'nvidia-smi') throw Object.assign(new Error('missing'), { code: 'ENOENT' })
-      expect(file).toBe('powershell.exe')
-      return JSON.stringify([
-        { PNPDeviceID: 'pci-nvidia', Name: 'RTX GPU', AdapterCompatibility: 'NVIDIA' },
-        { PNPDeviceID: 'pci-intel', Name: 'Display GPU', AdapterCompatibility: 'Intel' },
-      ])
+  it('keeps the tools CPU default when no supported card is found', () => {
+    const cpu = { ...selection, detectedCards: [], choices: [selection.choices![1]!],
+      variant: 'linux-cpu', buildLabel: 'CPU only',
+      buildReason: 'Does not use the graphics card and is much slower.', gpus: [] }
+    expect(projectHardware(parseHardwareSelection(cpu))).toEqual({
+      hardware: { gpus: [] },
+      plan: { selected: 'linux-cpu', gpus: [], reason: 'Does not use the graphics card and is much slower.',
+        choices: [{ variant: 'linux-cpu', supported: true, reason: 'Does not use the graphics card and is much slower.' }] },
     })
-    expect(facts.gpus).toEqual([{ id: 'pci-nvidia', name: 'RTX GPU' }])
-    const plan = planVariant(manifests, facts, ['pci-nvidia'], 'win32', undefined, 'x64')
-    expect(plan.selected).toBeUndefined()
-    expect(plan.reason).toContain('driver 525')
-    expect(plan.choices.find((choice) => choice.variant === 'win-cpu')?.supported).toBe(true)
-    const failed = await detectNvidiaGpus('win32', async () => { throw new Error('driver failed') })
-    expect(failed.gpus).toEqual([])
-    expect(failed.diagnostic).toContain('detection failed')
+    expect(projectHardware(parseHardwareSelection({ ...cpu, detectedCards: selection.detectedCards })).plan.gpus).toEqual([])
   })
 
-  it('uses only assigned GPUs and supports multiple assigned GPUs', () => {
-    expect(planVariant(manifests, { gpus }, ['1'], 'win32', undefined, 'x64').selected).toBe('win-nvidia')
-    expect(planVariant(manifests, { gpus }, ['0', '1'], 'win32', undefined, 'x64').selected).toBe('win-nvidia-cu126')
-    const modern = planVariant(manifests, { gpus }, ['1'], 'win32', undefined, 'x64')
-    expect(modern.reason).toContain('lowest compute capability 8.9')
-    expect(planVariant(manifests, { gpus }, ['missing'], 'win32', undefined, 'x64').selected).toBeUndefined()
+  it('preserves each tools choice assignment independently of the detected inventory and current selection', () => {
+    const choices = [
+      { variant: 'win-nvidia', label: 'NVIDIA graphics', reason: 'Current.', gpus: ['0', '1'] },
+      { variant: 'win-nvidia-older', label: 'Older NVIDIA graphics', reason: 'Older.', gpus: ['1'] },
+      { variant: 'win-cpu', label: 'CPU only', reason: 'Slower.', gpus: [] },
+    ]
+    expect(projectHardware(parseHardwareSelection({ ...selection, choices })).plan.choices).toEqual(
+      choices.map(({ variant, reason, gpus }) => ({ variant, reason, gpus, supported: true })),
+    )
   })
 
-  it('checks the driver before capability and never silently chooses CPU', () => {
-    const old = gpus.map((gpu) => ({ ...gpu, driver: '524.99' }))
-    const plan = planVariant(manifests, { gpus: old }, ['1'], 'win32', undefined, 'x64')
-    expect(plan.selected).toBeUndefined()
-    expect(plan.reason).toContain('Requires NVIDIA driver 525')
-    expect(plan.reason).toContain('win-nvidia-cu126: Compute GPU: driver 524.99. Requires NVIDIA driver 525')
-    expect(plan.reason).toContain('win-nvidia: Compute GPU: driver 524.99. Requires NVIDIA driver 580')
-    const transitional = gpus.map((gpu) => ({ ...gpu, driver: '579.99' }))
-    expect(planVariant(manifests, { gpus: transitional }, ['1'], 'win32', undefined, 'x64').selected).toBe('win-nvidia-cu126')
-    expect(planVariant(manifests, { gpus: gpus.map((gpu) => ({ ...gpu, driver: '525.0' })) }, ['1'], 'win32', undefined, 'x64').selected).toBe('win-nvidia-cu126')
-    expect(planVariant(manifests, { gpus: [] }, [], 'win32', undefined, 'x64').selected).toBeUndefined()
-    expect(planVariant(manifests, { gpus: old }, ['1'], 'win32', 'win-cpu', 'x64').selected).toBe('win-cpu')
-    expect(planVariant(manifests, { gpus: old }, ['1'], 'win32', 'win-nvidia', 'x64').reason).toContain('Explicit override:')
+  it('preserves a failed check as a diagnostic with no selected build or invented CPU alternative', () => {
+    const unknown = { detectedCards: null, choices: null, variant: null, buildLabel: null, buildReason: null,
+      gpus: [], refusal: { code: 'hardware-unavailable', message: 'Repair the driver and retry.' } }
+    expect(projectHardware(parseHardwareSelection(unknown))).toEqual({
+      hardware: { gpus: [], diagnostic: 'Repair the driver and retry.' },
+      plan: { gpus: [], reason: 'Repair the driver and retry.', choices: [] },
+    })
+    const noDriver = { ...selection, detectedCards: [{ id: 'PCI-card', name: 'NVIDIA card',
+      driver: null, computeCapability: null, memoryMiB: null }] }
+    expect(projectHardware(parseHardwareSelection(noDriver)).hardware.gpus).toEqual([{ id: 'PCI-card', name: 'NVIDIA card' }])
   })
 
-  it('applies both capability boundaries from manifest data, not GPU model names', () => {
-    const assigned = (capability: string) => [{ id: '1', name: 'arbitrary GPU', driver: '580.0', computeCapability: capability }]
-    expect(planVariant(manifests, { gpus: assigned('7.4') }, ['1'], 'win32', undefined, 'x64').selected).toBe('win-nvidia-cu126')
-    expect(planVariant(manifests, { gpus: assigned('7.5') }, ['1'], 'win32', undefined, 'x64').selected).toBe('win-nvidia')
-    const oldDriver = assigned('10.0').map((gpu) => ({ ...gpu, driver: '579' }))
-    expect(planVariant(manifests, { gpus: oldDriver }, ['1'], 'win32', undefined, 'x64').selected).toBeUndefined()
-    const raised = manifests.map((manifest) => manifest.nvidia ? { ...manifest, nvidia: { ...manifest.nvidia, minimumDriver: '600' } } : manifest)
-    expect(planVariant(raised, { gpus }, ['1'], 'win32', undefined, 'x64').selected).toBeUndefined()
-    expect(planVariant(manifests, { gpus }, ['1'], 'linux', undefined, 'x64').choices.map((choice) => choice.variant)).toEqual(['linux-cpu'])
-    expect(() => planVariant(manifests, { gpus }, ['1'], 'linux', 'win-nvidia', 'x64')).toThrow('not available')
-  })
-
-  it('compares numeric dotted components for driver and capability bounds', async () => {
-    const facts = await detectNvidiaGpus('win32', async () => '1, GPU, 580.10.1, 7.10, 8192 MiB')
-    expect(facts.gpus[0]?.computeCapability).toBe('7.10')
-    const dotted = manifests.map((manifest) => manifest.nvidia && manifest.variant === 'win-nvidia'
-      ? { ...manifest, nvidia: { ...manifest.nvidia, minimumDriver: '580.9.99' } } : manifest)
-    expect(planVariant(dotted, facts, ['1'], 'win32', undefined, 'x64').selected).toBe('win-nvidia')
-    const cu126Only = manifests.filter((manifest) => manifest.variant !== 'win-nvidia')
-    const assigned = (capability: string) => ({ gpus: [{ id: '1', name: 'GPU', driver: '580', computeCapability: capability }] })
-    expect(planVariant(cu126Only, assigned('9.99'), ['1'], 'win32', undefined, 'x64').selected).toBe('win-nvidia-cu126')
-    expect(planVariant(cu126Only, assigned('10.0'), ['1'], 'win32', undefined, 'x64').selected).toBeUndefined()
-    expect(planVariant(cu126Only, assigned('5.0'), ['1'], 'win32', undefined, 'x64').selected).toBe('win-nvidia-cu126')
-    expect(planVariant(cu126Only, assigned('4.99'), ['1'], 'win32', undefined, 'x64').selected).toBeUndefined()
-  })
-
-  it('uses explicit platform metadata rather than interpreting variant labels', () => {
-    const renamed = manifests.map((manifest) => ({ ...manifest, variant: `custom-${manifest.variant}` }))
-    expect(planVariant(renamed, { gpus }, ['1'], 'win32', undefined, 'x64').selected).toBe('custom-win-nvidia')
-    const misleading: VariantHardware[] = [{ variant: 'win-nvidia', platform: { os: 'linux', arch: 'x86_64' }, nvidia: manifests[2]!.nvidia }]
-    expect(planVariant(misleading, { gpus }, ['1'], 'win32', undefined, 'x64').choices).toEqual([])
-    expect(planVariant(misleading, { gpus }, ['1'], 'linux', undefined, 'x64').selected).toBe('win-nvidia')
-    expect(planVariant(manifests, { gpus }, ['1'], 'win32', undefined, 'arm64').choices).toEqual([])
-  })
+  it.each([undefined, {}, { ...selection, choices: [{}] }, { ...selection, gpus: [1] },
+    ...[null, ['1', 2], '1'].map((gpus) => ({ ...selection, choices: [{ ...selection.choices![0], gpus }] })),
+    { ...selection, detectedCards: [{ id: '1', name: 'GPU' }] }, { ...selection, refusal: {} }])(
+    'refuses an absent or malformed tools response', (value) => {
+      expect(() => parseHardwareSelection(value)).toThrow('hardware response')
+    },
+  )
 })

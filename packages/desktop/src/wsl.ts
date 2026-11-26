@@ -4,7 +4,6 @@ import { cp, lstat, mkdir, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join, posix, win32 } from 'node:path'
 import { promisify } from 'node:util'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
-import { detectNvidiaGpus, type HardwareDetection } from './hardware.js'
 import type { DesktopServices } from './services.js'
 
 const execute = promisify(execFile)
@@ -168,12 +167,6 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
       `PATH=${posix.dirname(python)}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       `DINKSTER_SERVICES=${services}`,
       python, '-I', '-m', 'dinkster_supervisor.environment', ...args)
-  }
-
-  async hardware(): Promise<HardwareDetection> {
-    const status = await this.status()
-    if (!status.ready) throw new Error(status.detail)
-    return detectNvidiaGpus('linux', (_file, args) => this.command('dinkster', '/usr/lib/wsl/lib/nvidia-smi', ...args))
   }
 
   async copyModels(source: string): Promise<string> {

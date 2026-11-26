@@ -181,7 +181,9 @@ describe('private WSL readiness', () => {
     class Guest extends WslHost {
       override async run(args: readonly string[], input: EnvironmentToolsInput = tools, selectedServices = 'production'): Promise<string> {
         return JSON.stringify({ format: 'dinkster.environment-result/1', operation: args[2],
-          status: 'clean', root: args[1], current: null, plan: [], sourceDescription: JSON.stringify({ input, services: selectedServices }) })
+          status: 'clean', root: args[1], current: null, plan: [], sourceDescription: JSON.stringify({ input, services: selectedServices }),
+          ...(args.includes('--hardware') ? { variants: [], hardware: { variant: null, buildLabel: null, buildReason: null,
+            detectedCards: null, choices: null, gpus: [], refusal: { code: 'hardware-unavailable', message: 'No hardware facts.' } } } : {}) })
       }
     }
     const guest = new Guest('C:\\Desktop data', tools)
@@ -197,6 +199,11 @@ describe('private WSL readiness', () => {
         const result = await client.run({ root: guest.projectRoot('studio'), operation })
         expect(JSON.parse(result.sourceDescription!)).toEqual({ input: channelSelected ? channelTools : tools, services })
         expect(result.root).toBe(guest.projectRoot('studio'))
+      }
+      if (channelSelected) {
+        const result = await client.run({ root: guest.projectRoot('studio'), operation: 'catalog', hardware: true })
+        expect(JSON.parse(result.sourceDescription!)).toEqual({ input: tools, services })
+        expect(result.hardware?.refusal?.message).toBe('No hardware facts.')
       }
     } finally {
       await client.dispose()

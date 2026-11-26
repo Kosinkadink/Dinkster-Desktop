@@ -32,7 +32,7 @@ jobs:
       DINKSTER_DEVELOPMENT_ARTIFACTS: ${{ github.workspace }}/test-results/development
       DINKSTER_DEVELOPMENT_ENGINE: ${{ matrix.sources == 'mixed-git' && 'https://github.com/Kosinkadink/Dinkster.git#ref=1043dd8121a5b9328af1db99c08b21aaf2a13209' || format('{0}/test-sources/engine', github.workspace) }}
       DINKSTER_DEVELOPMENT_INFERENCE: ${{ github.workspace }}/test-sources/inference
-      DINKSTER_DEVELOPMENT_HELPER: ${{ matrix.sources == 'mixed-git' && 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=008bc8a2dea546812dc451bcb9078b37e63c9ab3&subdirectory=packages/dinkster-pack-helpers' || format('{0}/test-sources/nodes/packages/dinkster-pack-helpers', github.workspace) }}
+      DINKSTER_DEVELOPMENT_HELPER: ${{ matrix.sources == 'mixed-git' && 'https://github.com/Kosinkadink/dinkster-nodes.git#ref=99da4d54d260ec72fef944f358f006846f2383ef&subdirectory=packages/dinkster-pack-helpers' || format('{0}/test-sources/nodes/packages/dinkster-pack-helpers', github.workspace) }}
       DINKSTER_DEVELOPMENT_PACK: ${{ github.workspace }}/test-sources/nodes/packages/dinkster-nodes-utilities
       DINKSTER_DEVELOPMENT_FRONTEND_SOURCE: ${{ matrix.frontend == 'dev-server' && format('{0}/test-sources/frontend', github.workspace) || '' }}
       DINKSTER_DEVELOPMENT_FRONTEND_GIT: ${{ matrix.frontend == 'git' && 'https://github.com/Kosinkadink/Dinkster-Frontend.git#ref=6af6cb494d2989331b56cef9cfa610e06fd77da5' || '' }}
@@ -56,7 +56,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Kosinkadink/dinkster-nodes
-          ref: 008bc8a2dea546812dc451bcb9078b37e63c9ab3
+          ref: 99da4d54d260ec72fef944f358f006846f2383ef
           path: test-sources/nodes
           persist-credentials: false
       - uses: actions/checkout@v4

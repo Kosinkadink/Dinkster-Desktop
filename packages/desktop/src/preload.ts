@@ -7,6 +7,8 @@ import type {
   DesktopDeepLink,
   DesktopDroppedFileResult,
   DesktopFileCapabilities,
+  DesktopFileImportProgress,
+  DesktopFileImportResult,
   DesktopInfo,
   DesktopRemoteWorker,
   DesktopRemoteWorkerFileChoice,
@@ -33,6 +35,23 @@ const bridge: DesktopBridge = {
     if (!path) return { status: 'refused', reason: 'not-native-file' }
     return ipcRenderer.invoke('desktop:resolve-dropped-file', backendUrl, path) as Promise<DesktopDroppedFileResult>
   },
+  importFile: async (backendUrl, file, destination, transfer) => {
+    let path: string
+    try { path = webUtils.getPathForFile(file) }
+    catch { throw new Error('Native file import requires a File') }
+    if (!path) return { status: 'refused', reason: 'not-native-file' }
+    if (!transfer) return ipcRenderer.invoke('desktop:import-file', backendUrl, path, destination) as Promise<DesktopFileImportResult>
+    const receive = (_event: Electron.IpcRendererEvent, id: string, progress: DesktopFileImportProgress) => {
+      if (id === transfer.id) transfer.onProgress(progress)
+    }
+    ipcRenderer.on('desktop:import-file-progress', receive)
+    try {
+      return await ipcRenderer.invoke('desktop:import-file', backendUrl, path, destination, transfer.id) as DesktopFileImportResult
+    } finally {
+      ipcRenderer.removeListener('desktop:import-file-progress', receive)
+    }
+  },
+  cancelFileImport: (id) => ipcRenderer.invoke('desktop:cancel-file-import', id) as Promise<void>,
   systemCheck: () => ipcRenderer.invoke('desktop:system-check') as Promise<DesktopSystemCheck>,
   clearCache: () => ipcRenderer.invoke('desktop:clear-cache') as Promise<void>,
   exportSupportReport: () => ipcRenderer.invoke('desktop:export-support-report') as Promise<string | undefined>,
@@ -88,6 +107,8 @@ if (!libraryOnly) contextBridge.exposeInMainWorld('dinksterDesktop', localFilesO
   revealFile: bridge.revealFile,
   revealModelLocation: bridge.revealModelLocation,
   resolveDroppedFile: bridge.resolveDroppedFile,
+  importFile: bridge.importFile,
+  cancelFileImport: bridge.cancelFileImport,
 } : bridge)
 
 const projects: ProjectDialogBridge = {

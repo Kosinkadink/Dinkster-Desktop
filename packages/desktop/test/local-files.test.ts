@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from '../src/local-files.js'
+import { assetLocations, fileCapabilities, grantedFile, importNativeFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from '../src/local-files.js'
+import type { DesktopFileImportProgress } from '../src/types.js'
 
 describe('local file authority', () => {
   it('binds capabilities and requests to the running managed connection only', () => {
@@ -207,6 +208,166 @@ describe('local file authority', () => {
       await expect(resolveDroppedPath(url, '../relative', 'work', authorize)).rejects.toThrow('Invalid')
       await expect(resolveDroppedPath(url, path, '../project', authorize)).rejects.toThrow('Invalid')
     } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('imports native files only with current project authority and explicit engine support', async () => {
+    const path = join(tmpdir(), 'private source', 'picked video.webm')
+    const destination = { name: 'picked video.webm', mediaType: 'video/webm', kind: 'media/video', mount: 'imports', folder: 'clips' }
+    const asset = { digest: `blake3:${'b3'.repeat(32)}`, name: 'picked video.webm', size: 500_000_000, mediaType: 'video/webm', virtualPath: 'mounts/imports/clips/picked video.webm' }
+    let supported: unknown = true
+    let authorized = true
+    let revoke = false
+    let status = 201
+    let body: unknown = { asset, kind: 'media/video' }
+    let received: { query: Record<string, string>; body: unknown } | undefined
+    const server = createServer(async (request, response) => {
+      if (request.method === 'GET') {
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ mounts: [], activeMounts: [], restartRequired: false, pendingRemovals: [], importFile: supported }))
+        return
+      }
+      const url = new URL(request.url!, 'http://localhost')
+      expect(url.pathname).toBe('/api/mounts/import-file')
+      let text = ''
+      for await (const chunk of request) text += chunk
+      received = { query: Object.fromEntries(url.searchParams), body: JSON.parse(text) }
+      if (revoke) authorized = false
+      response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body))
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('server unavailable')
+    const url = `http://127.0.0.1:${address.port}`
+    const authorize = async () => { if (!authorized) throw new Error('project changed') }
+    try {
+      expect(await importNativeFile(url, path, destination, 'work', authorize)).toEqual({ status: 'imported', asset })
+      expect(received).toEqual({ query: { scope: 'local', project: 'work', name: destination.name, kind: 'media/video', mount: 'imports', folder: 'clips' }, body: { path, mediaType: 'video/webm' } })
+      for (const unsupported of [false, undefined]) {
+        supported = unsupported
+        received = undefined
+        expect(await importNativeFile(url, path, destination, 'work', authorize)).toEqual({ status: 'refused', reason: 'unsupported-backend' })
+        expect(received).toBeUndefined()
+      }
+      supported = 'true'
+      await expect(importNativeFile(url, path, destination, 'work', authorize)).rejects.toThrow('Native file import failed')
+      expect(received).toBeUndefined()
+      supported = true
+      expect(await importNativeFile(url, path, destination, 'work', authorize, 'private-engine')).toEqual({ status: 'refused', reason: 'not-native-file' })
+      expect(received).toBeUndefined()
+      const generic = { name: asset.name, mediaType: 'application/octet-stream' }
+      body = { asset: { ...asset, mediaType: generic.mediaType }, digest: asset.digest }
+      expect(await importNativeFile(url, path, generic, 'work', authorize)).toEqual({ status: 'imported', asset: { ...asset, mediaType: generic.mediaType } })
+      const latent = { name: 'sample.latent', kind: 'data/latent', mediaType: 'application/x-comfy-latent' }
+      body = { asset: { ...asset, name: latent.name, mediaType: latent.mediaType, virtualPath: '' }, kind: latent.kind }
+      expect(await importNativeFile(url, path, latent, 'work', authorize)).toEqual({ status: 'imported', asset: { ...asset, name: latent.name, mediaType: latent.mediaType, virtualPath: '' } })
+      for (const failure of [403, 413, 500]) {
+        status = failure
+        body = { error: path }
+        const error = await importNativeFile(url, path, destination, 'work', authorize).catch((error: Error) => error)
+        expect(error).toBeInstanceOf(Error)
+        expect(String(error)).not.toContain(path)
+      }
+      status = 201
+      for (const malformed of [{ asset: { ...asset, path }, kind: 'media/video' }, { asset: { ...asset, virtualPath: path }, kind: 'media/video' }, { asset, kind: 'media/image' }]) {
+        body = malformed
+        await expect(importNativeFile(url, path, destination, 'work', authorize)).rejects.toThrow('Native file import failed')
+      }
+      body = { asset, kind: 'media/video' }
+      revoke = true
+      await expect(importNativeFile(url, path, destination, 'work', authorize)).rejects.toThrow('Native file import failed')
+      authorized = true
+      received = undefined
+      await expect(importNativeFile(url, path, { ...destination, project: 'other' }, 'work', authorize)).rejects.toThrow('Invalid')
+      expect(received).toBeUndefined()
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('delivers staged import progress before completion and aborts the active response without exposing paths', async () => {
+    const path = join(tmpdir(), 'private source', 'picked.bin')
+    const destination = { name: 'caf\u00e9.bin', mediaType: 'application/octet-stream' }
+    const asset = { digest: `blake3:${'b4'.repeat(32)}`, ...destination, size: 57, virtualPath: `mounts/imports/${destination.name}` }
+    let capability: unknown = true
+    let posts = 0
+    let records: unknown[] = []
+    let finish: (() => void) | undefined
+    let disconnected: (() => void) | undefined
+    const server = createServer(async (request, response) => {
+      if (request.method === 'GET') {
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ mounts: [], activeMounts: [], restartRequired: false, pendingRemovals: [], importFile: true, importProgress: capability }))
+        return
+      }
+      posts++
+      for await (const _chunk of request) { /* The import body is path metadata, not file bytes. */ }
+      if (request.headers.accept !== 'application/x-ndjson') {
+        response.writeHead(406).end('{}')
+        return
+      }
+      response.writeHead(200, { 'content-type': 'application/x-ndjson' })
+      const closed = disconnected
+      response.once('close', () => closed?.())
+      finish = () => {
+        const bytes = Buffer.from(records.map((event) => JSON.stringify(event)).join('\n') + '\n')
+        const split = bytes.indexOf(Buffer.from('\u00e9')) + 1
+        response.write(bytes.subarray(0, split))
+        setImmediate(() => response.end(bytes.subarray(split)))
+      }
+      response.write(JSON.stringify({ type: 'progress', phase: 'copying', received: 23, total: 57, path }) + '\n')
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('server unavailable')
+    const url = `http://127.0.0.1:${address.port}`
+    const progress: DesktopFileImportProgress[] = []
+    const run = (controller = new AbortController(), onProgress = (value: DesktopFileImportProgress) => { progress.push(value); const end = finish; finish = undefined; end?.() }) =>
+      importNativeFile(url, path, destination, 'work', async () => {}, undefined, { signal: controller.signal, onProgress })
+    try {
+      records = [
+        { type: 'progress', phase: 'copying', received: 57, total: 57 },
+        { type: 'progress', phase: 'publishing', received: 57, total: 57 },
+        { type: 'result', status: 201, body: { asset, digest: asset.digest } },
+      ]
+      const controller = new AbortController()
+      expect(await run(controller, (value) => {
+        progress.push(value)
+        if (value.received === 23) finish!()
+      })).toEqual({ status: 'imported', asset })
+      expect(progress).toEqual([
+        { phase: 'copying', received: 23, total: 57 },
+        { phase: 'copying', received: 57, total: 57 },
+        { phase: 'publishing', received: 57, total: 57 },
+      ])
+      for (const unsupported of [undefined, false]) {
+        capability = unsupported
+        const before = posts
+        expect(await run()).toEqual({ status: 'refused', reason: 'unsupported-backend' })
+        expect(posts).toBe(before)
+      }
+      capability = true
+      for (const invalid of [
+        [{ type: 'result', status: 413, body: { error: path } }],
+        [{ type: 'progress', phase: 'copying', received: 22, total: 57 }],
+        [{ type: 'progress', phase: 'copying', received: 24, total: -1 }],
+        [{ type: 'result', status: 201, body: { asset: { ...asset, path }, digest: asset.digest } }],
+        [{ type: 'progress', phase: 'publishing', received: 57, total: 57 }],
+      ]) {
+        records = invalid
+        const error = await run().catch((error: Error) => error)
+        expect(error).toBeInstanceOf(Error)
+        expect(String(error)).toContain('Native file import failed')
+        expect(String(error)).not.toContain(path)
+      }
+      const closed = new Promise<void>((resolve) => { disconnected = resolve })
+      const stopped = new AbortController()
+      await expect(run(stopped, () => stopped.abort())).rejects.toThrow('Native file import cancelled')
+      await closed
+      const before = posts
+      await expect(run(stopped)).rejects.toThrow('Native file import cancelled')
+      expect(posts).toBe(before)
+    } finally {
+      server.closeAllConnections()
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     }
   })

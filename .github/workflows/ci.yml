@@ -126,6 +126,11 @@ jobs:
           DINKSTER_SERVICES_SOURCE_ONLY: '1'
           DINKSTER_DESKTOP_VERIFY_ROOT: ${{ github.workspace }}/.amp/in/services
         run: xvfb-run -a node packages/e2e/scripts/verify-services.mjs
+      - name: Native IPC window authority on Linux
+        if: runner.os == 'Linux'
+        env:
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ github.workspace }}/.amp/in/native-ipc
+        run: xvfb-run -a node packages/e2e/scripts/verify-environment-client.mjs
       - name: Real window on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -134,6 +139,14 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force .amp/in | Out-Null
           node packages/e2e/scripts/verify-window-chrome.mjs
+          exit $LASTEXITCODE
+      - name: Native IPC window authority on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ github.workspace }}/.amp/in/native-ipc
+        run: |
+          node packages/e2e/scripts/verify-environment-client.mjs
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         if: always()
@@ -149,3 +162,4 @@ jobs:
             .amp/in/services/*.png
             .amp/in/services/*.json
             .amp/in/services/*.log
+            .amp/in/native-ipc/*.json

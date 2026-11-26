@@ -536,12 +536,141 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
     path: join(root, 'stable-project.png'),
     fullPage: true,
   })
+  const projectUrl = new URL(page.url())
+  projectUrl.searchParams.set('dinksterProject', 'default')
+  await page.goto(projectUrl.href)
+  const backendUrl = projectUrl.origin
+  const capabilities = await page.evaluate(
+    (url) => window.dinksterDesktop.fileCapabilities(url),
+    backendUrl,
+  )
+  receipt.nativeFiles = { capabilities, dialogs: {} }
+  assert.equal(capabilities.nativeFolderChoice, true)
+  assert.equal(capabilities.reveal, true)
+  const denied = {
+    nativeFolderChoice: false,
+    reveal: false,
+    resolvePath: false,
+  }
+  assert.deepEqual(
+    await page.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      homeUrl,
+    ),
+    denied,
+  )
+  const identity = {
+    digest: `blake3:${'a1'.repeat(32)}`,
+    scope: 'local',
+    project: 'default',
+  }
+  await assert.rejects(
+    page.evaluate(
+      ({ url, asset }) => window.dinksterDesktop.revealFile(url, asset),
+      { url: backendUrl, asset: identity },
+    ),
+    /No verified local copy/,
+  )
+  await assert.rejects(
+    page.evaluate(
+      ({ url, asset }) => window.dinksterDesktop.revealFile(url, asset),
+      { url: backendUrl, asset: { ...identity, project: 'another-project' } },
+    ),
+    /requesting project/,
+  )
+  for (const change of ['none', 'restart', 'project', 'stop']) {
+    await app.evaluate(({ dialog }) => {
+      globalThis.originalFolderDialog = dialog.showOpenDialog
+      globalThis.folderDialogEntered = false
+      dialog.showOpenDialog = () =>
+        new Promise((done) => {
+          globalThis.finishFolderDialog = done
+          globalThis.folderDialogEntered = true
+        })
+    })
+    const chosen = page.evaluate(async (url) => {
+      try {
+        return { path: await window.dinksterDesktop.chooseDirectory(url) }
+      } catch (error) {
+        return { error: error.message }
+      }
+    }, backendUrl)
+    try {
+      await expect
+        .poll(() => app.evaluate(() => globalThis.folderDialogEntered), {
+          timeout: 30_000,
+        })
+        .toBe(true)
+      if (change === 'restart' || change === 'stop') {
+        const response = await page.request.post(
+          `${homeUrl}/supervisor/engine/${change}`,
+          { data: {}, timeout: 300_000 },
+        )
+        assert.equal(response.status(), 200)
+        if (change === 'restart') {
+          await expect
+            .poll(
+              async () => {
+                const status = await page.request.get(
+                  `${homeUrl}/supervisor/status`,
+                )
+                assert.equal(status.status(), 200)
+                return (await status.json()).state
+              },
+              { timeout: 180_000 },
+            )
+            .toBe('ready')
+        } else {
+          assert.equal((await response.json()).state, 'stopped')
+        }
+      }
+      if (change === 'project')
+        await page.evaluate(() =>
+          history.replaceState(null, '', '?dinksterProject=another-project'),
+        )
+    } finally {
+      await app.evaluate(({ dialog }, path) => {
+        dialog.showOpenDialog = globalThis.originalFolderDialog
+        globalThis.finishFolderDialog?.({ canceled: false, filePaths: [path] })
+        delete globalThis.finishFolderDialog
+        delete globalThis.originalFolderDialog
+      }, home)
+    }
+    const result = await chosen
+    receipt.nativeFiles.dialogs[change] = result
+    if (change === 'none') assert.deepEqual(result, { path: home })
+    else {
+      assert.equal(result.path, undefined)
+      assert.equal(typeof result.error, 'string')
+    }
+    if (change === 'project')
+      await page.evaluate(
+        (url) => history.replaceState(null, '', url),
+        projectUrl.href,
+      )
+    if (change !== 'stop')
+      assert.equal(
+        await page.evaluate(
+          (url) =>
+            window.dinksterDesktop
+              .fileCapabilities(url)
+              .then((value) => value.nativeFolderChoice),
+          backendUrl,
+        ),
+        true,
+      )
+  }
+  assert.deepEqual(
+    await page.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      backendUrl,
+    ),
+    denied,
+  )
   receipt.url = page.url()
-  const stopped = await page.request.post(`${homeUrl}/supervisor/engine/stop`, {
-    data: {},
-  })
-  assert.equal(stopped.status(), 200)
-  receipt.stopped = await stopped.json()
+  receipt.stopped = await page.request
+    .get(`${homeUrl}/supervisor/status`)
+    .then((response) => response.json())
   assert.equal(receipt.stopped.state, 'stopped')
   await quit()
   receipt.ownedShutdown = true

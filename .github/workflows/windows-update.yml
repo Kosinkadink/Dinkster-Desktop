@@ -83,6 +83,8 @@ jobs:
             if ($process.ExitCode -ne 0) { throw "Uninstaller exited $($process.ExitCode)" }
             # The successful harness required absent data before creating this directory.
             Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'Dinkster Desktop') -Recurse -Force
+            # The harness also exclusively created this disposable user's Home.
+            Remove-Item -LiteralPath (Join-Path $env:USERPROFILE '.dinkster') -Recurse -Force
           }
       - uses: actions/upload-artifact@v4
         if: always()

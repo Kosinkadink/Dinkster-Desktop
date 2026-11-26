@@ -360,7 +360,10 @@ try {
   receipt.status = 'failed'
   receipt.error = String(error)
   if (manager && !manager.isClosed()) {
-    receipt.visibleText = await manager.locator('body').innerText().catch(() => '')
+    receipt.visibleText = await manager
+      .locator('body')
+      .innerText()
+      .catch(() => '')
     receipt.message = await manager
       .getByRole('alert')
       .textContent()

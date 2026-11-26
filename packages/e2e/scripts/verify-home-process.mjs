@@ -97,11 +97,16 @@ try {
   assert.equal(started.role, 'home')
   assert.equal(started.frontend, frontend)
   assert.equal(await (await fetch(owner.url)).text(), html)
+  assert.equal((await owner.ownedStatus('default')).instance, started.instance)
   const adopter = client({
     frontend: join(root, 'different-frontend'),
     python: join(root, 'must-not-run'),
   })
   assert.equal((await adopter.start()).supervisor.pid, started.supervisor.pid)
+  await assert.rejects(
+    adopter.ownedStatus('default'),
+    /started by this Desktop/,
+  )
   await adopter.stop()
   assert.equal((await owner.status()).supervisor.pid, started.supervisor.pid)
   results.push(
@@ -119,9 +124,29 @@ try {
   })
   assert.equal((await shutdown.json()).status, 'stopped')
   await stopped(stale)
+  const replay = createServer((_request, response) =>
+    response
+      .setHeader('Content-Type', 'application/json')
+      .end(JSON.stringify(old)),
+  )
+  await new Promise((done) => replay.listen(port, '127.0.0.1', done))
+  try {
+    assert.equal((await stale.status()).instance, old.instance)
+    await assert.rejects(stale.ownedStatus('default'))
+  } finally {
+    await new Promise((done) => replay.close(done))
+  }
+  results.push(
+    'Replaying an owned child HTTP identity on a replacement listener cannot authorize native files',
+  )
   const replacement = client()
   const next = await replacement.start()
   assert.notEqual(next.instance, old.instance)
+  await assert.rejects(stale.ownedStatus('default'))
+  assert.equal(
+    (await replacement.ownedStatus('default')).instance,
+    next.instance,
+  )
   await stale.stop()
   assert.equal((await replacement.status()).instance, next.instance)
   await replacement.stop()

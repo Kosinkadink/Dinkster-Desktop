@@ -120,6 +120,7 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
   const project = new URL(href).searchParams.get('dinksterProject')
   if (!validProjectId(project)) throw new Error('Invalid folder-project context')
   requireLocalFiles(backendUrl, href, true)
+  await home.ownedStatus(project)
   // Root, engine and loopback identity do not establish filesystem authority.
   throw new Error('Native file access requires authoritative execution-host and filesystem provenance')
 }

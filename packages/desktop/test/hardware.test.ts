@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { parseHardwareSelection, projectHardware, type HardwareSelection } from '../src/hardware.js'
 
 const selection: HardwareSelection = {
-  detectedCards: [{ id: '1', name: 'Compute card', driver: '595.84', computeCapability: '8.9', memoryMiB: 24576 }],
+  detectedCards: [
+    { id: '0', name: 'Other card', driver: '595.84', computeCapability: '8.9', memoryMiB: 12288 },
+    { id: '1', name: 'Compute card', driver: '595.84', computeCapability: '8.9', memoryMiB: 24576 },
+  ],
   choices: [
     { variant: 'linux-nvidia', label: 'NVIDIA graphics', reason: 'Compatible card and driver.' },
     { variant: 'linux-cpu', label: 'CPU only', reason: 'Does not use the graphics card and is much slower.' },
@@ -15,7 +18,7 @@ describe('tools-owned hardware selection', () => {
   it('passes the selected build and reasons to the project bridge without adding alternatives', () => {
     expect(projectHardware(parseHardwareSelection(selection))).toEqual({
       hardware: { gpus: selection.detectedCards },
-      plan: { selected: 'linux-nvidia', reason: 'Compatible card and driver.',
+      plan: { selected: 'linux-nvidia', gpus: ['1'], reason: 'Compatible card and driver.',
         choices: [
           { variant: 'linux-nvidia', supported: true, reason: 'Compatible card and driver.' },
           { variant: 'linux-cpu', supported: true, reason: 'Does not use the graphics card and is much slower.' },
@@ -29,9 +32,10 @@ describe('tools-owned hardware selection', () => {
       buildReason: 'Does not use the graphics card and is much slower.', gpus: [] }
     expect(projectHardware(parseHardwareSelection(cpu))).toEqual({
       hardware: { gpus: [] },
-      plan: { selected: 'linux-cpu', reason: 'Does not use the graphics card and is much slower.',
+      plan: { selected: 'linux-cpu', gpus: [], reason: 'Does not use the graphics card and is much slower.',
         choices: [{ variant: 'linux-cpu', supported: true, reason: 'Does not use the graphics card and is much slower.' }] },
     })
+    expect(projectHardware(parseHardwareSelection({ ...cpu, detectedCards: selection.detectedCards })).plan.gpus).toEqual([])
   })
 
   it('preserves a failed check as a diagnostic with no selected build or invented CPU alternative', () => {
@@ -39,7 +43,7 @@ describe('tools-owned hardware selection', () => {
       gpus: [], refusal: { code: 'hardware-unavailable', message: 'Repair the driver and retry.' } }
     expect(projectHardware(parseHardwareSelection(unknown))).toEqual({
       hardware: { gpus: [], diagnostic: 'Repair the driver and retry.' },
-      plan: { reason: 'Repair the driver and retry.', choices: [] },
+      plan: { gpus: [], reason: 'Repair the driver and retry.', choices: [] },
     })
     const noDriver = { ...selection, detectedCards: [{ id: 'PCI-card', name: 'NVIDIA card',
       driver: null, computeCapability: null, memoryMiB: null }] }

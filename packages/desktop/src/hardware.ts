@@ -25,6 +25,7 @@ export interface VariantHardware {
 
 export interface VariantPlan {
   readonly selected?: string
+  readonly gpus: readonly string[]
   readonly reason: string
   readonly choices: readonly { readonly variant: string; readonly supported: boolean; readonly reason: string }[]
 }
@@ -83,6 +84,7 @@ export function projectHardware(selection: HardwareSelection): { hardware: Hardw
     },
     plan: {
       ...(selection.variant === null ? {} : { selected: selection.variant }),
+      gpus: selection.gpus,
       reason: selection.refusal?.message ?? selection.buildReason ?? 'No build selected.',
       choices: (selection.choices ?? []).map((choice) => ({ variant: choice.variant, supported: true, reason: choice.reason })),
     },

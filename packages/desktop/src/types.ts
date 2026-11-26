@@ -94,6 +94,7 @@ export interface DesktopFileCapabilities {
   readonly nativeFolderChoice: boolean
   readonly reveal: boolean
   readonly resolvePath?: boolean
+  readonly importFile?: boolean
 }
 
 export interface DesktopAssetIdentity {
@@ -102,15 +103,29 @@ export interface DesktopAssetIdentity {
   readonly project: string
 }
 
+export interface DesktopFileAsset {
+  readonly digest: string
+  readonly name: string
+  readonly size: number
+  readonly mediaType: string
+  readonly virtualPath: string
+}
+
+export interface DesktopFileImport {
+  readonly name: string
+  readonly mediaType: string
+  readonly kind?: string
+  readonly mount?: string
+  readonly folder?: string
+}
+
 export type DesktopDroppedFileResult =
-  | { readonly status: 'resolved'; readonly asset: {
-      readonly digest: string
-      readonly name: string
-      readonly size: number
-      readonly mediaType: string
-      readonly virtualPath: string
-    } }
+  | { readonly status: 'resolved'; readonly asset: DesktopFileAsset }
   | { readonly status: 'refused'; readonly reason: 'not-resolvable' | 'not-native-file' | 'unsupported-backend' }
+
+export type DesktopFileImportResult =
+  | { readonly status: 'imported'; readonly asset: DesktopFileAsset }
+  | { readonly status: 'refused'; readonly reason: 'not-native-file' | 'unsupported-backend' }
 
 export type DesktopSaveResult =
   | { readonly status: 'saved'; readonly name: string }
@@ -127,6 +142,7 @@ export interface DesktopBridge {
   revealFile(backendUrl: string, asset: DesktopAssetIdentity): Promise<{ mode: 'selected' | 'folder' }>
   revealModelLocation(backendUrl: string, location: string): Promise<void>
   resolveDroppedFile(backendUrl: string, file: File): Promise<DesktopDroppedFileResult>
+  importFile(backendUrl: string, file: File, destination: DesktopFileImport): Promise<DesktopFileImportResult>
   systemCheck(): Promise<DesktopSystemCheck>
   clearCache(): Promise<void>
   exportSupportReport(): Promise<string | undefined>

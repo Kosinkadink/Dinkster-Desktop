@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from '../src/local-files.js'
+import { assetLocations, fileCapabilities, grantedFile, importNativeFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from '../src/local-files.js'
 
 describe('local file authority', () => {
   it('binds capabilities and requests to the running managed connection only', () => {
@@ -206,6 +206,79 @@ describe('local file authority', () => {
       authorized = true
       await expect(resolveDroppedPath(url, '../relative', 'work', authorize)).rejects.toThrow('Invalid')
       await expect(resolveDroppedPath(url, path, '../project', authorize)).rejects.toThrow('Invalid')
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('imports native files only with current project authority and explicit engine support', async () => {
+    const path = join(tmpdir(), 'private source', 'picked video.webm')
+    const destination = { name: 'picked video.webm', mediaType: 'video/webm', kind: 'media/video', mount: 'imports', folder: 'clips' }
+    const asset = { digest: `blake3:${'b3'.repeat(32)}`, name: 'picked video.webm', size: 500_000_000, mediaType: 'video/webm', virtualPath: 'mounts/imports/clips/picked video.webm' }
+    let supported: unknown = true
+    let authorized = true
+    let revoke = false
+    let status = 201
+    let body: unknown = { asset, kind: 'media/video' }
+    let received: { query: Record<string, string>; body: unknown } | undefined
+    const server = createServer(async (request, response) => {
+      if (request.method === 'GET') {
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ mounts: [], activeMounts: [], restartRequired: false, pendingRemovals: [], importFile: supported }))
+        return
+      }
+      const url = new URL(request.url!, 'http://localhost')
+      expect(url.pathname).toBe('/api/mounts/import-file')
+      let text = ''
+      for await (const chunk of request) text += chunk
+      received = { query: Object.fromEntries(url.searchParams), body: JSON.parse(text) }
+      if (revoke) authorized = false
+      response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body))
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('server unavailable')
+    const url = `http://127.0.0.1:${address.port}`
+    const authorize = async () => { if (!authorized) throw new Error('project changed') }
+    try {
+      expect(await importNativeFile(url, path, destination, 'work', authorize)).toEqual({ status: 'imported', asset })
+      expect(received).toEqual({ query: { scope: 'local', project: 'work', name: destination.name, kind: 'media/video', mount: 'imports', folder: 'clips' }, body: { path, mediaType: 'video/webm' } })
+      for (const unsupported of [false, undefined]) {
+        supported = unsupported
+        received = undefined
+        expect(await importNativeFile(url, path, destination, 'work', authorize)).toEqual({ status: 'refused', reason: 'unsupported-backend' })
+        expect(received).toBeUndefined()
+      }
+      supported = 'true'
+      await expect(importNativeFile(url, path, destination, 'work', authorize)).rejects.toThrow('Native file import failed')
+      expect(received).toBeUndefined()
+      supported = true
+      expect(await importNativeFile(url, path, destination, 'work', authorize, 'private-engine')).toEqual({ status: 'refused', reason: 'not-native-file' })
+      expect(received).toBeUndefined()
+      const generic = { name: asset.name, mediaType: 'application/octet-stream' }
+      body = { asset: { ...asset, mediaType: generic.mediaType }, digest: asset.digest }
+      expect(await importNativeFile(url, path, generic, 'work', authorize)).toEqual({ status: 'imported', asset: { ...asset, mediaType: generic.mediaType } })
+      const latent = { name: 'sample.latent', kind: 'data/latent', mediaType: 'application/x-comfy-latent' }
+      body = { asset: { ...asset, name: latent.name, mediaType: latent.mediaType, virtualPath: '' }, kind: latent.kind }
+      expect(await importNativeFile(url, path, latent, 'work', authorize)).toEqual({ status: 'imported', asset: { ...asset, name: latent.name, mediaType: latent.mediaType, virtualPath: '' } })
+      for (const failure of [403, 413, 500]) {
+        status = failure
+        body = { error: path }
+        const error = await importNativeFile(url, path, destination, 'work', authorize).catch((error: Error) => error)
+        expect(error).toBeInstanceOf(Error)
+        expect(String(error)).not.toContain(path)
+      }
+      status = 201
+      for (const malformed of [{ asset: { ...asset, path }, kind: 'media/video' }, { asset: { ...asset, virtualPath: path }, kind: 'media/video' }, { asset, kind: 'media/image' }]) {
+        body = malformed
+        await expect(importNativeFile(url, path, destination, 'work', authorize)).rejects.toThrow('Native file import failed')
+      }
+      body = { asset, kind: 'media/video' }
+      revoke = true
+      await expect(importNativeFile(url, path, destination, 'work', authorize)).rejects.toThrow('Native file import failed')
+      authorized = true
+      received = undefined
+      await expect(importNativeFile(url, path, { ...destination, project: 'other' }, 'work', authorize)).rejects.toThrow('Invalid')
+      expect(received).toBeUndefined()
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     }

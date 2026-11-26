@@ -7,6 +7,7 @@ import type {
   DesktopDeepLink,
   DesktopDroppedFileResult,
   DesktopFileCapabilities,
+  DesktopFileImportResult,
   DesktopInfo,
   DesktopRemoteWorker,
   DesktopRemoteWorkerFileChoice,
@@ -32,6 +33,13 @@ const bridge: DesktopBridge = {
     catch { throw new Error('Native file resolution requires a File') }
     if (!path) return { status: 'refused', reason: 'not-native-file' }
     return ipcRenderer.invoke('desktop:resolve-dropped-file', backendUrl, path) as Promise<DesktopDroppedFileResult>
+  },
+  importFile: async (backendUrl, file, destination) => {
+    let path: string
+    try { path = webUtils.getPathForFile(file) }
+    catch { throw new Error('Native file import requires a File') }
+    if (!path) return { status: 'refused', reason: 'not-native-file' }
+    return ipcRenderer.invoke('desktop:import-file', backendUrl, path, destination) as Promise<DesktopFileImportResult>
   },
   systemCheck: () => ipcRenderer.invoke('desktop:system-check') as Promise<DesktopSystemCheck>,
   clearCache: () => ipcRenderer.invoke('desktop:clear-cache') as Promise<void>,
@@ -88,6 +96,7 @@ if (!libraryOnly) contextBridge.exposeInMainWorld('dinksterDesktop', localFilesO
   revealFile: bridge.revealFile,
   revealModelLocation: bridge.revealModelLocation,
   resolveDroppedFile: bridge.resolveDroppedFile,
+  importFile: bridge.importFile,
 } : bridge)
 
 const projects: ProjectDialogBridge = {

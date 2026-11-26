@@ -15,7 +15,7 @@ import {
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
-import { assetLocations, chooseDirectory, dropResolutionSupported, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from './local-files.js'
+import { assetLocations, chooseDirectory, importNativeFile, nativeFileCapabilities, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from './local-files.js'
 import { saveFile } from './save-file.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
@@ -1427,16 +1427,16 @@ ipcMain.handle('desktop:install-update', async (event) => {
 ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) => {
   let context: Awaited<ReturnType<typeof managedFiles>>
   try { context = await managedFiles(event, backendUrl) }
-  catch { return { nativeFolderChoice: false, reveal: false, resolvePath: false } }
+  catch { return { nativeFolderChoice: false, reveal: false, resolvePath: false, importFile: false } }
   const { url, project, revalidate, distribution } = context
-  const resolvePath = await dropResolutionSupported(url)
+  const { resolvePath, importFile } = await nativeFileCapabilities(url)
   let exact = false
   try {
     await assetLocations(url, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project, distribution)
     exact = true
   } catch { /* Folder choice does not depend on exact-file lookup support. */ }
   await revalidate()
-  return { nativeFolderChoice: true, reveal: exact, resolvePath }
+  return { nativeFolderChoice: true, reveal: exact, resolvePath, importFile }
 })
 ipcMain.handle('desktop:choose-directory', async (event, backendUrl: unknown) => {
   const context = await managedFiles(event, backendUrl)
@@ -1454,6 +1454,10 @@ ipcMain.handle('desktop:reveal-model-location', async (event, backendUrl: unknow
 ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown, path: unknown) => {
   const context = await managedFiles(event, backendUrl)
   return resolveDroppedPath(context.url, path, context.project, context.revalidate, context.distribution)
+})
+ipcMain.handle('desktop:import-file', async (event, backendUrl: unknown, path: unknown, destination: unknown) => {
+  const context = await managedFiles(event, backendUrl)
+  return importNativeFile(context.url, path, destination, context.project, context.revalidate, context.distribution)
 })
 ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: unknown) => {
   const context = await managedFiles(event, backendUrl)

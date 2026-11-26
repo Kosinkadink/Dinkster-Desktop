@@ -913,7 +913,8 @@ export class EnvironmentClient {
           env: environment,
           windowsHide: true,
           timeout: 30 * 60_000,
-          maxBuffer: 4 * 1024 * 1024,
+          // History and restore results include complete sealed software inventories.
+          maxBuffer: Infinity,
         })
         stdout = result.stdout
         break

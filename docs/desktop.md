@@ -191,10 +191,10 @@ environment tools' observed ready snapshot and URL. Requests from child
 frames, remote engines and unrelated connections have no native authority.
 Asynchronous file operations recheck ownership before returning a path or
 opening a file manager; changing snapshot invalidates an outstanding request.
-The folder-project context comes from the trusted main frame's document-load
-`dinksterProject` URL parameter, not the Desktop installation id or later
-same-document history edits. An absent
-parameter means `default`; malformed ids are refused. Reveal identities must
+The folder-project context comes from the trusted main frame's current
+`dinksterProject` URL parameter, not a Desktop installation id. The parameter
+must be explicit and valid, including for `default`; the Projects page with no
+project parameter has no native project-file authority. Reveal identities must
 match that context, and a context change invalidates an outstanding operation.
 
 The frontend supplies an asset identity, not a filesystem path, for reveal.

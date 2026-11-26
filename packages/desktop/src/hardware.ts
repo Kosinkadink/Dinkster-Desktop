@@ -31,8 +31,10 @@ export interface VariantPlan {
 }
 
 export interface HardwareSelection {
+  readonly graphicsVendor?: string | null
   readonly detectedCards: readonly {
     readonly id: string
+    readonly vendor?: string
     readonly name: string
     readonly driver: string | null
     readonly computeCapability: string | null
@@ -51,12 +53,14 @@ export function parseHardwareSelection(value: unknown): HardwareSelection {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid()
   const row = value as Record<string, unknown>
   const nullableText = (text: unknown): boolean => text === null || typeof text === 'string'
+  if (row['graphicsVendor'] !== undefined && !nullableText(row['graphicsVendor'])) return invalid()
   if (!['variant', 'buildLabel', 'buildReason'].every((key) => nullableText(row[key]))
     || !Array.isArray(row['gpus']) || !row['gpus'].every((gpu: unknown) => typeof gpu === 'string')) return invalid()
   if (row['detectedCards'] !== null && (!Array.isArray(row['detectedCards']) || !row['detectedCards'].every((value: unknown) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false
     const card = value as Record<string, unknown>
     return typeof card['id'] === 'string' && typeof card['name'] === 'string'
+      && (card['vendor'] === undefined || typeof card['vendor'] === 'string')
       && nullableText(card['driver']) && nullableText(card['computeCapability'])
       && (card['memoryMiB'] === null || (Number.isSafeInteger(card['memoryMiB']) && Number(card['memoryMiB']) > 0))
   }))) return invalid()

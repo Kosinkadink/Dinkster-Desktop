@@ -284,6 +284,10 @@ GPU indexes, then use **Inspect hardware and variants**. Desktop calls the
 read-only `catalog --hardware` command for that prospective root. The tools
 detect cards and select supported builds from the published base manifests;
 Desktop displays their choice and reason without another hardware policy.
+Inspection uses Desktop's pinned native tools (or its pinned Linux tools in
+WSL), so older channel tools cannot downgrade that wire contract. Channel
+authentication and minimum Desktop checks still apply; setup, update, start
+and ordinary catalog requests keep using the channel-selected tools.
 Published native CPU builds are offered last, with graphics recommended when
 supported and CPU selected by default only without a supported graphics build.
 Editing the root, channel,

@@ -864,7 +864,8 @@ export class EnvironmentClient {
     let executable = this.executable
     let prefix = this.prefix
     const selectedTools = this.desktopVersion ? await channelTools(request, this.desktopVersion) : undefined
-    const toolsInput = this.toolsInput ?? (this.executable === 'dinkster-env' && !process.env['DINKSTER_ENV'] && !process.env['DINKSTER_TOOLS_PYTHON'] ? selectedTools ?? this.bundledTools : undefined)
+    // Hardware inspection uses Desktop's pinned wire contract, even on older channels.
+    const toolsInput = this.toolsInput ?? (this.executable === 'dinkster-env' && !process.env['DINKSTER_ENV'] && !process.env['DINKSTER_TOOLS_PYTHON'] ? (request.hardware ? this.bundledTools : selectedTools ?? this.bundledTools) : undefined)
     const location = wslLocation(request.root)
     if (location) {
       if (!this.wsl || process.platform !== 'win32' || location.distribution.toLowerCase() !== this.wsl.distribution.toLowerCase()) {
@@ -872,7 +873,7 @@ export class EnvironmentClient {
       }
       const args = commandArgs.map((arg) => isAbsolute(arg) ? wslLinuxPath(this.wsl!.distribution, arg) : arg)
       let stdout: string
-      try { stdout = await this.wsl.run(args, selectedTools, this.services) }
+      try { stdout = await this.wsl.run(args, request.hardware ? undefined : selectedTools, this.services) }
       catch (error) {
         const output = (error as { stdout?: string }).stdout
         if (output) {

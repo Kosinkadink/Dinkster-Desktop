@@ -559,6 +559,7 @@ describe('Desktop dinkster-env command client', () => {
       await expect(client.run({ root, operation })).rejects.toThrow('DesktopVersionTooOld: channel requires Desktop 0.2.1')
       await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
     }
+    await expect(client.run({ root, operation: 'catalog', hardware: true })).rejects.toThrow('DesktopVersionTooOld: channel requires Desktop 0.2.1')
     await rm(channel)
     for (const operation of ['status', 'doctor', 'stop'] as const) {
       expect((await client.run({ root, operation }, true)).operation).toBe(operation)
@@ -610,12 +611,18 @@ describe('Desktop dinkster-env command client', () => {
     await writeFile(join(root, 'project.json'), JSON.stringify({ channel: 'nightly', mirrors: [root] }))
     await expect(client.run({ root, operation })).rejects.toThrow('checksum mismatch')
     await expect(stat(join(root, 'arguments.json'))).rejects.toThrow()
+    if (operation === 'catalog') {
+      await expect(client.run({ root, operation, hardware: true })).rejects.toThrow('bundle-must-not-open')
+    }
     await writeFile(join(root, 'channels', 'nightly.json'), channelFixture({
       format: 'dinkster.channel/1', minimumDesktopVersion: '0.2.0',
     }))
     await expect(client.run({ root, operation })).rejects.toThrow('bundle-must-not-open')
     await rm(join(root, 'channels', 'nightly.json'))
     await expect(client.run({ root, operation })).rejects.toThrow('no mirror supplied a valid trusted channel')
+    if (operation === 'catalog') {
+      await expect(client.run({ root, operation, hardware: true })).rejects.toThrow('no mirror supplied a valid trusted channel')
+    }
     await client.dispose()
   })
 

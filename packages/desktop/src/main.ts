@@ -121,9 +121,9 @@ async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unkn
   const document = documents.get(id)!
   const href = event.senderFrame!.url
   const url = new URL(href).origin
-  const project = new URL(href).searchParams.get('dinksterProject') ?? 'default'
+  const project = new URL(href).searchParams.get('dinksterProject')
   if (!validProjectId(project)) throw new Error('Invalid folder-project context')
-  requireLocalFiles(backendUrl, url, true)
+  requireLocalFiles(backendUrl, href, true)
   const selected = await currentHome()
   if (selected.state !== 'ready' || !selected.open || !isAbsolute(selected.open.root)) {
     throw new Error('Native file access requires the ready local engine')

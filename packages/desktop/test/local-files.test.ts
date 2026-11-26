@@ -8,17 +8,23 @@ import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, resol
 
 describe('local file authority', () => {
   it('binds capabilities and requests to the running managed connection only', () => {
-    const managed = 'http://127.0.0.1:5011'
-    expect(fileCapabilities(`${managed}/`, managed, true)).toEqual({ nativeFolderChoice: true, reveal: false })
-    expect(fileCapabilities(`${managed}/`, managed, true, true).reveal).toBe(true)
-    expect(() => requireLocalFiles(managed, managed, true)).not.toThrow()
-    for (const url of [undefined, '', 'http://localhost:5011', 'http://127.0.0.1:5012', 'https://server.invalid', `${managed}/remote`, `${managed}?backend=remote`, 'http://user:password@127.0.0.1:5011']) {
+    const backend = 'http://127.0.0.1:5011'
+    const managed = `${backend}/?dinksterProject=work`
+    expect(fileCapabilities(`${backend}/`, managed, true)).toEqual({ nativeFolderChoice: true, reveal: false })
+    expect(fileCapabilities(`${backend}/`, managed, true, true).reveal).toBe(true)
+    expect(() => requireLocalFiles(backend, managed, true)).not.toThrow()
+    for (const document of [backend, `${backend}/?page=projects`, `${backend}/?dinksterProject=`, `${backend}/?dinksterProject=../other`]) {
+      expect(fileCapabilities(backend, document, true, true)).toEqual({ nativeFolderChoice: false, reveal: false })
+      expect(() => requireLocalFiles(backend, document, true)).toThrow('shell-managed backend')
+    }
+    expect(fileCapabilities(backend, `${backend}/?dinksterProject=default`, true).nativeFolderChoice).toBe(true)
+    for (const url of [undefined, '', 'http://localhost:5011', 'http://127.0.0.1:5012', 'https://server.invalid', `${backend}/remote`, `${backend}?backend=remote`, 'http://user:password@127.0.0.1:5011']) {
       expect(fileCapabilities(url, managed, true)).toEqual({ nativeFolderChoice: false, reveal: false })
       expect(fileCapabilities(url, managed, true, true).reveal).toBe(false)
       expect(() => requireLocalFiles(url, managed, true)).toThrow('shell-managed backend')
     }
-    expect(fileCapabilities(managed, managed, false).reveal).toBe(false)
-    expect(fileCapabilities(managed, undefined, true).nativeFolderChoice).toBe(false)
+    expect(fileCapabilities(backend, managed, false).reveal).toBe(false)
+    expect(fileCapabilities(backend, undefined, true).nativeFolderChoice).toBe(false)
   })
 
   it('uses exact scoped identity and active grants, distinguishing empty success from denied or unsupported lookup', async () => {

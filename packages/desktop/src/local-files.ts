@@ -28,6 +28,7 @@ export function fileCapabilities(backendUrl: unknown, managedUrl: string | undef
       const candidate = new URL(backendUrl)
       const managed = new URL(managedUrl)
       local = !candidate.username && !candidate.password && !candidate.search && !candidate.hash
+        && validProjectId(managed.searchParams.get('dinksterProject'))
         && candidate.origin === managed.origin && candidate.pathname === '/'
     }
   } catch { /* An invalid connection has no native file authority. */ }

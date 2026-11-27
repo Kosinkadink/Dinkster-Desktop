@@ -120,7 +120,12 @@ ipcMain.handle('desktop:open-project-window', (event, ...args) => {
   await app.evaluate(() => globalThis.releaseStartup())
   await page.evaluate(() => globalThis.startupWindowRequest)
   await expect
-    .poll(() => app.evaluate(({ Menu }) => !!Menu.getApplicationMenu()))
+    .poll(() =>
+      app.evaluate(
+        ({ Menu }) =>
+          !!Menu.getApplicationMenu()?.getMenuItemById('desktop-projects'),
+      ),
+    )
     .toBe(true)
   assert.equal(
     app.windows().length,

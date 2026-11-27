@@ -177,10 +177,20 @@ ipcMain.handle('desktop:open-project-window', (event, ...args) => {
     )
     assert.equal(wslStatus.available, false)
     assert.equal(wslStatus.ready, false)
-    await assert.rejects(
-      page.evaluate(() => window.dinksterDesktop.prepareWsl()),
-      /Windows x64/,
+    const preparation = await page.evaluate(() =>
+      window.dinksterDesktop.prepareWsl(),
     )
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (id) => window.dinksterDesktop.wslJob(id),
+          preparation.id,
+        ),
+      )
+      .toMatchObject({
+        state: 'failed',
+        error: expect.stringMatching(/Windows x64/),
+      })
     await assert.rejects(
       page.evaluate(() =>
         window.dinksterDesktop.wslProjectRoot('native-window-check'),

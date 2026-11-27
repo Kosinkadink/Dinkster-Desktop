@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { cp, lstat, mkdir, rename, rm, stat } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { lstat, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join, posix, win32 } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
 import type { DesktopServices } from './services.js'
@@ -16,6 +18,21 @@ export interface WslStatus {
   readonly ready: boolean
   readonly distribution: string
   readonly detail: string
+}
+
+export interface WslProgress {
+  readonly stage: string
+  readonly completed: number
+  readonly total: number | null
+}
+
+export interface WslJob {
+  readonly id: string
+  readonly operation: 'prepare' | 'copy-models'
+  readonly state: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed'
+  readonly progress: WslProgress
+  readonly result?: WslStatus | string
+  readonly error?: string
 }
 
 export function wslLocation(path: string): { distribution: string; path: string } | undefined {
@@ -48,9 +65,59 @@ function decode(output: Buffer): string {
 export class WslHost {
   readonly distribution: string
   private readonly commands = new Map<string, Promise<string>>()
+  private readonly jobs = new Map<string, { owner: string; value: WslJob }>()
+  private active: { controller: AbortController; done: Promise<void> } | undefined
 
   constructor(private readonly directory: string, private readonly bundledTools: EnvironmentToolsInput) {
     this.distribution = `Dinkster-Desktop-${createHash('sha256').update(win32.resolve(directory).toLowerCase()).digest('hex').slice(0, 12)}`
+  }
+
+  startPrepare(owner: string): WslJob {
+    return this.startJob(owner, 'prepare', (signal, progress) => this.prepare(signal, progress))
+  }
+
+  startCopy(owner: string, source: string): WslJob {
+    return this.startJob(owner, 'copy-models', (signal, progress) => this.copyModels(source, signal, progress))
+  }
+
+  job(owner: string, id: string): WslJob {
+    const job = this.jobs.get(id)
+    if (!job || job.owner !== owner) throw new Error('Unknown WSL job for this window')
+    return job.value
+  }
+
+  cancelJob(owner: string, id: string): WslJob {
+    const value = this.job(owner, id)
+    if (value.state === 'running') {
+      this.jobs.get(id)!.value = { ...value, state: 'cancelling' }
+      this.active!.controller.abort()
+    }
+    return this.job(owner, id)
+  }
+
+  async close(): Promise<void> {
+    this.active?.controller.abort()
+    await this.active?.done
+  }
+
+  private startJob(owner: string, operation: WslJob['operation'], action: (signal: AbortSignal, progress: (value: WslProgress) => void) => Promise<WslStatus | string>): WslJob {
+    if (this.active) throw new Error('Another WSL operation is still running')
+    const id = randomUUID()
+    const controller = new AbortController()
+    const entry = { owner, value: { id, operation, state: 'running', progress: { stage: 'checking', completed: 0, total: null } } as WslJob }
+    this.jobs.set(id, entry)
+    while (this.jobs.size > 16) this.jobs.delete(this.jobs.keys().next().value!)
+    const done = Promise.resolve().then(async () => {
+      try {
+        const result = await action(controller.signal, (progress) => { entry.value = { ...entry.value, progress } })
+        entry.value = { ...entry.value, state: 'completed', result }
+      } catch (error) {
+        entry.value = { ...entry.value, state: error instanceof Error && error.name === 'AbortError' ? 'cancelled' : 'failed',
+          ...(error instanceof Error && error.name === 'AbortError' ? {} : { error: error instanceof Error ? error.message : String(error) }) }
+      } finally { this.active = undefined }
+    })
+    this.active = { controller, done }
+    return entry.value
   }
 
   private async wsl(args: readonly string[]): Promise<string> {
@@ -106,7 +173,8 @@ export class WslHost {
     }
   }
 
-  async prepare(): Promise<WslStatus> {
+  async prepare(signal?: AbortSignal, progress: (value: WslProgress) => void = () => {}): Promise<WslStatus> {
+    signal?.throwIfAborted()
     const status = await this.status()
     if (!status.available) throw new Error(status.detail)
     if (status.ready) return status
@@ -114,13 +182,23 @@ export class WslHost {
     const exists = names.some((name) => name.trim().toLowerCase() === this.distribution.toLowerCase())
     if (exists) {
       if (await this.command('root', 'cat', ownerFile).catch(() => '') !== this.distribution) throw new Error(status.detail)
-    } else {
-      const location = join(this.directory, 'wsl', this.distribution)
-      await mkdir(dirname(location), { recursive: true })
-      await this.wsl(['--install', 'Ubuntu-24.04', '--name', this.distribution, '--location', location, '--version', '2', '--no-launch'])
-      await this.command('root', '/bin/sh', '-c', 'printf "%s\\n" "$1" > /etc/dinkster-desktop-owner', 'dinkster-owner', this.distribution)
+      throw new Error('The existing private distribution is incomplete. It was not changed; repair it before preparing WSL again.')
     }
-    await this.command('root', '/bin/sh', '-ec', `
+    signal?.throwIfAborted()
+    const location = join(this.directory, 'wsl', this.distribution)
+    await mkdir(dirname(location), { recursive: true })
+    let installed = false
+    try {
+      progress({ stage: 'installing-distribution', completed: 0, total: 3 })
+      // Registration must finish before cancellation can safely unregister exactly
+      // the distribution this operation created, rather than an in-flight install.
+      await this.wsl(['--install', 'Ubuntu-24.04', '--name', this.distribution, '--location', location, '--version', '2', '--no-launch'])
+      installed = true
+      signal?.throwIfAborted()
+      await this.command('root', '/bin/sh', '-c', 'printf "%s\\n" "$1" > /etc/dinkster-desktop-owner', 'dinkster-owner', this.distribution)
+      progress({ stage: 'configuring-distribution', completed: 1, total: 3 })
+      signal?.throwIfAborted()
+      await this.command('root', '/bin/sh', '-ec', `
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends bubblewrap ca-certificates
@@ -129,10 +207,23 @@ mkdir -p /home/dinkster/projects /home/dinkster/models /home/dinkster/tools
 chown dinkster:dinkster /home/dinkster/projects /home/dinkster/models /home/dinkster/tools
 printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'appendWindowsPath=false' '[user]' 'default=dinkster' > /etc/wsl.conf
 `)
-    await this.wsl(['--terminate', this.distribution])
-    const ready = await this.status()
-    if (!ready.ready) throw new Error(ready.detail)
-    return ready
+      signal?.throwIfAborted()
+      await this.wsl(['--terminate', this.distribution])
+      progress({ stage: 'checking-distribution', completed: 2, total: 3 })
+      const ready = await this.status()
+      if (!ready.ready) throw new Error(ready.detail)
+      signal?.throwIfAborted()
+      progress({ stage: 'ready', completed: 3, total: 3 })
+      return ready
+    } catch (error) {
+      if (installed) {
+        progress({ stage: 'removing-distribution', completed: 0, total: null })
+        // Unregister also stops guest commands before removing this new disk.
+        try { await this.wsl(['--unregister', this.distribution]) }
+        catch (cleanup) { throw new AggregateError([error, cleanup], 'WSL preparation failed and its new distribution could not be removed') }
+      }
+      throw error
+    }
   }
 
   projectRoot(id: string): string {
@@ -169,7 +260,8 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
       python, '-I', '-m', 'dinkster_supervisor.environment', ...args)
   }
 
-  async copyModels(source: string): Promise<string> {
+  async copyModels(source: string, signal?: AbortSignal, progress: (value: WslProgress) => void = () => {}): Promise<string> {
+    signal?.throwIfAborted()
     const status = await this.status()
     if (!status.ready) throw new Error(status.detail)
     if (!win32.isAbsolute(source) || wslLocation(source) || !(await stat(source)).isDirectory()) throw new Error('Choose an existing Windows model folder')
@@ -182,11 +274,40 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
       throw new Error('A model folder with this name already exists on the WSL disk')
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     const stage = wslWindowsPath(this.distribution, `${target}-${randomUUID()}.copying`)
+    const files: { source: string; relative: string; size: number }[] = []
+    const directories: string[] = []
+    const scan = async (folder: string, relative: string): Promise<void> => {
+      signal?.throwIfAborted()
+      directories.push(relative)
+      for (const name of await readdir(folder)) {
+        const path = win32.join(folder, name)
+        const child = win32.join(relative, name)
+        const info = await lstat(path)
+        if (info.isSymbolicLink()) throw new Error('Model folders must not contain links')
+        if (info.isDirectory()) await scan(path, child)
+        else if (info.isFile()) files.push({ source: path, relative: child, size: info.size })
+        else throw new Error('Model folders must contain only regular files and directories')
+      }
+    }
+    progress({ stage: 'scanning-models', completed: 0, total: null })
+    await scan(source, '')
+    let completed = 0
+    const total = files.reduce((sum, file) => sum + file.size, 0)
+    progress({ stage: 'copying-models', completed, total })
+    await mkdir(stage)
     try {
-      await cp(source, stage, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true, dereference: false,
-        filter: async (path) => { if ((await lstat(path)).isSymbolicLink()) throw new Error('Model folders must not contain links'); return true } })
+      for (const directory of directories.slice(1)) await mkdir(win32.join(stage, directory))
+      for (const file of files) {
+        signal?.throwIfAborted()
+        if ((await lstat(file.source)).isSymbolicLink()) throw new Error('Model folders must not contain links')
+        const input = createReadStream(file.source)
+        input.on('data', (chunk) => { completed += chunk.length; progress({ stage: 'copying-models', completed, total }) })
+        await pipeline(input, createWriteStream(win32.join(stage, file.relative), { flags: 'wx' }), ...(signal ? [{ signal }] : []))
+      }
+      signal?.throwIfAborted()
       await rename(stage, wslWindowsPath(this.distribution, target))
     } catch (error) {
+      progress({ stage: 'removing-partial-copy', completed, total })
       await rm(stage, { recursive: true, force: true })
       throw error
     }

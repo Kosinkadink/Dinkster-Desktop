@@ -84,6 +84,25 @@ assert.equal(
 )
 let app
 let page
+
+async function finishWslJob(job) {
+  let current = job
+  await expect
+    .poll(
+      async () => {
+        current = await page.evaluate(
+          (id) => window.dinksterDesktop.wslJob(id),
+          job.id,
+        )
+        return current.state
+      },
+      { timeout: 30 * 60_000 },
+    )
+    .not.toMatch(/^(running|cancelling)$/)
+  if (current.state !== 'completed')
+    throw new Error(current.error ?? `WSL job ${current.state}`)
+  return current.result
+}
 let restoreOwner = false
 let distributionPrepared = false
 async function quit() {
@@ -170,7 +189,9 @@ try {
   assert.equal(initial.distribution, host.distribution)
   assert.equal(initial.ready, false)
   distributionPrepared = true
-  receipt.ready = await page.evaluate(() => window.dinksterDesktop.prepareWsl())
+  receipt.ready = await finishWslJob(
+    await page.evaluate(() => window.dinksterDesktop.prepareWsl()),
+  )
   assert.equal(receipt.ready.ready, true)
   assert.equal(receipt.ready.distribution, host.distribution)
   assert.equal(
@@ -210,7 +231,9 @@ try {
     })
   }, source)
   assert.equal(
-    await page.evaluate(() => window.dinksterDesktop.copyWslModels()),
+    await finishWslJob(
+      await page.evaluate(() => window.dinksterDesktop.copyWslModels()),
+    ),
     '/home/dinkster/models/models',
   )
   const copied = wslWindowsPath(
@@ -220,7 +243,9 @@ try {
   assert.deepEqual(await readFile(copied), bytes)
   assert.deepEqual(await readFile(join(source, 'sentinel.safetensors')), bytes)
   await assert.rejects(
-    page.evaluate(() => window.dinksterDesktop.copyWslModels()),
+    page
+      .evaluate(() => window.dinksterDesktop.copyWslModels())
+      .then(finishWslJob),
     /already exists/,
   )
   assert.deepEqual(await readFile(copied), bytes)
@@ -264,8 +289,11 @@ try {
       revokedSource,
     )
     const refused = await pending
-    assert.match(refused.error, /not owned/)
-    assert.equal(refused.path, undefined)
+    if (refused.path) {
+      await assert.rejects(finishWslJob(refused.path), /not owned/)
+    } else {
+      assert.match(refused.error, /not owned/)
+    }
     assert.equal(
       (await page.evaluate(() => window.dinksterDesktop.wslStatus())).ready,
       false,
@@ -275,7 +303,9 @@ try {
       /not owned/,
     )
     await assert.rejects(
-      page.evaluate(() => window.dinksterDesktop.prepareWsl()),
+      page
+        .evaluate(() => window.dinksterDesktop.prepareWsl())
+        .then(finishWslJob),
       /not owned/,
     )
     receipt.ownerReplacementRefused = true

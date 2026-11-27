@@ -222,6 +222,7 @@ async function shutdown(): Promise<void> {
   quitting = true
   await windowQueue.run(async () => {})
   try {
+    await wslHost.close()
     await home.stop()
     await environmentClient.dispose()
     if (layoutWriteTimer !== undefined) clearTimeout(layoutWriteTimer)
@@ -561,7 +562,17 @@ ipcMain.handle('desktop:choose-remote-worker-file', async (event, kind: unknown)
 ipcMain.handle('desktop:check-for-updates', async (event) => { trustedIpc(event); await sendInfo(); return shellUpdater.manualStatus() })
 ipcMain.handle('desktop:install-update', (event) => { trustedIpc(event); return shellUpdater.manualStatus() })
 ipcMain.handle('desktop:wsl-status', (event) => { trustedIpc(event); return wslHost.status() })
-ipcMain.handle('desktop:wsl-prepare', (event) => serializeLifecycle(async () => { trustedIpc(event); return wslHost.prepare() }))
+ipcMain.handle('desktop:wsl-prepare', (event) => serializeLifecycle(async () => { trustedIpc(event); return wslHost.startPrepare(senderWindowId(event)) }))
+ipcMain.handle('desktop:wsl-job', (event, id: unknown) => {
+  trustedIpc(event)
+  if (typeof id !== 'string') throw new Error('Invalid WSL job id')
+  return wslHost.job(senderWindowId(event), id)
+})
+ipcMain.handle('desktop:wsl-cancel-job', (event, id: unknown) => {
+  trustedIpc(event)
+  if (typeof id !== 'string') throw new Error('Invalid WSL job id')
+  return wslHost.cancelJob(senderWindowId(event), id)
+})
 ipcMain.handle('desktop:wsl-project-root', async (event, id: unknown) => {
   trustedIpc(event)
   if (!validProjectId(id)) throw new Error('Invalid WSL project id')
@@ -574,7 +585,7 @@ ipcMain.handle('desktop:wsl-copy-models', (event) => serializeLifecycle(async ()
   const result = await dialog.showOpenDialog(windows.get(senderWindowId(event))!, { title: 'Copy a Windows model folder to the private WSL disk', properties: ['openDirectory'] })
   trustedIpc(event)
   const path = result.filePaths[0]
-  return result.canceled || !path ? undefined : wslHost.copyModels(path)
+  return result.canceled || !path ? undefined : wslHost.startCopy(senderWindowId(event), path)
 }))
 ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) => {
   let context: Awaited<ReturnType<typeof managedFiles>>

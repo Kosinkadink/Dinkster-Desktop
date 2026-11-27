@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, statfs, writeFile } from 'node:fs/promises'
+import { createServer as createHttpServer } from 'node:http'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
@@ -14,6 +15,7 @@ assert(process.env.DINKSTER_WSL_ARTIFACTS, 'Set an owned evidence directory')
 assert(process.env.DINKSTER_WSL_TOOLS, 'Set the lane-local tools directory')
 const artifacts = resolve(process.env.DINKSTER_WSL_ARTIFACTS)
 const toolsDirectory = resolve(process.env.DINKSTER_WSL_TOOLS)
+const portCollision = process.env.DINKSTER_WSL_PORT_COLLISION === '1'
 const manifest = join(toolsDirectory, 'tools-manifest.json')
 const tools = {
   manifest,
@@ -119,6 +121,7 @@ async function waitFor(read, accepted, label) {
 }
 let prepared = false
 let started = false
+let collision
 try {
   const free = await statfs(scratch)
   assert(free.bavail * free.bsize > 22 * 1024 ** 3, 'Start with 22 GiB free')
@@ -149,21 +152,28 @@ try {
   assert.equal(plan.variant, 'linux-cpu')
   assert.equal(plan.refusal, null, JSON.stringify(plan))
   receipt.plan = plan
+  if (!portCollision) {
+    let job = await request(
+      '/supervisor/setup',
+      'POST',
+      { planId: plan.id },
+      202,
+    )
+    job = await request(`/supervisor/setup/${job.id}`, 'DELETE', undefined, 202)
+    job = await waitFor(
+      () => request(`/supervisor/setup/${job.id}`),
+      (value) => !['running', 'cancelling'].includes(value.state),
+      'Setup cancellation',
+    )
+    assert.equal(job.state, 'cancelled', JSON.stringify(job))
+    receipt.cancelled = job
+    receipt.steps.push(
+      'Windows Home cancelled guest setup and awaited its cleanup',
+    )
+    plan = (await request(query('/supervisor/setup', fields))).plan
+    assert.equal(plan.refusal, null, JSON.stringify(plan))
+  }
   let job = await request('/supervisor/setup', 'POST', { planId: plan.id }, 202)
-  job = await request(`/supervisor/setup/${job.id}`, 'DELETE', undefined, 202)
-  job = await waitFor(
-    () => request(`/supervisor/setup/${job.id}`),
-    (value) => !['running', 'cancelling'].includes(value.state),
-    'Setup cancellation',
-  )
-  assert.equal(job.state, 'cancelled', JSON.stringify(job))
-  receipt.cancelled = job
-  receipt.steps.push(
-    'Windows Home cancelled guest setup and awaited its cleanup',
-  )
-  plan = (await request(query('/supervisor/setup', fields))).plan
-  assert.equal(plan.refusal, null, JSON.stringify(plan))
-  job = await request('/supervisor/setup', 'POST', { planId: plan.id }, 202)
   job = await waitFor(
     () => request(`/supervisor/setup/${job.id}`),
     (value) => !['running', 'cancelling'].includes(value.state),
@@ -205,12 +215,14 @@ try {
         row.name === 'main' && row.pid > 0 && row.executable.startsWith('/'),
     ),
   )
-  await request('/api/projects', 'POST', { id: 'wsl-engine-proof' })
-  assert(
-    (await request('/api/projects')).items.some(
-      (project) => project.id === 'wsl-engine-proof',
-    ),
-  )
+  if (!portCollision) {
+    await request('/api/projects', 'POST', { id: 'wsl-engine-proof' })
+    assert(
+      (await request('/api/projects')).items.some(
+        (project) => project.id === 'wsl-engine-proof',
+      ),
+    )
+  }
   const settings = JSON.parse(
     await readFile(join(root, 'environment.json'), 'utf8'),
   )
@@ -219,53 +231,122 @@ try {
     'Guest settings must hold a Linux library root',
   )
   receipt.libraryRoot = settings.libraryRoot
-  receipt.packs = await request(
-    query('/supervisor/installations/packs', { root }),
-  )
-  receipt.readiness = await request(
-    query('/supervisor/installations/sandbox/readiness', { root }),
-  )
+  if (!portCollision) {
+    receipt.packs = await request(
+      query('/supervisor/installations/packs', { root }),
+    )
+    receipt.readiness = await request(
+      query('/supervisor/installations/sandbox/readiness', { root }),
+    )
+  }
   await request('/supervisor/engine/stop', 'POST')
-  receipt.log = await request('/supervisor/engine/log')
-  await request('/api/projects', 'POST', { id: 'wsl-proof' })
-  assert(
-    (await request('/api/projects')).items.some(
-      (project) => project.id === 'wsl-proof',
-    ),
-  )
-  assert.equal(
-    JSON.parse(
+  if (portCollision) {
+    const endpoint = JSON.parse(
       await wsl([
         '--distribution',
         host.distribution,
         '--user',
         'dinkster',
-        '--cd',
-        '/home/dinkster',
         '--exec',
         config.python,
         '-I',
         '-c',
-        'import json,sys; from dinkster_library.client import LibraryClient;\nwith LibraryClient(__import__("pathlib").Path(sys.argv[1])) as client: print(json.dumps(client.call("projects.get",id="wsl-proof")))',
-        settings.libraryRoot,
+        'import json; from pathlib import Path; from dinkster_supervisor.environment_runtime import engine_status; print(json.dumps(engine_status(Path("/home/dinkster/projects/home-setup"))))',
       ]),
-    ).project.id,
-    'wsl-proof',
-  )
-  receipt.steps.push(
-    'Guest engine became ready; policy/readiness/log routes and stopped guest library answered through Windows Home',
-  )
-  await request('/supervisor/engine/restart', 'POST')
-  assert.equal(
-    (
-      await waitFor(
-        () => request('/supervisor/status'),
-        (value) => ['ready', 'failed'].includes(value.state),
-        'Guest restart',
+    ).find((row) => row.name === 'main').url
+    receipt.collisionRequests = []
+    collision = createHttpServer((request, response) => {
+      receipt.collisionRequests.push({
+        method: request.method,
+        path: request.url,
+      })
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      response.end(
+        JSON.stringify({
+          protocol: 1,
+          state: 'ready',
+          instance: 'unrelated-windows-process',
+          supervisor: { pid: process.pid },
+        }),
       )
-    ).state,
-    'ready',
-  )
+    })
+    await new Promise((done, fail) => {
+      collision.once('error', fail)
+      collision.listen(Number(new URL(endpoint).port), '127.0.0.1', done)
+    })
+    receipt.collisionProbe = await (
+      await fetch(`${endpoint}/supervisor/status`, {
+        signal: AbortSignal.timeout(5000),
+      })
+    ).json()
+    assert.equal(receipt.collisionProbe.instance, 'unrelated-windows-process')
+    await request('/supervisor/engine/restart', 'POST')
+    receipt.collisionStatus = await waitFor(
+      () => request('/supervisor/status'),
+      (value) => ['ready', 'failed'].includes(value.state),
+      'Windows port collision refusal',
+    )
+    assert.equal(receipt.collisionStatus.state, 'failed')
+    await request(
+      '/api/projects',
+      'POST',
+      { id: 'must-not-reach-windows' },
+      503,
+    )
+    assert(
+      receipt.collisionRequests.every(
+        (request) =>
+          request.method === 'GET' && request.path === '/supervisor/status',
+      ),
+    )
+    await request('/supervisor/engine/stop', 'POST')
+    await new Promise((done) => collision.close(done))
+    collision = undefined
+    receipt.steps.push(
+      'Home refused an unrelated Windows listener on the guest engine port',
+    )
+  } else {
+    receipt.log = await request('/supervisor/engine/log')
+    await request('/api/projects', 'POST', { id: 'wsl-proof' })
+    assert(
+      (await request('/api/projects')).items.some(
+        (project) => project.id === 'wsl-proof',
+      ),
+    )
+    assert.equal(
+      JSON.parse(
+        await wsl([
+          '--distribution',
+          host.distribution,
+          '--user',
+          'dinkster',
+          '--cd',
+          '/home/dinkster',
+          '--exec',
+          config.python,
+          '-I',
+          '-c',
+          'import json,sys; from dinkster_library.client import LibraryClient;\nwith LibraryClient(__import__("pathlib").Path(sys.argv[1])) as client: print(json.dumps(client.call("projects.get",id="wsl-proof")))',
+          settings.libraryRoot,
+        ]),
+      ).project.id,
+      'wsl-proof',
+    )
+    receipt.steps.push(
+      'Guest engine became ready; policy/readiness/log routes and stopped guest library answered through Windows Home',
+    )
+    await request('/supervisor/engine/restart', 'POST')
+    assert.equal(
+      (
+        await waitFor(
+          () => request('/supervisor/status'),
+          (value) => ['ready', 'failed'].includes(value.state),
+          'Guest restart',
+        )
+      ).state,
+      'ready',
+    )
+  }
   receipt.success = true
 } catch (error) {
   receipt.error = {
@@ -284,6 +365,7 @@ try {
   }))
   process.exitCode = 1
 } finally {
+  if (collision) await new Promise((done) => collision.close(done))
   if (started)
     await home.stop().catch((error) => {
       receipt.stopError = String(error)

@@ -48,7 +48,17 @@ assert(
   ),
 )
 receipt.initialDistributions = original
+for (const name of Object.keys(process.env)) {
+  if (
+    /TOKEN|SECRET|PASSWORD|CREDENTIAL|ELECTRON_RUN_AS_NODE|^DINKSTER_|^UV_|^PYTHON|^VIRTUAL_ENV$|^GIT_/i.test(
+      name,
+    )
+  )
+    delete process.env[name]
+}
 for (const [key, folder] of Object.entries({
+  HOME: 'user-home',
+  USERPROFILE: 'user-profile',
   DINKSTER_HOME: 'home',
   LOCALAPPDATA: 'local-data',
   APPDATA: 'app-data',

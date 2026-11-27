@@ -349,25 +349,28 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
 
 async function createWindows(): Promise<void> {
   homeIdentity = await home.start()
-  const primary = screen.getPrimaryDisplay().workArea
-  windowLayout = await readWindowLayout(dataDirectory, defaultWindowLayout({
-    x: primary.x + Math.max(0, Math.floor((primary.width - 1440) / 2)),
-    y: primary.y + Math.max(0, Math.floor((primary.height - 900) / 2)),
-    width: Math.min(1440, primary.width), height: Math.min(900, primary.height),
-  }))
-  await createManagedWindow('primary')
-  let restoreFailed = false
-  for (const workspace of windowLayout.workspaces) {
-    if (workspace.id === 'primary') continue
-    try { await createManagedWindow(workspace.id) }
-    catch (error) { windowLayout = removeWindow(windowLayout, workspace.id); restoreFailed = true; logFailure(error) }
-  }
-  const restored = await restoreChildWindows(windowLayout, (child) => createManagedWindow(child.id).then(() => undefined))
-  windowLayout = restored.layout
-  for (const failure of restored.failures) { restoreFailed = true; logFailure(failure.error) }
-  if (restoreFailed) await persistWindowLayout()
-  windowsReady = true
-  sendWindowLayout()
+  // The preload can request new windows before the primary finishes loading.
+  await windowQueue.run(async () => {
+    const primary = screen.getPrimaryDisplay().workArea
+    windowLayout = await readWindowLayout(dataDirectory, defaultWindowLayout({
+      x: primary.x + Math.max(0, Math.floor((primary.width - 1440) / 2)),
+      y: primary.y + Math.max(0, Math.floor((primary.height - 900) / 2)),
+      width: Math.min(1440, primary.width), height: Math.min(900, primary.height),
+    }))
+    await createManagedWindow('primary')
+    let restoreFailed = false
+    for (const workspace of windowLayout.workspaces) {
+      if (workspace.id === 'primary') continue
+      try { await createManagedWindow(workspace.id) }
+      catch (error) { windowLayout = removeWindow(windowLayout, workspace.id); restoreFailed = true; logFailure(error) }
+    }
+    const restored = await restoreChildWindows(windowLayout, (child) => createManagedWindow(child.id).then(() => undefined))
+    windowLayout = restored.layout
+    for (const failure of restored.failures) { restoreFailed = true; logFailure(failure.error) }
+    if (restoreFailed) await persistWindowLayout()
+    windowsReady = true
+    sendWindowLayout()
+  })
   const initial = deepLinkFromArgv(process.argv)
   if (initial) preReadyLinks.push(initial)
   for (const link of preReadyLinks.splice(0)) await routeDeepLink(link)

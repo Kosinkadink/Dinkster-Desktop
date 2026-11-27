@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { _electron as electron, expect as baseExpect } from '@playwright/test'
 
 const expect = baseExpect.configure({ timeout: 30_000 })
@@ -63,19 +63,74 @@ let app
 let page
 const errors = []
 try {
+  // Hold load completion so real renderer IPC overlaps window restoration.
+  const metadata = JSON.parse(
+    await readFile(join(repository, 'packages/desktop/package.json'), 'utf8'),
+  )
+  await writeFile(
+    join(root, 'package.json'),
+    JSON.stringify({ ...metadata, main: 'startup-entry.mjs' }),
+  )
+  const startupEntry = join(root, 'startup-entry.mjs')
+  await writeFile(
+    startupEntry,
+    `import { app, BrowserWindow, ipcMain } from 'electron'
+app.setAppPath(${JSON.stringify(join(repository, 'packages/desktop'))})
+const load = BrowserWindow.prototype.loadURL
+BrowserWindow.prototype.loadURL = async function (url, ...args) {
+  const loaded = await load.call(this, url, ...args)
+  if (new URL(url).searchParams.get('dinksterWindow') === 'primary') {
+    BrowserWindow.prototype.loadURL = load
+    await new Promise(resolve => { globalThis.releaseStartup = resolve })
+  }
+  return loaded
+}
+await import(${JSON.stringify(pathToFileURL(join(repository, 'packages/desktop/dist/entry.js')).href)})
+const open = ipcMain._invokeHandlers.get('desktop:open-project-window')
+ipcMain.removeHandler('desktop:open-project-window')
+ipcMain.handle('desktop:open-project-window', (event, ...args) => {
+  globalThis.startupRequestSeen = true
+  return open(event, ...args)
+})
+`,
+  )
   app = await electron.launch({
     executablePath: require('electron'),
     args: [
       '--no-sandbox',
       ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
       `--user-data-dir=${join(scratch, 'chromium')}`,
-      join(repository, 'packages/desktop'),
+      root,
     ],
     env,
     timeout: 180_000,
   })
   page = await app.firstWindow({ timeout: 180_000 })
   page.on('pageerror', (error) => errors.push(error.message))
+  await expect
+    .poll(() => app.evaluate(() => typeof globalThis.releaseStartup))
+    .toBe('function')
+  await page.evaluate(() => {
+    globalThis.startupWindowRequest =
+      window.dinksterDesktop.openProjectWindow('default')
+  })
+  await expect
+    .poll(() => app.evaluate(() => globalThis.startupRequestSeen))
+    .toBe(true)
+  await app.evaluate(() => globalThis.releaseStartup())
+  await page.evaluate(() => globalThis.startupWindowRequest)
+  await expect
+    .poll(() => app.evaluate(({ Menu }) => !!Menu.getApplicationMenu()))
+    .toBe(true)
+  assert.equal(
+    app.windows().length,
+    2,
+    'Startup must not duplicate a workspace',
+  )
+  const startupWorkspace = app.windows().find((candidate) => candidate !== page)
+  await expect(startupWorkspace).toHaveURL(/dinksterProject=default/)
+  await startupWorkspace.close()
+  results.push({ name: 'open-workspace-during-startup' })
   await expect(page).toHaveURL(
     new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),
   )
@@ -512,6 +567,7 @@ try {
     `Verified process-owned Desktop window, native drag and tray lifecycle on ${process.platform}`,
   )
 } finally {
+  await app?.evaluate(() => globalThis.releaseStartup?.()).catch(() => {})
   if (page && !page.isClosed())
     await page
       .screenshot({ path: join(root, 'final-page.png') })

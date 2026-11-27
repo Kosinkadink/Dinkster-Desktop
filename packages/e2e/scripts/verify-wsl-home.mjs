@@ -91,6 +91,7 @@ const home = new HomeProcess({ frontend, dataDirectory: data, tools, port })
 const root = host.projectRoot('home-setup')
 const query = (path, fields) => `${path}?${new URLSearchParams(fields)}`
 async function request(path, method = 'GET', body, expected = 200) {
+  receipt.lastRequest = { method, path }
   const response = await fetch(`${home.url}${path}`, {
     method,
     signal: AbortSignal.timeout(240_000),
@@ -271,7 +272,16 @@ try {
     name: error.name,
     message: error.message,
     stack: error.stack,
+    cause: error.cause && {
+      name: error.cause.name,
+      message: error.cause.message,
+      code: error.cause.code,
+    },
   }
+  receipt.failureHomeStatus = await home.status().catch((failure) => ({
+    error: failure.message,
+    code: failure.code,
+  }))
   process.exitCode = 1
 } finally {
   if (started)

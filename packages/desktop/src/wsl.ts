@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { lstat, mkdir, mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises'
 import { join, posix, win32 } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
@@ -101,6 +101,12 @@ export class WslHost {
       this.active!.controller.abort()
     }
     return this.job(owner, id)
+  }
+
+  cancelOwner(owner: string): void {
+    for (const { owner: jobOwner, value } of this.jobs.values()) {
+      if (jobOwner === owner && value.state === 'running') this.cancelJob(owner, value.id)
+    }
   }
 
   async close(): Promise<void> {
@@ -310,7 +316,10 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
     signal?.throwIfAborted()
     const status = await this.status()
     if (!status.ready) throw new Error(status.detail)
-    if (!win32.isAbsolute(source) || wslLocation(source) || !(await stat(source)).isDirectory()) throw new Error('Choose an existing Windows model folder')
+    if (!win32.isAbsolute(source) || wslLocation(source)) throw new Error('Choose an existing Windows model folder')
+    const sourceInfo = await lstat(source)
+    if (sourceInfo.isSymbolicLink()) throw new Error('Model folders must not contain links')
+    if (!sourceInfo.isDirectory()) throw new Error('Choose an existing Windows model folder')
     const name = win32.basename(source)
     if (!name || name === '.' || name === '..' || /[/:\\\x00-\x1f]/.test(name)) throw new Error('Invalid model folder name')
     const target = `${home}/models/${name}`

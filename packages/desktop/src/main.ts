@@ -324,6 +324,7 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
   managed.on('resize', recordPlacement)
   managed.on('maximize', () => { windowLayout = updateWindowPlacement(windowLayout, id, { maximized: true }); scheduleWindowLayoutWrite() })
   managed.on('unmaximize', () => { windowLayout = updateWindowPlacement(windowLayout, id, { maximized: false, bounds: managed.getBounds() }); scheduleWindowLayoutWrite() })
+  managed.once('closed', () => wslHost.cancelOwner(id))
   managed.on('close', (event) => {
     if (quitting) return
     if (id === 'primary') {

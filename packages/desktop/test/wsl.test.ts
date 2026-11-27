@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -82,7 +82,7 @@ describe('private WSL readiness', () => {
     return new WslHost('C:\\Desktop data', tools)
   }
 
-  it('cancels only the requesting window download and removes its partial preparation', async () => {
+  it.each(['request', 'window-close'])('cancels only the requesting window download and removes its partial preparation: %s', async (reason) => {
     host()
     const root = await mkdtemp(join(tmpdir(), 'dinkster-wsl-cancel-'))
     const local = new WslHost(root, tools)
@@ -107,9 +107,14 @@ describe('private WSL readiness', () => {
       await downloading
       expect(() => local.cancelJob('other-window', job.id)).toThrow('Unknown WSL job')
       expect(local.job('first-window', job.id).progress.stage).toBe('downloading-distribution')
-      expect(local.cancelJob('first-window', job.id).state).toBe('cancelling')
-      await local.close()
-      expect(local.job('first-window', job.id).state).toBe('cancelled')
+      if (reason === 'window-close') {
+        local.cancelOwner('other-window')
+        expect(local.job('first-window', job.id).state).toBe('running')
+        local.cancelOwner('first-window')
+        expect(local.job('first-window', job.id).state).toBe('cancelling')
+      } else expect(local.cancelJob('first-window', job.id).state).toBe('cancelling')
+      expect(() => local.startPrepare('other-window')).toThrow('still running')
+      await vi.waitFor(() => expect(local.job('first-window', job.id).state).toBe('cancelled'))
       expect(await readdir(join(root, 'wsl'))).toEqual([])
       expect((await local.status()).ready).toBe(false)
     } finally { await local.close(); await rm(root, { recursive: true, force: true }) }
@@ -149,6 +154,13 @@ describe('private WSL readiness', () => {
       expect(await readFile(join(models, 'source-models/weights.bin'))).toEqual(bytes)
       expect(await readdir(models)).toEqual(['source-models'])
       await expect(service.copyModels(source)).rejects.toThrow('already exists')
+      const link = join(root, 'source-link')
+      await symlink(sourceDisk, link, 'junction')
+      const linkedSource = 'C:\\linked-models'
+      filesystemPaths.set(linkedSource, link)
+      filesystemPaths.set(`${linkedSource}\\weights.bin`, join(sourceDisk, 'weights.bin'))
+      await expect(service.copyModels(linkedSource)).rejects.toThrow('must not contain links')
+      expect(await readdir(models)).toEqual(['source-models'])
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 

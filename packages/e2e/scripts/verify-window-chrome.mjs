@@ -129,7 +129,12 @@ ipcMain.handle('desktop:open-project-window', (event, ...args) => {
   )
   const startupWorkspace = app.windows().find((candidate) => candidate !== page)
   await expect(startupWorkspace).toHaveURL(/dinksterProject=default/)
-  await startupWorkspace.close()
+  await app.evaluate(({ BrowserWindow }, url) => {
+    BrowserWindow.getAllWindows()
+      .find((window) => window.webContents.getURL() === url)
+      .close()
+  }, startupWorkspace.url())
+  await expect.poll(() => app.windows().length).toBe(1)
   results.push({ name: 'open-workspace-during-startup' })
   await expect(page).toHaveURL(
     new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),

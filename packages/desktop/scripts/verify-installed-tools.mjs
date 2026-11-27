@@ -11,9 +11,15 @@ const os = { win32: 'windows', linux: 'linux', darwin: 'macos' }[process.platfor
 const arch = { x64: 'x86_64', arm64: 'arm64' }[process.arch]
 const artifact = pin.artifacts.find((row) => row.name === `dinkster-tools-${os}-${arch}.zip`)
 assert(artifact, 'The installer platform must have a pinned tools archive')
-assert.deepEqual((await readdir(directory)).sort(), [pin.manifest.name, artifact.name].sort(), 'Install only the native tools and manifest')
+const artifacts = [artifact]
+if (process.platform === 'win32' && process.arch === 'x64') {
+  const guest = pin.artifacts.find((row) => row.name === 'dinkster-tools-linux-x86_64.zip')
+  assert(guest, 'The Windows installer must have pinned Linux tools for WSL2')
+  artifacts.push(guest)
+}
+assert.deepEqual((await readdir(directory)).sort(), [pin.manifest.name, ...artifacts.map((row) => row.name)].sort(), 'Install only the required tools and manifest')
 const verified = []
-for (const row of [pin.manifest, artifact]) {
+for (const row of [pin.manifest, ...artifacts]) {
   const bytes = await readFile(join(directory, row.name))
   const sha256 = createHash('sha256').update(bytes).digest('hex')
   assert.equal(bytes.length, row.size, `${row.name}: installed size`)

@@ -186,14 +186,30 @@ try {
       host.distribution,
       '--user',
       'dinkster',
+      '--cd',
+      '/home/dinkster',
       '--exec',
       config.python,
       '-I',
       '-c',
-      'import json,sys; print(json.dumps({"platform":sys.platform,"python":sys.executable}))',
+      'import json,sys; from pathlib import Path; from dinkster_supervisor.environment_state import read_current,read_document; root=Path(sys.argv[1]); generation=read_current(root); snapshot=read_document(root/"builds"/str(generation)/"build.json"); records=[read_document(path) for path in (root/"runtime"/str(generation)).glob("*.json")]; print(json.dumps({"platform":sys.platform,"python":sys.executable,"variant":snapshot["variant"],"runtime":[{"name":r["name"],"pid":r["pid"],"executable":str((Path("/proc")/str(r["pid"])/"exe").resolve(strict=True))} for r in records]}))',
+      '/home/dinkster/projects/home-setup',
     ]),
   )
   assert.equal(receipt.guest.platform, 'linux')
+  assert.equal(receipt.guest.variant, 'linux-cpu')
+  assert(
+    receipt.guest.runtime.some(
+      (row) =>
+        row.name === 'main' && row.pid > 0 && row.executable.startsWith('/'),
+    ),
+  )
+  await request('/api/projects', 'POST', { id: 'wsl-engine-proof' })
+  assert(
+    (await request('/api/projects')).items.some(
+      (project) => project.id === 'wsl-engine-proof',
+    ),
+  )
   const settings = JSON.parse(
     await readFile(join(root, 'environment.json'), 'utf8'),
   )
@@ -223,6 +239,8 @@ try {
         host.distribution,
         '--user',
         'dinkster',
+        '--cd',
+        '/home/dinkster',
         '--exec',
         config.python,
         '-I',

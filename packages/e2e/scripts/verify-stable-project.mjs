@@ -153,15 +153,16 @@ let app
 let page
 const receipt = { channel, manifest, mirrorUrl, mirrorRequests, mirrorFailures }
 async function quit() {
-  const closed = app.waitForEvent('close')
-  await app
-    .evaluate(({ Menu }) => {
-      Menu.getApplicationMenu()
-        .items[0].submenu.items.find((item) => item.label === 'Quit')
-        .click()
-    })
-    .catch(() => undefined)
-  await closed
+  await Promise.all([
+    app.waitForEvent('close'),
+    app
+      .evaluate(({ Menu }) => {
+        Menu.getApplicationMenu()
+          .items[0].submenu.items.find((item) => item.label === 'Quit')
+          .click()
+      })
+      .catch(() => undefined),
+  ])
   app = undefined
   await expect.poll(homeStopped, { timeout: 30_000 }).toBe(true)
 }

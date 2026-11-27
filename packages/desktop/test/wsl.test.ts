@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -24,6 +24,7 @@ vi.mock('node:path', async (original) => {
 
 const filesystemPaths = vi.hoisted(() => new Map<string, string>())
 const guestDisk = vi.hoisted(() => ({ prefix: '', root: '', map(path: unknown): unknown {
+  if (typeof path === 'string' && filesystemPaths.has(path)) return filesystemPaths.get(path)
   // The guest probe sees distinct names even when the fixture disk is on NTFS.
   return typeof path === 'string' && this.prefix && path.startsWith(this.prefix)
     ? this.root + path.slice(this.prefix.length).replaceAll('\\', '/').replace(/\/case-check\/UPPER$/, '/case-check/upper-distinct') : path
@@ -41,7 +42,8 @@ vi.mock('node:fs/promises', async (original) => {
 })
 vi.mock('node:fs', async (original) => {
   const actual = await original<typeof import('node:fs')>()
-  return { ...actual, createReadStream: (path: string) => actual.createReadStream(guestDisk.map(path) as string) }
+  return { ...actual, createReadStream: (path: string) => actual.createReadStream(guestDisk.map(path) as string),
+    createWriteStream: (path: string, options: Parameters<typeof actual.createWriteStream>[1]) => actual.createWriteStream(guestDisk.map(path) as string, options) }
 })
 vi.mock('extract-zip', async (original) => {
   const actual = await original<{ default: typeof import('extract-zip') }>()
@@ -79,6 +81,88 @@ describe('private WSL readiness', () => {
     Object.defineProperty(process, 'arch', { value: 'x64' })
     return new WslHost('C:\\Desktop data', tools)
   }
+
+  it.each(['request', 'window-close'])('cancels only the requesting window download and removes its partial preparation: %s', async (reason) => {
+    host()
+    const root = await mkdtemp(join(tmpdir(), 'dinkster-wsl-cancel-'))
+    const local = new WslHost(root, tools)
+    let entered!: () => void
+    const downloading = new Promise<void>((resolve) => { entered = resolve })
+    vi.stubGlobal('fetch', async (_url: URL, options: { signal: AbortSignal }) => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]))
+        options.signal.addEventListener('abort', () => controller.error(options.signal.reason), { once: true })
+        entered()
+      },
+    })))
+    execute.mockImplementation(async (_file: string, args: string[]) => {
+      const output = (text: string) => ({ stdout: Buffer.from(text) })
+      if (args[0] === '--version') return output('WSL version')
+      if (args[0] === '--help') return output('--name --location')
+      if (args[0] === '--list') return output('User-Ubuntu')
+      throw new Error('Download cancellation must not mutate a distribution')
+    })
+    const job = local.startPrepare('first-window')
+    try {
+      await downloading
+      expect(() => local.cancelJob('other-window', job.id)).toThrow('Unknown WSL job')
+      expect(local.job('first-window', job.id).progress.stage).toBe('downloading-distribution')
+      if (reason === 'window-close') {
+        local.cancelOwner('other-window')
+        expect(local.job('first-window', job.id).state).toBe('running')
+        local.cancelOwner('first-window')
+        expect(local.job('first-window', job.id).state).toBe('cancelling')
+      } else expect(local.cancelJob('first-window', job.id).state).toBe('cancelling')
+      expect(() => local.startPrepare('other-window')).toThrow('still running')
+      await vi.waitFor(() => expect(local.job('first-window', job.id).state).toBe('cancelled'))
+      expect(await readdir(join(root, 'wsl'))).toEqual([])
+      expect((await local.status()).ready).toBe(false)
+    } finally { await local.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('copies real model bytes and removes a cancelled partial copy without changing the source', async () => {
+    const service = host()
+    const root = await mkdtemp(join(tmpdir(), 'dinkster-wsl-copy-'))
+    const source = 'C:\\source-models'
+    const bytes = Buffer.alloc(256 * 1024, 93)
+    const sourceDisk = join(root, 'source')
+    await mkdir(sourceDisk)
+    await writeFile(join(sourceDisk, 'weights.bin'), bytes)
+    filesystemPaths.set(source, sourceDisk)
+    filesystemPaths.set(`${source}\\weights.bin`, join(sourceDisk, 'weights.bin'))
+    guestDisk.prefix = `\\\\wsl.localhost\\${service.distribution}`
+    guestDisk.root = join(root, 'guest')
+    const models = join(guestDisk.root, 'home/dinkster/models')
+    await mkdir(models, { recursive: true })
+    execute.mockImplementation(async (_file: string, args: string[]) => {
+      const output = (text: string) => ({ stdout: Buffer.from(text) })
+      if (args[0] === '--version') return output('WSL version')
+      if (args[0] === '--help') return output('--name --location')
+      if (args[0] === '--list' || args.includes('/etc/dinkster-desktop-owner')) return output(service.distribution)
+      if (args.includes('/etc/wsl.conf')) return output('[automount]\nenabled=false\n[interop]\nenabled=false\nappendWindowsPath=false\n[user]\ndefault=dinkster')
+      if (args.includes('uname')) return output('wsl2')
+      return output('')
+    })
+    try {
+      const controller = new AbortController()
+      await expect(service.copyModels(source, controller.signal, (progress) => {
+        if (progress.stage === 'copying-models' && progress.completed > 0) controller.abort()
+      })).rejects.toMatchObject({ name: 'AbortError' })
+      expect(await readdir(models)).toEqual([])
+      expect(await readFile(join(sourceDisk, 'weights.bin'))).toEqual(bytes)
+      expect(await service.copyModels(source)).toBe('/home/dinkster/models/source-models')
+      expect(await readFile(join(models, 'source-models/weights.bin'))).toEqual(bytes)
+      expect(await readdir(models)).toEqual(['source-models'])
+      await expect(service.copyModels(source)).rejects.toThrow('already exists')
+      const link = join(root, 'source-link')
+      await symlink(sourceDisk, link, 'junction')
+      const linkedSource = 'C:\\linked-models'
+      filesystemPaths.set(linkedSource, link)
+      filesystemPaths.set(`${linkedSource}\\weights.bin`, join(sourceDisk, 'weights.bin'))
+      await expect(service.copyModels(linkedSource)).rejects.toThrow('must not contain links')
+      expect(await readdir(models)).toEqual(['source-models'])
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
 
   it.each(['production', 'qa'] as const)('keeps fallback and selected tools usable with %s services across overlapping operations', async (services) => {
     host()

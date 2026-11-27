@@ -162,6 +162,7 @@ export class HomeProcess {
     let child: ChildProcess | undefined
     try {
       const environment = { ...process.env }
+      if (process.platform === 'win32') environment['DINKSTER_DESKTOP_WSL_CONTEXT'] = join(this.options.dataDirectory, 'wsl-context.json')
       const hostPath = Object.entries(environment).find(([name]) => name.toLowerCase() === 'path')?.[1]
       for (const name of Object.keys(environment)) if (name.toLowerCase() === 'path' || /^PYTHON/i.test(name)) delete environment[name]
       const toolsPath = [dirname(python), ...(process.platform === 'win32' ? [join(dirname(python), 'Scripts')] : [])].join(delimiter)

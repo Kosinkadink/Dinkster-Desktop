@@ -1,4 +1,4 @@
-import type { WslStatus } from './wsl.js'
+import type { WslJob, WslStatus } from './wsl.js'
 
 export interface DesktopInfo {
   readonly appVersion: string
@@ -100,9 +100,11 @@ export type DesktopSaveResult =
 
 export interface DesktopBridge {
   wslStatus(): Promise<WslStatus>
-  prepareWsl(): Promise<WslStatus>
+  prepareWsl(): Promise<WslJob>
   wslProjectRoot(id: string): Promise<string>
-  copyWslModels(): Promise<string | undefined>
+  copyWslModels(): Promise<WslJob | undefined>
+  wslJob(id: string): Promise<WslJob>
+  cancelWslJob(id: string): Promise<WslJob>
   saveFile(bytes: Uint8Array, suggestedName: string): Promise<DesktopSaveResult>
   locale(): Promise<string>
   info(): Promise<DesktopInfo>

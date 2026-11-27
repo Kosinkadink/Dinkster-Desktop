@@ -287,12 +287,31 @@ try {
       'Windows port collision refusal',
     )
     assert.equal(receipt.collisionStatus.state, 'failed')
-    await request(
-      '/api/projects',
-      'POST',
-      { id: 'must-not-reach-windows' },
-      503,
+    receipt.collisionProject = await request('/api/projects', 'POST', {
+      id: 'must-not-reach-windows',
+    })
+    receipt.collisionLibraryProject = JSON.parse(
+      await wsl([
+        '--distribution',
+        host.distribution,
+        '--user',
+        'dinkster',
+        '--cd',
+        '/home/dinkster',
+        '--exec',
+        config.python,
+        '-I',
+        '-c',
+        'import json,sys; from dinkster_library.client import LibraryClient;\nwith LibraryClient(__import__("pathlib").Path(sys.argv[1])) as client: print(json.dumps(client.call("projects.get",id="must-not-reach-windows")))',
+        settings.libraryRoot,
+      ]),
     )
+    assert.equal(receipt.collisionProject.project.id, 'must-not-reach-windows')
+    assert.equal(
+      receipt.collisionLibraryProject.project.uid,
+      receipt.collisionProject.project.uid,
+    )
+    await request('/api/nodes', 'GET', undefined, 503)
     assert(
       receipt.collisionRequests.every(
         (request) =>
@@ -303,7 +322,7 @@ try {
     await new Promise((done) => collision.close(done))
     collision = undefined
     receipt.steps.push(
-      'Home refused an unrelated Windows listener on the guest engine port',
+      'Home refused an unrelated Windows listener while project writes used the guest library',
     )
   } else {
     receipt.log = await request('/supervisor/engine/log')

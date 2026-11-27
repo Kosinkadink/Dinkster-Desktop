@@ -96,7 +96,7 @@ await mkdir(home)
 await mkdir(join(root, 'temporary'))
 await writeFile(
   join(home, 'model-settings.json'),
-  JSON.stringify({ locations: [] }),
+  JSON.stringify({ version: 1, downloadLocation: null, locations: [] }),
 )
 const env = Object.fromEntries(
   Object.entries(process.env).filter(

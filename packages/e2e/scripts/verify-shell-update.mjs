@@ -151,7 +151,7 @@ if (process.platform === 'win32') {
 await mkdir(env.DINKSTER_HOME, { recursive: process.platform !== 'win32' })
 await writeFile(
   join(env.DINKSTER_HOME, 'model-settings.json'),
-  JSON.stringify({ locations: [] }),
+  JSON.stringify({ version: 1, downloadLocation: null, locations: [] }),
 )
 env.APPIMAGE_EXTRACT_AND_RUN = '1'
 env.TEMP = env.TMP = join(root, 'temp')

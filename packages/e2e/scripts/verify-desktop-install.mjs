@@ -41,7 +41,7 @@ Object.assign(env, {
   PATH: process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32') : '/usr/bin:/bin',
 })
 await mkdir(env.DINKSTER_HOME)
-await writeFile(join(env.DINKSTER_HOME, 'model-settings.json'), JSON.stringify({ locations: [] }))
+await writeFile(join(env.DINKSTER_HOME, 'model-settings.json'), JSON.stringify({ version: 1, downloadLocation: null, locations: [] }))
 let previousInstance
 for (const launch of ['first-run', 'restart']) {
   const app = await electron.launch({

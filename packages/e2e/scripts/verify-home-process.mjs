@@ -27,7 +27,7 @@ for (const [name, path] of Object.entries({
 }
 await writeFile(
   join(root, 'home/model-settings.json'),
-  JSON.stringify({ locations: [] }),
+  JSON.stringify({ version: 1, downloadLocation: null, locations: [] }),
 )
 process.env.CUDA_VISIBLE_DEVICES = ''
 process.env.DINKSTER_ACCELERATOR = 'cpu'

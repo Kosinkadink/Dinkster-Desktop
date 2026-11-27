@@ -68,7 +68,7 @@ Object.assign(env, {
 await mkdir(env.DINKSTER_HOME)
 await writeFile(
   join(env.DINKSTER_HOME, 'model-settings.json'),
-  JSON.stringify({ locations: [] }),
+  JSON.stringify({ version: 1, downloadLocation: null, locations: [] }),
 )
 const homeUrl = 'http://127.0.0.1:3638'
 async function homeStopped() {

@@ -55,7 +55,7 @@ Object.assign(env, {
 await mkdir(env.DINKSTER_HOME, { recursive: true })
 await writeFile(
   join(env.DINKSTER_HOME, 'model-settings.json'),
-  JSON.stringify({ locations: [] }),
+  JSON.stringify({ version: 1, downloadLocation: null, locations: [] }),
 )
 const require = createRequire(join(repository, 'packages/desktop/package.json'))
 const results = []

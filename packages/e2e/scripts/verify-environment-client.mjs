@@ -48,7 +48,7 @@ Object.assign(env, {
 await mkdir(env.HOME)
 await writeFile(
   join(env.HOME, 'model-settings.json'),
-  JSON.stringify({ locations: [] }),
+  JSON.stringify({ version: 1, downloadLocation: null, locations: [] }),
 )
 const executablePath =
   process.env.DINKSTER_ELECTRON_EXECUTABLE ??

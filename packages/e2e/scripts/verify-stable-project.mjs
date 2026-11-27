@@ -168,7 +168,12 @@ async function quit() {
 try {
   app = await electron.launch({
     executablePath,
-    args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`],
+    args: [
+      '--no-sandbox',
+      // Hosted macOS checks must not wait for an interactive Keychain prompt.
+      ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
+      `--user-data-dir=${join(root, 'electron')}`,
+    ],
     env,
     timeout: 60_000,
   })

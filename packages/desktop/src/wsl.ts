@@ -1,17 +1,24 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { lstat, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
-import { dirname, join, posix, win32 } from 'node:path'
+import { lstat, mkdir, mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises'
+import { join, posix, win32 } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
 import { acquireEnvironmentTools, type EnvironmentToolsInput } from './environment-tools.js'
+import { download, verifyFile } from './io.js'
 import type { DesktopServices } from './services.js'
 
 const execute = promisify(execFile)
 const home = '/home/dinkster'
 const ownerFile = '/etc/dinkster-desktop-owner'
 const configuration = '[automount]\nenabled=false\n[interop]\nenabled=false\nappendWindowsPath=false\n[user]\ndefault=dinkster'
+// Ubuntu-24.04 amd64 entry in Microsoft's WSL distributions/DistributionInfo.json.
+const rootfs = {
+  url: 'https://releases.ubuntu.com/24.04.5/ubuntu-24.04.5-wsl-amd64.wsl',
+  sha256: 'bb415d824822c4b878125729af451a5d18fb13d1cf5cbed9a7393ad64ac6039e',
+  size: 388975696,
+}
 
 export interface WslStatus {
   readonly available: boolean
@@ -66,6 +73,7 @@ export class WslHost {
   readonly distribution: string
   private readonly commands = new Map<string, Promise<string>>()
   private readonly jobs = new Map<string, { owner: string; value: WslJob }>()
+  private readonly pendingCleanup = new Set<() => Promise<void>>()
   private active: { controller: AbortController; done: Promise<void> } | undefined
 
   constructor(private readonly directory: string, private readonly bundledTools: EnvironmentToolsInput) {
@@ -98,10 +106,18 @@ export class WslHost {
   async close(): Promise<void> {
     this.active?.controller.abort()
     await this.active?.done
+    for (const action of this.pendingCleanup) await this.cleanup(action)
+  }
+
+  private async cleanup(action: () => Promise<void>): Promise<void> {
+    this.pendingCleanup.add(action)
+    await action()
+    this.pendingCleanup.delete(action)
   }
 
   private startJob(owner: string, operation: WslJob['operation'], action: (signal: AbortSignal, progress: (value: WslProgress) => void) => Promise<WslStatus | string>): WslJob {
     if (this.active) throw new Error('Another WSL operation is still running')
+    if (this.pendingCleanup.size) throw new Error('WSL cleanup is incomplete; close Desktop to retry cleanup before starting another operation')
     const id = randomUUID()
     const controller = new AbortController()
     const entry = { owner, value: { id, operation, state: 'running', progress: { stage: 'checking', completed: 0, total: null } } as WslJob }
@@ -120,11 +136,11 @@ export class WslHost {
     return entry.value
   }
 
-  private async wsl(args: readonly string[]): Promise<string> {
+  private async wsl(args: readonly string[], signal?: AbortSignal): Promise<string> {
     try {
       const result = await execute('wsl.exe', [...args], {
         // Environment history and restore results grow with sealed software inventories.
-        encoding: 'buffer', windowsHide: true, timeout: 30 * 60_000, maxBuffer: Infinity,
+        encoding: 'buffer', windowsHide: true, timeout: 30 * 60_000, maxBuffer: Infinity, ...(signal ? { signal } : {}),
       })
       return decode(result.stdout)
     } catch (error) {
@@ -139,6 +155,25 @@ export class WslHost {
   private command(user: 'root' | 'dinkster', ...args: string[]): Promise<string> {
     return this.wsl(['--distribution', this.distribution, '--user', user, '--cd', user === 'root' ? '/' : home, '--exec', '/usr/bin/env', '-i',
       `HOME=${user === 'root' ? '/root' : home}`, 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', ...args])
+  }
+
+  private async removePreparation(location: string): Promise<void> {
+    // A failed import can register before wsl.exe returns an error. Check its
+    // actual disk path, not just the name, before deleting a registration.
+    const { stdout } = await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      String.raw`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $key='HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'; @(if (Test-Path $key) { Get-ChildItem $key | Get-ItemProperty | Select-Object DistributionName,BasePath }) | ConvertTo-Json -Compress`],
+    { encoding: 'buffer', windowsHide: true, timeout: 30_000 })
+    const text = decode(stdout)
+    const registrations: { DistributionName: string; BasePath: string }[] = text ? [JSON.parse(text)].flat() : []
+    const canonical = (path: string) => win32.resolve(path.replace(/^\\\\\?\\/, '')).toLowerCase()
+    const disk = join(location, 'disk')
+    const owned = registrations.filter((entry) => canonical(entry.BasePath) === canonical(disk))
+    if (owned.some((entry) => entry.DistributionName !== this.distribution)
+      || registrations.some((entry) => entry.DistributionName === this.distribution && canonical(entry.BasePath) !== canonical(disk))) {
+      throw new Error('WSL registration ownership changed; its disk was not removed')
+    }
+    if (owned.length) await this.wsl(['--unregister', this.distribution])
+    await rm(location, { recursive: true, force: true })
   }
 
   async status(): Promise<WslStatus> {
@@ -185,20 +220,31 @@ export class WslHost {
       throw new Error('The existing private distribution is incomplete. It was not changed; repair it before preparing WSL again.')
     }
     signal?.throwIfAborted()
-    const location = join(this.directory, 'wsl', this.distribution)
-    await mkdir(dirname(location), { recursive: true })
-    let installed = false
+    const parent = join(this.directory, 'wsl')
+    await mkdir(parent, { recursive: true })
+    const location = await mkdtemp(join(parent, 'prepare-'))
+    let importing = false
     try {
+      const archive = join(location, 'ubuntu.wsl')
+      progress({ stage: 'downloading-distribution', completed: 0, total: rootfs.size })
+      await download(rootfs.url, archive, signal, rootfs.size, (completed) => {
+        progress({ stage: 'downloading-distribution', completed, total: rootfs.size })
+      })
+      await verifyFile(archive, rootfs.sha256)
+      signal?.throwIfAborted()
       progress({ stage: 'installing-distribution', completed: 0, total: 3 })
       // Registration must finish before cancellation can safely unregister exactly
       // the distribution this operation created, rather than an in-flight install.
-      await this.wsl(['--install', 'Ubuntu-24.04', '--name', this.distribution, '--location', location, '--version', '2', '--no-launch'])
-      installed = true
+      await mkdir(join(location, 'disk'))
+      importing = true
+      await this.wsl(['--import', this.distribution, join(location, 'disk'), archive, '--version', '2'])
+      await rm(archive)
       signal?.throwIfAborted()
       await this.command('root', '/bin/sh', '-c', 'printf "%s\\n" "$1" > /etc/dinkster-desktop-owner', 'dinkster-owner', this.distribution)
       progress({ stage: 'configuring-distribution', completed: 1, total: 3 })
       signal?.throwIfAborted()
-      await this.command('root', '/bin/sh', '-ec', `
+      await this.wsl(['--distribution', this.distribution, '--user', 'root', '--cd', '/', '--exec', '/usr/bin/env', '-i',
+        'HOME=/root', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', '/bin/sh', '-ec', `
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends bubblewrap ca-certificates
@@ -206,7 +252,7 @@ id dinkster >/dev/null 2>&1 || useradd --create-home --shell /bin/bash dinkster
 mkdir -p /home/dinkster/projects /home/dinkster/models /home/dinkster/tools
 chown dinkster:dinkster /home/dinkster/projects /home/dinkster/models /home/dinkster/tools
 printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'appendWindowsPath=false' '[user]' 'default=dinkster' > /etc/wsl.conf
-`)
+`], signal)
       signal?.throwIfAborted()
       await this.wsl(['--terminate', this.distribution])
       progress({ stage: 'checking-distribution', completed: 2, total: 3 })
@@ -216,12 +262,12 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
       progress({ stage: 'ready', completed: 3, total: 3 })
       return ready
     } catch (error) {
-      if (installed) {
-        progress({ stage: 'removing-distribution', completed: 0, total: null })
-        // Unregister also stops guest commands before removing this new disk.
-        try { await this.wsl(['--unregister', this.distribution]) }
-        catch (cleanup) { throw new AggregateError([error, cleanup], 'WSL preparation failed and its new distribution could not be removed') }
-      }
+      progress({ stage: 'removing-distribution', completed: 0, total: null })
+      try {
+        // Unregister stops guest commands even if cancellation only stopped the
+        // Windows client. Before import, only our temporary download exists.
+        await this.cleanup(() => importing ? this.removePreparation(location) : rm(location, { recursive: true, force: true }))
+      } catch (cleanup) { throw new AggregateError([error, cleanup], 'WSL preparation failed and its new distribution could not be removed') }
       throw error
     }
   }
@@ -308,7 +354,7 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
       await rename(stage, wslWindowsPath(this.distribution, target))
     } catch (error) {
       progress({ stage: 'removing-partial-copy', completed, total })
-      await rm(stage, { recursive: true, force: true })
+      await this.cleanup(() => rm(stage, { recursive: true, force: true }))
       throw error
     }
     return target

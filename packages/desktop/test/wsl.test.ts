@@ -82,36 +82,37 @@ describe('private WSL readiness', () => {
     return new WslHost('C:\\Desktop data', tools)
   }
 
-  it('cancels only the requesting window preparation job and removes its new distribution before finishing', async () => {
+  it('cancels only the requesting window download and removes its partial preparation', async () => {
     host()
     const root = await mkdtemp(join(tmpdir(), 'dinkster-wsl-cancel-'))
     const local = new WslHost(root, tools)
-    const registered = new Set(['User-Ubuntu'])
     let entered!: () => void
-    let release!: () => void
-    const installing = new Promise<void>((resolve) => { entered = resolve })
-    const finishInstall = new Promise<void>((resolve) => { release = resolve })
+    const downloading = new Promise<void>((resolve) => { entered = resolve })
+    vi.stubGlobal('fetch', async (_url: URL, options: { signal: AbortSignal }) => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]))
+        options.signal.addEventListener('abort', () => controller.error(options.signal.reason), { once: true })
+        entered()
+      },
+    })))
     execute.mockImplementation(async (_file: string, args: string[]) => {
       const output = (text: string) => ({ stdout: Buffer.from(text) })
       if (args[0] === '--version') return output('WSL version')
       if (args[0] === '--help') return output('--name --location')
-      if (args[0] === '--list') return output([...registered].join('\n'))
-      if (args[0] === '--install') { entered(); await finishInstall; registered.add(args[args.indexOf('--name') + 1]!); return output('') }
-      if (args[0] === '--unregister') { registered.delete(args[1]!); return output('') }
-      throw new Error('Unexpected configuration of a cancelled distribution')
+      if (args[0] === '--list') return output('User-Ubuntu')
+      throw new Error('Download cancellation must not mutate a distribution')
     })
     const job = local.startPrepare('first-window')
     try {
-      await installing
+      await downloading
       expect(() => local.cancelJob('other-window', job.id)).toThrow('Unknown WSL job')
-      expect(local.job('first-window', job.id).progress.stage).toBe('installing-distribution')
+      expect(local.job('first-window', job.id).progress.stage).toBe('downloading-distribution')
       expect(local.cancelJob('first-window', job.id).state).toBe('cancelling')
-      release()
       await local.close()
       expect(local.job('first-window', job.id).state).toBe('cancelled')
-      expect([...registered]).toEqual(['User-Ubuntu'])
+      expect(await readdir(join(root, 'wsl'))).toEqual([])
       expect((await local.status()).ready).toBe(false)
-    } finally { release(); await local.close(); await rm(root, { recursive: true, force: true }) }
+    } finally { await local.close(); await rm(root, { recursive: true, force: true }) }
   })
 
   it('copies real model bytes and removes a cancelled partial copy without changing the source', async () => {

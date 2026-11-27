@@ -18,7 +18,8 @@ export async function verifyFile(path: string, expected: string): Promise<void> 
   }
 }
 
-export async function download(url: string, destination: string, signal?: AbortSignal, maximumBytes = Infinity): Promise<void> {
+export async function download(url: string, destination: string, signal?: AbortSignal, maximumBytes = Infinity,
+  progress?: (received: number, total: number | null) => void): Promise<void> {
   signal ??= AbortSignal.timeout(10 * 60_000)
   const secure = new URL(url).protocol === 'https:'
   const original = url
@@ -50,6 +51,7 @@ export async function download(url: string, destination: string, signal?: AbortS
       const bounded = new Transform({
         transform(chunk: Buffer, _encoding, callback) {
           received += chunk.length
+          progress?.(received, declared === null ? null : Number(declared))
           if (received > maximumBytes) callback(new Error('download exceeds the declared size'))
           else callback(null, chunk)
         },

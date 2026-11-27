@@ -31,8 +31,14 @@ describe('artifact downloads', () => {
       await expect(download(url, destination, undefined, 4)).rejects.toThrow('exceeds the declared size')
       expect(await readFile(destination, 'utf8')).toBe('original')
       expect(existsSync(`${destination}.part`)).toBe(false)
-      await download(url, destination, undefined, 5)
+      const controller = new AbortController()
+      await expect(download(url, destination, controller.signal, 5, () => controller.abort())).rejects.toMatchObject({ name: 'AbortError' })
+      expect(await readFile(destination, 'utf8')).toBe('original')
+      expect(existsSync(`${destination}.part`)).toBe(false)
+      const progress: number[] = []
+      await download(url, destination, undefined, 5, (received) => progress.push(received))
       expect(await readFile(destination, 'utf8')).toBe('12345')
+      expect(progress.at(-1)).toBe(5)
     } finally {
       server.closeAllConnections()
       await new Promise<void>((resolve) => server.close(() => resolve()))

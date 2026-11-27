@@ -579,6 +579,7 @@ ipcMain.handle('desktop:wsl-project-root', async (event, id: unknown) => {
   if (!validProjectId(id)) throw new Error('Invalid WSL project id')
   const status = await wslHost.status()
   if (!status.ready) throw new Error(status.detail)
+  await wslHost.configureHome()
   return wslHost.projectRoot(id)
 })
 ipcMain.handle('desktop:wsl-copy-models', (event) => serializeLifecycle(async () => {

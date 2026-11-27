@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { lstat, mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join, posix, win32 } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
@@ -281,6 +281,16 @@ printf '%s\\n' '[automount]' 'enabled=false' '[interop]' 'enabled=false' 'append
   projectRoot(id: string): string {
     if (!/^[a-z0-9][a-z0-9-]{0,127}$/.test(id)) throw new Error('Invalid WSL project id')
     return wslWindowsPath(this.distribution, `${home}/projects/${id}`)
+  }
+
+  async configureHome(): Promise<void> {
+    const python = await this.tools(this.bundledTools)
+    const path = join(this.directory, 'wsl-context.json')
+    const pending = `${path}-${randomUUID()}.pending`
+    try {
+      await writeFile(pending, JSON.stringify({ distribution: this.distribution, python }), { flag: 'wx' })
+      await rename(pending, path)
+    } finally { await rm(pending, { force: true }) }
   }
 
   private async tools(input: EnvironmentToolsInput): Promise<string> {

@@ -38,6 +38,8 @@ const executablePath = process.env.DINKSTER_DESKTOP_EXECUTABLE
   : createRequire(join(repository, 'packages/desktop/package.json'))('electron')
 const baseArgs = [
   '--no-sandbox',
+  // Hosted macOS checks must not wait for an interactive Keychain prompt.
+  ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
   `--user-data-dir=${join(root, 'electron')}`,
   ...(process.env.DINKSTER_DESKTOP_EXECUTABLE
     ? []

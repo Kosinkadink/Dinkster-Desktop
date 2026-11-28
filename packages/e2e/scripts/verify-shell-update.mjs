@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { basename, join, resolve } from 'node:path'
 import { Transform } from 'node:stream'
-import { _electron as electron } from '@playwright/test'
+import { _electron as electron, expect } from '@playwright/test'
 
 // Supply real packaged builds, not a development Electron process or a fake updater.
 const executable = resolve(process.env.DINKSTER_UPDATE_OLD_EXECUTABLE ?? '')
@@ -37,6 +37,24 @@ assert(
   'Set DINKSTER_UPDATE_OLD_EXECUTABLE, DINKSTER_UPDATE_RELEASE, DINKSTER_UPDATE_PROOF_ROOT and DINKSTER_UPDATE_EXPECTED_VERSION',
 )
 await mkdir(root)
+const homeUrl = 'http://127.0.0.1:3638'
+async function homeStopped() {
+  try {
+    await fetch(`${homeUrl}/supervisor/status`, {
+      signal: AbortSignal.timeout(2000),
+    })
+    return false
+  } catch (error) {
+    if (error.cause?.code === 'ECONNREFUSED') return true
+    if (error.cause?.code === 'ECONNRESET') return false
+    throw error
+  }
+}
+assert.equal(
+  await homeStopped(),
+  true,
+  'Leave an existing Home on port 3638 alone',
+)
 const requests = []
 const server = createServer(async (request, response) => {
   const name = decodeURIComponent(
@@ -90,7 +108,6 @@ const server = createServer(async (request, response) => {
     response.writeHead(404).end()
   }
 })
-await new Promise((done) => server.listen(0, '127.0.0.1', done))
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([name, value]) =>
@@ -101,8 +118,11 @@ const env = Object.fromEntries(
   ),
 )
 env.DINKSTER_DESKTOP_DATA = join(root, 'data')
-if (!publicFeed)
-  env.DINKSTER_UPDATE_FEED_URL = `http://127.0.0.1:${server.address().port}`
+env.HOME = env.USERPROFILE = join(root, 'home')
+env.DINKSTER_HOME = join(env.HOME, '.dinkster')
+env.DINKSTER_ACCELERATOR = 'cpu'
+env.CUDA_VISIBLE_DEVICES = ''
+env.XDG_DATA_HOME = join(root, 'xdg-data')
 env.XDG_CONFIG_HOME = join(root, 'config')
 env.XDG_CACHE_HOME = join(root, 'cache')
 env.APPDATA = join(root, 'roaming')
@@ -112,6 +132,9 @@ if (process.platform === 'win32') {
   // Use only the disposable hosted user's normal paths for the entire update.
   env.APPDATA = process.env.APPDATA
   env.LOCALAPPDATA = process.env.LOCALAPPDATA
+  env.HOME = env.USERPROFILE = process.env.USERPROFILE
+  // The installer successor must use the same default Home without overrides.
+  env.DINKSTER_HOME = join(env.USERPROFILE, '.dinkster')
   env.DINKSTER_DESKTOP_DATA = join(env.LOCALAPPDATA, 'Dinkster Desktop')
   assert.equal(
     await stat(env.DINKSTER_DESKTOP_DATA).then(
@@ -125,8 +148,14 @@ if (process.platform === 'win32') {
     'The hosted user must not have existing Desktop data',
   )
 }
+await mkdir(env.DINKSTER_HOME, { recursive: process.platform !== 'win32' })
+await writeFile(
+  join(env.DINKSTER_HOME, 'model-settings.json'),
+  JSON.stringify({ version: 1, downloadLocation: null, locations: [] }),
+)
 env.APPIMAGE_EXTRACT_AND_RUN = '1'
 env.TEMP = env.TMP = join(root, 'temp')
+env.TMPDIR = env.TEMP
 await mkdir(env.TEMP)
 const launch = (path = executable, recordNetwork = false) =>
   electron.launch({
@@ -141,9 +170,99 @@ const launch = (path = executable, recordNetwork = false) =>
 const sentinel = join(env.DINKSTER_DESKTOP_DATA, 'update-retains-user-data.txt')
 await mkdir(env.DINKSTER_DESKTOP_DATA, { recursive: true })
 await writeFile(sentinel, 'retained user data\n')
+await new Promise((done) => server.listen(0, '127.0.0.1', done))
+if (!publicFeed)
+  env.DINKSTER_UPDATE_FEED_URL = `http://127.0.0.1:${server.address().port}`
 let app
 let installerDriver
 let before
+let successor
+const lock = join(env.DINKSTER_DESKTOP_DATA, 'engine', 'lifecycle.lock')
+const homes = []
+async function sharedHome() {
+  const page = await app.firstWindow({ timeout: 120_000 })
+  await expect(page).toHaveURL(
+    new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),
+  )
+  await expect(page.locator('.dinkster-window-toolbar-host')).toHaveAttribute(
+    'data-desktop-chrome',
+    '',
+  )
+  const response = await page.request.get(`${homeUrl}/supervisor/status`)
+  assert.equal(response.status(), 200)
+  const status = await response.json()
+  assert.equal(status.role, 'home')
+  assert.equal(status.state, 'stopped')
+  assert(Number.isSafeInteger(status.supervisor.pid))
+  assert.equal(typeof status.instance, 'string')
+  assert(status.instance.length > 0)
+  homes.push(status)
+  return page
+}
+async function quit() {
+  const closed = app.waitForEvent('close', { timeout: 30_000 })
+  await app.evaluate(({ app }) => app.quit()).catch(() => undefined)
+  await closed
+  app = undefined
+  await expect.poll(homeStopped, { timeout: 30_000 }).toBe(true)
+}
+async function closeSuccessor(owner) {
+  assert.deepEqual(JSON.parse(await readFile(lock, 'utf8')), owner)
+  // Use the native window-close path, not SIGTERM, so detached Home stops too.
+  if (process.platform === 'win32') {
+    execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        `$ErrorActionPreference = 'Stop'
+$process = Get-Process -Id ${owner.pid}
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+do {
+  $process.Refresh()
+  if ($process.HasExited) { throw 'Successor exited before its native window opened' }
+  if ($process.MainWindowHandle -ne 0) { break }
+  Start-Sleep -Milliseconds 100
+} while ([DateTime]::UtcNow -lt $deadline)
+if (-not $process.CloseMainWindow()) { throw 'Successor has no closeable native window' }`,
+      ],
+      { env, timeout: 35_000 },
+    )
+  } else {
+    let ids
+    await expect
+      .poll(
+        () => {
+          ids = execFileSync('wmctrl', ['-lp'], {
+            env,
+            encoding: 'utf8',
+            timeout: 10_000,
+          })
+            .trim()
+            .split('\n')
+            .map((line) => line.trim().split(/\s+/))
+            .filter((fields) => fields[2] === String(owner.pid))
+            .map((fields) => fields[0])
+          return ids.length
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(1)
+    execFileSync('wmctrl', ['-ic', ids[0]], { env, timeout: 10_000 })
+  }
+  const stopped = Date.now() + 30_000
+  for (;;) {
+    try {
+      process.kill(owner.pid, 0)
+    } catch {
+      break
+    }
+    assert(Date.now() < stopped, 'Successor did not stop')
+    await new Promise((done) => setTimeout(done, 100))
+  }
+  await expect.poll(homeStopped, { timeout: 30_000 }).toBe(true)
+  await assert.rejects(readFile(lock), { code: 'ENOENT' })
+}
 try {
   app = await launch(executable, publicFeed)
   before = await app.evaluate(({ app }) => ({
@@ -153,8 +272,15 @@ try {
   }))
   assert(before.packaged)
   assert.notEqual(before.version, expected)
-  const page = await app.firstWindow({ timeout: 120_000 })
-  await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
+  let page = await app.firstWindow({ timeout: 120_000 })
+  // A published predecessor can still have the removed Desktop manager.
+  // The updated successor must use shared Home, never this old bridge.
+  const historicalManager = await page.evaluate(
+    () => typeof window.dinksterProjects !== 'undefined',
+  )
+  if (historicalManager)
+    await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor()
+  else page = await sharedHome()
   const channel = before.version.includes('-rc.') ? 'rc' : 'latest'
   const manifest = `${channel}${process.platform === 'linux' ? '-linux' : ''}.yml`
   if (!publicFeed)
@@ -175,8 +301,8 @@ try {
   )
   if (corrupt || unavailable || signatureRefusal) {
     const startupRequests = requests.slice()
-    // Projects is deliberately not a trusted desktop renderer. Startup finishes
-    // before it opens; confirm the same real feed via the main-process updater.
+    // Shared Home cannot initiate an update. Startup finishes before it opens;
+    // confirm the same real feed via the main-process updater.
     const update = await app.evaluate(async ({ app }, download) => {
       const require = process
         .getBuiltinModule('node:module')
@@ -253,6 +379,8 @@ try {
           update,
           startupRequests,
           requests,
+          homes,
+          historicalManager,
         },
         null,
         2,
@@ -267,8 +395,7 @@ try {
       attempts: 0,
     })
     await page.screenshot({ path: join(root, 'download-ready.png') })
-    await app.close()
-    app = undefined
+    await quit()
     if (publicFeed) {
       const network = await readFile(join(root, 'network.json'), 'utf8')
       assert(
@@ -312,7 +439,6 @@ try {
       console.error(error)
       process.exitCode = 1
     })
-    const lock = join(env.DINKSTER_DESKTOP_DATA, 'engine', 'lifecycle.lock')
     const deadline = Date.now() + 120_000
     let owner
     for (;;) {
@@ -322,6 +448,7 @@ try {
         const pending = JSON.parse(await readFile(marker, 'utf8')).pending
         if (!pending && candidate.pid !== before.pid) {
           owner = candidate
+          successor = candidate
           break
         }
       } catch {}
@@ -355,27 +482,39 @@ try {
           .digest('hex'),
       )
     }
-    // The successor cleared its own pending version. Reopen the replacement
-    // executable under Playwright as an independent runtime-version check.
-    process.kill(owner.pid, 'SIGTERM')
-    const stopped = Date.now() + 30_000
-    for (;;) {
-      try {
-        process.kill(owner.pid, 0)
-      } catch {
-        break
-      }
-      assert(Date.now() < stopped, 'Successor did not stop')
-      await new Promise((done) => setTimeout(done, 100))
-    }
+    let successorHome
+    await expect
+      .poll(
+        async () => {
+          try {
+            const response = await fetch(`${homeUrl}/supervisor/status`, {
+              signal: AbortSignal.timeout(2000),
+            })
+            assert(response.ok)
+            successorHome = await response.json()
+            return (
+              successorHome.role === 'home' && successorHome.state === 'stopped'
+            )
+          } catch {
+            return false
+          }
+        },
+        { timeout: 120_000 },
+      )
+      .toBe(true)
+    if (homes.length) assert.notEqual(successorHome.instance, homes[0].instance)
+    assert(Number.isSafeInteger(successorHome.supervisor.pid))
+    assert.equal(typeof successorHome.instance, 'string')
+    assert(successorHome.instance.length > 0)
+    homes.push(successorHome)
+    await closeSuccessor(owner)
+    successor = undefined
+    // Reopen independently to verify the installed runtime, not just its marker.
     app = await launch(artifact)
     assert.equal(await app.evaluate(({ app }) => app.getVersion()), expected)
-    await (await app.firstWindow())
-      .getByRole('heading', { name: 'Projects', exact: true })
-      .waitFor()
-    await (
-      await app.firstWindow()
-    ).screenshot({ path: join(root, 'updated.png') })
+    const updatedPage = await sharedHome()
+    assert.notEqual(homes.at(-1).instance, successorHome.instance)
+    await updatedPage.screenshot({ path: join(root, 'updated.png') })
     await writeFile(
       join(root, 'result.json'),
       JSON.stringify(
@@ -384,11 +523,16 @@ try {
           expectedVersion: expected,
           runtimeVersionVerified: true,
           successorPid: owner.pid,
+          successorClosedNatively: true,
+          successorHomeStopped: true,
+          successorLeaseReleased: true,
           userDataRetained: true,
           pendingClearedBySuccessor: true,
           installedArtifact: artifact,
           sha256,
           requests,
+          homes,
+          historicalManager,
           desktopLog: await readFile(
             join(env.DINKSTER_DESKTOP_DATA, 'logs', 'desktop.log'),
             'utf8',
@@ -466,7 +610,11 @@ $processes | Select-Object Id,ProcessName,Path,MainWindowTitle | ConvertTo-Json
   throw error
 } finally {
   installerDriver?.kill()
-  await app?.close().catch(() => undefined)
-  server.closeAllConnections()
-  await new Promise((done) => server.close(done))
+  try {
+    if (app) await quit()
+    if (successor) await closeSuccessor(successor)
+  } finally {
+    server.closeAllConnections()
+    await new Promise((done) => server.close(done))
+  }
 }

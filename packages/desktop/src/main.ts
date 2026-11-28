@@ -1,163 +1,191 @@
-import { dirname, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isAbsolute, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { createServer } from 'node:net'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, session, shell, Tray } from 'electron'
 import updater from 'electron-updater'
 import { applicationIcon, showAbout, trayIcon, windowBackground } from './branding.js'
-import {
-  defaultDataDirectory,
-  desktopStorageBytes,
-  redactDiagnosticText,
-  systemCheck,
-} from './desktop-manager.js'
+import { defaultDataDirectory, desktopStorageBytes, redactDiagnosticText, systemCheck } from './desktop-manager.js'
 import { acquireLifecycleLease, type LifecycleLease } from './lifecycle-lease.js'
 import { LifecycleQueue } from './lifecycle-queue.js'
+import { HomeProcess, type HomeStatus } from './home-process.js'
 import { isTrustedDesktopIpc } from './ipc-security.js'
 import { assetLocations, chooseDirectory, dropResolutionSupported, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from './local-files.js'
 import { saveFile } from './save-file.js'
 import { CredentialStore, credentialOrigin, hasAuthorizationHeader, type CredentialCipher } from './credential-store.js'
 import { deepLinkFromArgv, parseDeepLink } from './deep-link.js'
 import { RotatingLog } from './rotating-log.js'
-import {
-  RemoteWorkerFileGrants,
-  RemoteWorkerLifecycle,
-} from './remote-workers.js'
-import { desktopTitle, engineServices, parseDesktopServices } from './services.js'
-import { packActivation } from './pack-activation.js'
+import { RemoteWorkerFileGrants, RemoteWorkerLifecycle } from './remote-workers.js'
+import { desktopTitle, parseDesktopServices } from './services.js'
 import { ShellUpdater } from './shell-updater.js'
-import { parseProject, readProjects, saveProject, serverUrl, writeProjects, type DesktopProject } from './projects.js'
-import { EnvironmentClient, type EnvironmentRequest, type EnvironmentResult, type LibraryProject } from './environment.js'
-import { DesktopLibrary, type LibraryFork } from './library.js'
-import { WslHost, wslLinuxPath, wslLocation } from './wsl.js'
+import { EnvironmentClient } from './environment.js'
+import { WslHost, wslLinuxPath } from './wsl.js'
 import toolsRelease from './environment-tools-release.json' with { type: 'json' }
-import { projectHardware } from './hardware.js'
-import { createWebHost, type WebHost } from './web-host.js'
-import { createProjectGateway, PROJECT_INSTALL_HEADER, type ProjectGateway } from './project-gateway.js'
-import { writeFileAtomic } from './atomic-file.js'
 import { denyRendererPermissions, secureWebPreferences } from './security.js'
 import { installWindowChrome, readWindowChrome, windowChromeOptions } from './window-chrome.js'
 import {
-  addChildWindow,
-  addWorkspaceWindow,
-  defaultWindowLayout,
-  normalizeWindowBounds,
-  readWindowLayout,
-  removeWindow,
-  restoreChildWindows,
-  setWorkspaceProject,
-  updateWindowPlacement,
-  validProjectId,
-  writeWindowLayout,
-  type ChildWindow,
-  type WindowLayout,
-  type WorkspaceWindow,
+  addChildWindow, addWorkspaceWindow, defaultWindowLayout, normalizeWindowBounds,
+  readWindowLayout, removeWindow, restoreChildWindows, setWorkspaceProject,
+  updateWindowPlacement, validProjectId, writeWindowLayout,
+  type ChildWindow, type WindowLayout, type WorkspaceWindow,
 } from './window-layout.js'
-import type {
-  DesktopDeepLink,
-  DesktopInfo,
-  DesktopPanelPlacement,
-  DesktopWindowContext,
-  DesktopWindowLayout,
-} from './types.js'
+import type { DesktopDeepLink, DesktopInfo, DesktopPanelPlacement, DesktopWindowContext, DesktopWindowLayout } from './types.js'
 
 const { autoUpdater } = updater
 const services = parseDesktopServices(process.argv)
-// Child tools inherit only this launch's selection, never an inherited engine choice.
 process.env['DINKSTER_SERVICES'] = services
-let window: BrowserWindow | undefined
-let projectWindow: BrowserWindow | undefined
-let libraryWindow: BrowserWindow | undefined
-const remoteWindows = new Map<BrowserWindow, { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; libraryProject?: string; libraryUid?: string; environmentId?: string; folderProject: string | undefined; document: number; development: boolean }>()
-const localEngines = new Map<string, { root: string; engine: string }>()
 const dataDirectory = process.env['DINKSTER_DESKTOP_DATA'] ?? defaultDataDirectory()
-const wslHost = new WslHost(dataDirectory, {
+const appDirectory = app.isPackaged ? join(process.resourcesPath, 'app') : join(app.getAppPath(), '..', 'app', 'dist')
+const tools = app.isPackaged ? {
+  manifest: join(process.resourcesPath, 'tools', toolsRelease.manifest.name),
+  sha256: toolsRelease.manifest.sha256,
+  release: join(process.resourcesPath, 'tools'),
+} : {
   label: toolsRelease.label,
   manifest: `https://releases.dinkster.org/tools/${toolsRelease.label}/tools-manifest.json`,
   sha256: toolsRelease.manifest.sha256,
   release: `https://releases.dinkster.org/tools/${toolsRelease.label}`,
-})
+}
+const home = new HomeProcess({ frontend: appDirectory, dataDirectory, tools })
+let homeIdentity: HomeStatus | undefined
+const wslHost = new WslHost(dataDirectory, tools)
 if (app.isPackaged && process.platform === 'win32') {
   process.env['DINKSTER_MXC_EXECUTABLE'] = join(process.resourcesPath, 'sandbox', 'wxc-exec.exe')
 }
-const environmentClient = new EnvironmentClient(undefined, undefined, undefined, app.isPackaged ? {
-  manifest: join(process.resourcesPath, 'tools', toolsRelease.manifest.name),
-  sha256: toolsRelease.manifest.sha256,
-  release: join(process.resourcesPath, 'tools'),
-  cacheRoot: join(app.getPath('userData'), 'environment-tools'),
-} : undefined, app.isPackaged ? app.getVersion() : undefined, wslHost)
-let pendingProjectPlan: { token: string; project: DesktopProject; request: EnvironmentRequest } | undefined
+const environmentClient = new EnvironmentClient(undefined, undefined, undefined, {
+  ...tools, cacheRoot: join(app.getPath('userData'), 'environment-tools'),
+}, app.isPackaged ? app.getVersion() : undefined, wslHost)
+const chrome = readWindowChrome(join(appDirectory, 'site'))
 const windows = new Map<string, BrowserWindow>()
+const documents = new Map<string, { origin: string }>()
+const frontendOrigins = new Set([new URL(home.url).origin])
 const redockingWindows = new Set<string>()
-let windowLayout: WindowLayout = defaultWindowLayout()
-let layoutWriteTimer: ReturnType<typeof setTimeout> | undefined
-let tray: Tray | undefined
-let webHost: WebHost | undefined
-let credentialStore: CredentialStore | undefined
 const pendingDeepLinks = new Map<string, DesktopDeepLink[]>()
+const preReadyLinks: DesktopDeepLink[] = []
 const remoteWorkerFileGrants = new RemoteWorkerFileGrants()
-let lifecycleLease: LifecycleLease | undefined
-let quitting = false
-const updateFeed = process.env['DINKSTER_UPDATE_FEED_URL']
-const shellUpdater = new ShellUpdater({ target: autoUpdater, dataDirectory, currentVersion: app.getVersion(), updateFeed, packaged: app.isPackaged,
-  diagnostic: (message) => { void shellLog.append(message) },
-})
 const lifecycleQueue = new LifecycleQueue()
 const windowQueue = new LifecycleQueue()
 const layoutPersistenceQueue = new LifecycleQueue()
 const shellLog = new RotatingLog(join(dataDirectory, 'logs', 'desktop.log'))
+const shellUpdater = new ShellUpdater({
+  target: autoUpdater, dataDirectory, currentVersion: app.getVersion(),
+  updateFeed: process.env['DINKSTER_UPDATE_FEED_URL'], packaged: app.isPackaged,
+  diagnostic: (message) => { void shellLog.append(message) },
+})
+const remoteWorkerLifecycle = new RemoteWorkerLifecycle(
+  dataDirectory, remoteWorkerFileGrants, serializeLifecycle,
+  () => { throw new Error('Remote engines are not yet connected to project engines') },
+  async () => { throw new Error('Remote engines are not yet connected to project engines') },
+)
+let windowLayout: WindowLayout = defaultWindowLayout()
+let layoutWriteTimer: ReturnType<typeof setTimeout> | undefined
+let lifecycleLease: LifecycleLease | undefined
+let credentialStore: CredentialStore | undefined
+let tray: Tray | undefined
+let quitting = false
+let windowsReady = false
+let keepRunning = false
+
+function serializeLifecycle<T>(action: () => Promise<T>): Promise<T> {
+  return lifecycleQueue.run(action)
+}
+
+function senderWindowId(event: Electron.IpcMainInvokeEvent): string {
+  const entry = [...windows].find(([, managed]) => managed.webContents === event.sender)
+  if (!entry) throw new Error('window is not registered')
+  return entry[0]
+}
+
+function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
+  const id = senderWindowId(event)
+  const managed = windows.get(id)!
+  if (quitting || !isTrustedDesktopIpc(managed.webContents, managed.webContents.mainFrame,
+    documents.get(id)?.origin, event.sender, event.senderFrame)) {
+    throw new Error('desktop capability denied for an untrusted renderer')
+  }
+}
+
+async function currentHome(): Promise<HomeStatus> {
+  const status = await home.status()
+  if (!status || !homeIdentity || status.supervisor.pid !== homeIdentity.supervisor.pid || status.instance !== homeIdentity.instance) {
+    throw new Error('The Dinkster process changed; reopen Desktop')
+  }
+  return status
+}
+
+async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unknown): Promise<Awaited<ReturnType<typeof captureManagedFiles>>> {
+  await captureManagedFiles(event, backendUrl)
+  throw new Error('Native file access requires execution-bound requests')
+}
+
+async function captureManagedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unknown): Promise<{
+  url: string; project: string; execution: string; distribution?: string; revalidate(): Promise<void>
+}> {
+  trustedIpc(event)
+  const id = senderWindowId(event)
+  const document = documents.get(id)
+  const href = event.senderFrame!.url
+  const project = new URL(href).searchParams.get('dinksterProject')
+  if (!validProjectId(project) || new URL(href).searchParams.getAll('dinksterProject').length !== 1) throw new Error('Invalid folder-project context')
+  requireLocalFiles(backendUrl, href, true)
+  const url = new URL(backendUrl as string).origin
+  const currentBinding = async (): Promise<{ binding: string; execution: string }> => {
+    trustedIpc(event)
+    if (documents.get(id) !== document || event.senderFrame!.url !== href) throw new Error('The requesting project document changed')
+    const status = await home.ownedStatus(project)
+    trustedIpc(event)
+    if (documents.get(id) !== document || event.senderFrame!.url !== href) throw new Error('The requesting project document changed')
+    const execution = status.execution
+    const engine = execution?.engine
+    const installation = execution?.installation
+    if (status.state !== 'ready' || typeof status.homeId !== 'string' || !status.homeId
+      || execution?.host?.kind !== 'native' || execution.host.distribution !== null
+      || execution.project?.id !== project || !Number.isSafeInteger(execution.project.revision) || execution.project.revision < 1
+      || typeof installation?.id !== 'string' || !installation.id || typeof installation.root !== 'string' || !isAbsolute(installation.root)
+      || installation.root !== status.open?.root || engine?.name !== status.open.engine
+      || typeof engine?.name !== 'string' || !engine.name || !Number.isSafeInteger(engine.generation) || engine.generation < 1
+      || typeof engine.instance !== 'string' || !engine.instance || typeof engine.url !== 'string'
+      || typeof execution.filesystem?.binding !== 'string' || !/^blake3:[a-f0-9]{64}$/.test(execution.filesystem.binding)) {
+      throw new Error('Native file access requires authoritative execution-host and filesystem provenance')
+    }
+    const target = new URL(engine.url)
+    if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1' || target.href !== `${target.origin}/`
+      || (url !== new URL(home.url).origin && url !== new URL(status.installationFrontend ?? '').origin)) {
+      throw new Error('The document is not served by the verified native execution context')
+    }
+    const snapshot = JSON.stringify(execution)
+    return { execution: snapshot, binding: JSON.stringify([status.homeId, snapshot, status.installationFrontend ?? null]) }
+  }
+  const initial = await currentBinding()
+  return { url, project, execution: initial.execution, async revalidate() {
+    if ((await currentBinding()).binding !== initial.binding) throw new Error('The native execution context changed')
+  } }
+}
 
 function windowContext(id: string): DesktopWindowContext {
   const workspace = windowLayout.workspaces.find((candidate) => candidate.id === id)
   if (workspace) return { id: workspace.id, kind: 'primary' }
   const child = windowLayout.children.find((candidate) => candidate.id === id)
   if (!child) throw new Error('window is not registered')
-  return child.kind === 'workflow'
-    ? { id: child.id, kind: 'workflow', workflowId: child.workflowId }
-    : {
-        id: child.id,
-        kind: 'panel',
-        panelId: child.panelId,
-        returnPlacement: child.returnPlacement,
-      }
+  return child.kind === 'workflow' ? { id: child.id, kind: 'workflow', workflowId: child.workflowId }
+    : { id: child.id, kind: 'panel', panelId: child.panelId, returnPlacement: child.returnPlacement }
 }
 
-/** The project a window is bound to; undefined = the default project. */
 function windowProject(id: string): string | undefined {
   return windowLayout.workspaces.find((workspace) => workspace.id === id)?.projectId
     ?? windowLayout.children.find((child) => child.id === id)?.projectId
 }
 
-/** Windows visible to one project: workspaces and tear-outs on other projects are omitted. */
 function publicWindowLayout(projectId: string | undefined): DesktopWindowLayout {
-  return {
-    windows: [
-      ...windowLayout.workspaces.filter((workspace) => workspace.projectId === projectId).map((workspace) => workspace.id),
-      ...windowLayout.children.filter((child) => child.projectId === projectId).map((child) => child.id),
-    ].map(windowContext),
-  }
+  return { windows: [
+    ...windowLayout.workspaces.filter((workspace) => workspace.projectId === projectId).map((workspace) => workspace.id),
+    ...windowLayout.children.filter((child) => child.projectId === projectId).map((child) => child.id),
+  ].map(windowContext) }
 }
 
 function broadcastToWindows(channel: string, value: (id: string) => unknown): void {
   for (const [id, managed] of windows) {
-    if (managed.isDestroyed() || managed.webContents.isDestroyed()) {
-      windows.delete(id)
-      if (id === 'primary') window = undefined
-      continue
-    }
-    try {
-      managed.webContents.send(channel, value(id))
-    } catch (error) {
-      void shellLog.append(redactDiagnosticText(
-        `window broadcast ${id}: ${error instanceof Error ? error.message : String(error)}`,
-      ))
-    }
+    if (!managed.isDestroyed() && !managed.webContents.isDestroyed()) managed.webContents.send(channel, value(id))
   }
-}
-
-function sendToWindows(channel: string, value: unknown): void {
-  broadcastToWindows(channel, () => value)
 }
 
 function sendWindowLayout(): void {
@@ -172,767 +200,54 @@ function scheduleWindowLayoutWrite(): void {
   if (layoutWriteTimer !== undefined) clearTimeout(layoutWriteTimer)
   layoutWriteTimer = setTimeout(() => {
     layoutWriteTimer = undefined
-    void persistWindowLayout().catch((error: unknown) => {
-      void shellLog.append(redactDiagnosticText(`window layout: ${error instanceof Error ? error.message : String(error)}`))
-    })
+    void persistWindowLayout().catch(logFailure)
   }, 250)
 }
 
-async function flushWindowLayout(): Promise<void> {
-  if (layoutWriteTimer !== undefined) {
-    clearTimeout(layoutWriteTimer)
-    layoutWriteTimer = undefined
-  }
-  await persistWindowLayout()
+function logFailure(error: unknown): void {
+  void shellLog.append(redactDiagnosticText(error instanceof Error ? error.stack ?? error.message : String(error)))
 }
 
 async function desktopInfo(): Promise<DesktopInfo> {
-  return {
-    appVersion: app.getVersion(),
-    storageBytes: await desktopStorageBytes(dataDirectory),
-    update: shellUpdater.status,
-  }
+  return { appVersion: app.getVersion(), storageBytes: await desktopStorageBytes(dataDirectory), update: shellUpdater.status }
 }
 
 async function sendInfo(): Promise<void> {
-  sendToWindows('desktop:info-changed', await desktopInfo())
-}
-
-function serializeLifecycle<T>(action: () => Promise<T>): Promise<T> {
-  return lifecycleQueue.run(action)
-}
-
-const remoteWorkerLifecycle = new RemoteWorkerLifecycle(
-  dataDirectory,
-  remoteWorkerFileGrants,
-  serializeLifecycle,
-  () => { throw new Error('Remote engines are not yet connected to project engines') },
-  async () => { throw new Error('Remote engines are not yet connected to project engines') },
-)
-
-function trustedIpc(event: Electron.IpcMainInvokeEvent): void {
-  const expected = [...windows.values()].find((managed) => managed.webContents === event.sender)?.webContents
-  if (!isTrustedDesktopIpc(
-    expected,
-    event.sender.mainFrame,
-    webHost ? new URL(webHost.url).origin : undefined,
-    event.sender,
-    event.senderFrame,
-  )) {
-    throw new Error('desktop capability denied for an untrusted renderer')
-  }
-}
-
-async function managedFiles(event: Electron.IpcMainInvokeEvent, backendUrl: unknown): Promise<{
-  url: string; project: string; distribution?: string; revalidate(): Promise<void>
-}> {
-  if (quitting) throw new Error('Desktop is shutting down')
-  const parent = BrowserWindow.fromWebContents(event.sender)
-  const binding = parent && remoteWindows.get(parent)
-  if (parent && binding) {
-    const { projectId, engineId, url, folderProject, document } = binding
-    const trusted = (): void => {
-      if (quitting || parent.isDestroyed() || remoteWindows.get(parent) !== binding || binding.url !== url
-        || binding.document !== document || !folderProject || binding.folderProject !== folderProject
-        || !isTrustedDesktopIpc(parent.webContents, parent.webContents.mainFrame, new URL(url).origin, event.sender, event.senderFrame)) {
-        throw new Error('Native file access requires the bound local engine window')
-      }
-    }
-    trusted()
-    if (!folderProject) throw new Error('Invalid folder-project context')
-    requireLocalFiles(backendUrl, url, true)
-    const projects = await readProjects(dataDirectory)
-    const project = projects.projects.find((entry) => entry.id === projectId)
-    const engine = project?.engines.find((entry) => entry.id === engineId)
-    if (!project?.root || engine?.kind !== 'local') throw new Error('Native file access requires a local engine')
-    const root = project.root
-    let generation: number | undefined
-    const checkBinding = async (): Promise<void> => {
-      const saved = (await readProjects(dataDirectory)).projects.find((entry) => entry.id === projectId)
-      if (saved?.root !== root || saved.engines.find((entry) => entry.id === engineId)?.kind !== 'local') {
-        throw new Error('The local project binding changed')
-      }
-      if (binding.libraryProject !== undefined) {
-        const selected = await environmentClient.run({ root, operation: 'project-get', libraryProject: binding.libraryProject })
-        if (!selected.project || selected.project.uid !== binding.libraryUid || selected.environment?.id !== binding.environmentId
-          || (selected.project.environment !== null && selected.project.environment.id !== binding.environmentId)) throw new Error('The library project binding changed')
-      }
-      trusted()
-    }
-    const revalidate = async (): Promise<void> => {
-      trusted()
-      await checkBinding()
-      const status = await environmentClient.run({ root, operation: 'status' })
-      const active = status.engines?.find((entry) => entry.name === engineId)
-      if (status.status !== 'clean' || status.root !== root || !status.current || active?.state !== 'ready' || active.generation !== status.current
-        || active.url !== binding.backendUrl || (generation !== undefined && generation !== active.generation)) {
-        throw new Error('The local engine is no longer the selected ready snapshot')
-      }
-      generation = active.generation
-      await checkBinding()
-    }
-    await revalidate()
-    const location = wslLocation(root)
-    return { url, project: folderProject, revalidate, ...(location ? { distribution: location.distribution } : {}) }
-  }
-  trustedIpc(event)
-  throw new Error('Native file access requires a bound project-managed local engine')
-}
-
-const libraryPath = join(app.isPackaged ? join(process.resourcesPath, 'app') : join(app.getAppPath(), '..', 'app', 'dist'), 'site', 'desktop-library.html')
-const projectDialogPath = join(dirname(libraryPath), 'desktop-environments.html')
-let libraryDocument = 0
-const library = new DesktopLibrary(dataDirectory, environmentClient, {
-  fork: async (selected) => {
-    const locals = selected.installation.engines.filter((engine) => engine.kind === 'local')
-    const engine = locals.find((item) => item.id === 'main') ?? (locals.length === 1 ? locals[0] : undefined)
-    if (!engine) throw new Error('project environment has no unambiguous local engine')
-    return prepareProjectFork(selected.installation, engine.id, selected.project)
-  },
-  activate: async (target, project, result, trusted, validate) => {
-    trusted()
-    if (result.destination !== undefined) await openLibraryProject(target.id, project, trusted, undefined, validate)
-    else await handoffProject(target, result, false, validate)
-  },
-})
-const chrome = readWindowChrome(dirname(libraryPath))
-
-function trustedLibraryIpc(event: Electron.IpcMainInvokeEvent): void {
-  if (quitting || !libraryWindow || event.sender !== libraryWindow.webContents
-    || event.senderFrame !== libraryWindow.webContents.mainFrame
-    || event.senderFrame.url !== pathToFileURL(libraryPath).href) throw new Error('library capability denied for an untrusted renderer')
-}
-
-async function createLibraryWindow(): Promise<void> {
-  if (libraryWindow && !libraryWindow.isDestroyed()) { libraryWindow.show(); libraryWindow.focus(); return }
-  const panel = new BrowserWindow({
-    ...windowChromeOptions(chrome),
-    width: 1040, height: 760, minWidth: 390, minHeight: 500,
-    title: desktopTitle(services), icon: applicationIcon(), backgroundColor: windowBackground(),
-    webPreferences: { ...secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')), additionalArguments: ['--dinkster-library'] },
-  })
-  libraryWindow = panel
-  installWindowChrome(panel, chrome, undefined, services)
-  panel.on('page-title-updated', (event) => event.preventDefault())
-  denyRendererPermissions(panel.webContents.session)
-  panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  panel.webContents.on('will-navigate', (event) => event.preventDefault())
-  panel.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
-    if (mainFrame) { libraryDocument++; library.discardRestore() }
-  })
-  panel.on('closed', () => {
-    if (libraryWindow === panel) { libraryWindow = undefined; libraryDocument++; library.discardRestore() }
-  })
-  await panel.loadFile(libraryPath)
-}
-
-ipcMain.handle('desktop:library-open', (event, installation: string, identifier: string) => serializeLifecycle(async () => {
-  await openLibraryProject(installation, identifier, () => trustedLibraryIpc(event))
-}))
-
-async function openLibraryProject(installation: string, identifier: string, trusted: () => void,
-  reuse?: { readonly window: BrowserWindow; readonly ready: (project: DesktopProject, result: EnvironmentResult) => Promise<void> },
-  validate?: () => Promise<void>): Promise<void> {
-  trusted()
-  const prepared = await library.prepareOpen(installation, identifier)
-  await validate?.()
-  if (reuse) {
-    const binding = remoteWindows.get(reuse.window)
-    if (prepared.installation.id !== installation || binding?.libraryUid !== prepared.project.uid
-      || binding.libraryProject !== prepared.project.id) throw new Error('plan-stale')
-  }
-  const target = prepared.installation
-  const engines = target.engines.filter((engine) => engine.kind === 'local')
-  const engine = engines.find((entry) => entry.id === 'main') ?? (engines.length === 1 ? engines[0] : undefined)
-  if (!engine) throw new Error('project environment has no unambiguous local engine')
-  await requirePackSandbox(target, true)
-  const saved = await readProjects(dataDirectory)
-  const previous: { project: DesktopProject; engine: string; snapshot: number; request: EnvironmentRequest }[] = []
-  for (const owner of saved.projects) {
-    if (!owner.root || owner.root === target.root) continue
-    const status = await environmentClient.run({ root: owner.root, operation: 'status' })
-    for (const running of status.engines ?? []) {
-      if (running.state === 'stopped') continue
-      if (running.state !== 'ready') throw new Error('the previous environment requires recovery before switching')
-      const binding = owner.engines.find((entry) => entry.id === running.name)
-      if (binding?.kind !== 'local' || status.current !== running.generation || !running.url) throw new Error('the running environment binding changed')
-      if (running.gpus === undefined) throw new Error('The installed tools cannot report the running GPU assignment. Update the environment tools before switching.')
-      const url = new URL(localEngineUrl(owner, running.name, status))
-      previous.push({ project: owner, engine: running.name, snapshot: running.generation, request: {
-        root: owner.root, operation: 'start', engine: running.name, gpus: running.gpus,
-        sandboxPacks: running.sandboxPacks === true, port: Number(url.port),
-      } })
-    }
-  }
-  const targetStatus = await environmentClient.run({ root: target.root!, operation: 'status' })
-  const targetWasRunning = targetStatus.engines?.some((entry) => entry.state !== 'stopped') === true
-  if (new Set(previous.map((owner) => owner.project.root)).size + Number(targetWasRunning) > 1) throw new Error('multiple environments are running; stop them before opening a project')
-  const checked = await library.prepareOpen(installation, identifier)
-  if (JSON.stringify(checked) !== JSON.stringify(prepared)) throw new Error('project or environment changed; open it again')
-  await validate?.()
-  trusted()
-  const stopped: typeof previous = []
-  let starting = false
-  try {
-    for (const owner of previous) {
-      trusted()
-      // Retain the previous owner before issuing a command whose result may be lost.
-      stopped.push(owner)
-      const result = await environmentClient.run({ root: owner.project.root!, operation: 'stop', engine: owner.engine }, true)
-      if (result.status !== 'applied' || result.engines?.some((entry) => entry.name === owner.engine && entry.state !== 'stopped')) throw new Error('previous environment did not stop')
-    }
-    trusted()
-    starting = true
-    localEngines.set(`${target.id}/${engine.id}`, { root: target.root!, engine: engine.id })
-    await openManagedProject(target.id, engine.id, prepared, reuse && { ...reuse, trusted }, validate)
-  } catch (error) {
-    const failures: unknown[] = [error]
-    let targetStopped = !starting
-    if (starting && !targetWasRunning) {
-      try {
-        const result = await environmentClient.run({ root: target.root!, operation: 'stop', engine: engine.id }, true)
-        targetStopped = result.status === 'applied' && !result.engines?.some((entry) => entry.name === engine.id && entry.state !== 'stopped')
-        if (!targetStopped) throw new Error('replacement environment did not stop')
-        localEngines.delete(`${target.id}/${engine.id}`)
-      } catch (failure) { failures.push(failure) }
-    }
-    // Never restart the old owner while a replacement may still hold the library.
-    if (targetStopped) {
-      for (const owner of stopped) {
-        try {
-          const status = await environmentClient.run({ root: owner.project.root!, operation: 'status' })
-          if (status.current !== owner.snapshot) throw new Error('the previous snapshot changed; restore it before restarting')
-          const result = await environmentClient.run(owner.request, true)
-          if (result.status !== 'applied') throw new Error('previous environment did not restart')
-          localEngines.set(`${owner.project.id}/${owner.engine}`, { root: owner.project.root!, engine: owner.engine })
-        } catch (failure) { failures.push(failure) }
-      }
-      for (const owner of new Set(stopped.map((entry) => entry.project))) {
-        try { await handoffProject(owner, await environmentClient.run({ root: owner.root!, operation: 'status' }), reuse !== undefined) }
-        catch (failure) { failures.push(failure) }
-      }
-    }
-    if (failures.length > 1) throw new AggregateError(failures, 'Project opening failed; saved environments are retained for recovery. Inspect environment status before restarting.')
-    throw error
-  }
-}
-
-function libraryRestoreTrust(event: Electron.IpcMainInvokeEvent): () => void {
-  trustedLibraryIpc(event)
-  const document = libraryDocument
-  return () => {
-    trustedLibraryIpc(event)
-    if (document !== libraryDocument) throw new Error('the restore review document changed')
-  }
-}
-
-ipcMain.handle('desktop:library-restore-review', (event, installation: string, project: string, entry: number, scope: 'every-project' | 'only-project') => {
-  const trusted = libraryRestoreTrust(event)
-  return serializeLifecycle(() => library.reviewRestore(installation, project, entry, scope, trusted))
-})
-ipcMain.handle('desktop:library-restore-apply', (event, token: string, alternative: number) => {
-  const trusted = libraryRestoreTrust(event)
-  return serializeLifecycle(() => library.applyRestore(token, alternative, trusted))
-})
-
-ipcMain.handle('desktop:library-history', async (event, installation: string, project: string) => {
-  trustedLibraryIpc(event)
-  const result = await library.history(installation, project)
-  trustedLibraryIpc(event)
-  return result
-})
-ipcMain.handle('desktop:library-installations', async (event) => {
-  trustedLibraryIpc(event)
-  return library.installations()
-})
-ipcMain.handle('desktop:library-projects', async (event, installation: string, cursor: string | null) => {
-  trustedLibraryIpc(event)
-  return library.projects(installation, cursor)
-})
-ipcMain.handle('desktop:library-workflows', async (event, installation: string, project: string, cursor: string | null) => {
-  trustedLibraryIpc(event)
-  return library.workflows(installation, project, cursor)
-})
-ipcMain.handle('desktop:library-assets', async (event, installation: string, project: string, cursor: string | null) => {
-  trustedLibraryIpc(event)
-  return library.assets(installation, project, cursor)
-})
-
-function trustedProjectIpc(event: Electron.IpcMainInvokeEvent): void {
-  if (quitting) throw new Error('Desktop is shutting down')
-  if (!projectWindow || event.sender !== projectWindow.webContents
-    || event.senderFrame !== projectWindow.webContents.mainFrame
-    || event.senderFrame.url !== pathToFileURL(projectDialogPath).href) {
-    throw new Error('project capability denied for an untrusted renderer')
-  }
-}
-
-async function createProjectManager(): Promise<void> {
-  if (projectWindow && !projectWindow.isDestroyed()) { projectWindow.show(); return }
-  projectWindow = new BrowserWindow({
-    ...windowChromeOptions(chrome),
-    width: 1040, height: 760, minWidth: 600, minHeight: 500,
-    title: desktopTitle(services), icon: applicationIcon(), backgroundColor: windowBackground(),
-    webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
-  })
-  installWindowChrome(projectWindow, chrome, undefined, services)
-  projectWindow.on('page-title-updated', (event) => event.preventDefault())
-  denyRendererPermissions(projectWindow.webContents.session)
-  projectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  projectWindow.webContents.on('will-navigate', (event) => event.preventDefault())
-  projectWindow.on('closed', () => { projectWindow = undefined; pendingProjectPlan = undefined })
-  await projectWindow.loadFile(projectDialogPath)
-}
-
-ipcMain.handle('desktop:wsl-status', async (event) => {
-  trustedProjectIpc(event)
-  return wslHost.status()
-})
-ipcMain.handle('desktop:wsl-prepare', (event) => serializeLifecycle(async () => {
-  trustedProjectIpc(event)
-  return wslHost.prepare()
-}))
-ipcMain.handle('desktop:wsl-project-root', async (event, id: unknown) => {
-  trustedProjectIpc(event)
-  if (!validProjectId(id)) throw new Error('Invalid WSL project id')
-  const status = await wslHost.status()
-  if (!status.ready) throw new Error(status.detail)
-  return wslHost.projectRoot(id)
-})
-ipcMain.handle('desktop:wsl-copy-models', (event) => serializeLifecycle(async () => {
-  trustedProjectIpc(event)
-  const result = await dialog.showOpenDialog(projectWindow!, { title: 'Copy a Windows model folder to the private WSL disk', properties: ['openDirectory'] })
-  trustedProjectIpc(event)
-  const path = result.filePaths[0]
-  return result.canceled || !path ? undefined : wslHost.copyModels(path)
-}))
-
-ipcMain.handle('desktop:projects-list', async (event) => {
-  trustedProjectIpc(event)
-  const projects = await readProjects(dataDirectory)
-  return { ...projects, projects: await Promise.all(projects.projects.map(async (project) => {
-    if (!project.root) return project
-    try {
-      const status = await environmentClient.run({ root: project.root, operation: 'status' })
-      return { ...project, sourceStatus: status.current === null ? 'unavailable' : status.sourceDescription === undefined ? 'published' : 'unpublished' }
-    } catch {
-      return { ...project, sourceStatus: 'unavailable' }
-    }
-  })) }
-})
-async function requirePackSandbox(project: DesktopProject, opening = false): Promise<void> {
-  if (project.sandboxPacks !== undefined) {
-    const status = await environmentClient.run({ root: project.root!, operation: 'status' })
-    if (status.engines?.some((engine) => engine.state !== 'stopped' && (engine.sandboxPacks === true) !== project.sandboxPacks)) throw new Error('Pack sandbox selection changed. Stop the local engines before saving or applying this choice.')
-  }
-  if (!project.sandboxPacks) return
-  if (!opening) {
-    const saved = (await readProjects(dataDirectory)).projects.find((entry) => entry.id === project.id)
-    // An unavailable saved request must remain inspectable and repairable.
-    if (saved && saved.root === project.root && saved.sandboxPacks) return
-  }
-  const result = await environmentClient.run({ root: project.root!, operation: 'doctor', sandbox: true })
-  if (!result.sandbox?.available) throw new Error(result.sandbox?.detail ?? 'The selected engine does not report pack sandbox readiness. Update the engine and environment tools first.')
-}
-
-ipcMain.handle('desktop:projects-sandbox', (event, root: string) => serializeLifecycle(async () => {
-  trustedProjectIpc(event)
-  return (await environmentClient.run({ root, operation: 'doctor', sandbox: true })).sandbox
-}))
-ipcMain.handle('desktop:projects-save', (event, value: unknown) => serializeLifecycle(async () => {
-  trustedProjectIpc(event)
-  const project = parseProject(value)
-  await requirePackSandbox(project)
-  await writeProjects(dataDirectory, saveProject(await readProjects(dataDirectory), project))
-}))
-ipcMain.handle('desktop:projects-remove', (event, projectId: unknown) => serializeLifecycle(async () => {
-  trustedProjectIpc(event)
-  if (!validProjectId(projectId)) throw new Error('invalid project id')
-  const projects = await readProjects(dataDirectory)
-  await writeProjects(dataDirectory, { ...projects, projects: projects.projects.filter((project) => project.id !== projectId) })
-}))
-ipcMain.handle('desktop:projects-inspect', (event, input: EnvironmentRequest) => serializeLifecycle(async () => {
-  trustedProjectIpc(event)
-  const request: EnvironmentRequest = { root: input.root, operation: 'catalog', hardware: true,
-    ...(input.gpus === undefined ? {} : { gpus: input.gpus }),
-    ...(input.channel === undefined ? {} : { channel: input.channel }),
-    ...(input.mirrors === undefined ? {} : { mirrors: input.mirrors }) }
-  const result = await environmentClient.run(request)
-  if (!result.hardware) throw new Error('dinkster-env did not return hardware selection')
-  return { result, ...projectHardware(result.hardware) }
-}))
-
-function localEngineUrl(project: DesktopProject, engineId: string, result: EnvironmentResult): string {
-  const engine = result.engines?.find((candidate) => candidate.name === engineId)
-  const url = engine?.url ?? (project.engines.filter((candidate) => candidate.kind === 'local').length === 1 ? result.url : undefined)
-  if (!url || (engine && engine.state !== 'ready')) throw new Error(`dinkster-env did not return a ready URL for ${engineId}`)
-  const address = serverUrl(url)
-  const parsed = new URL(address)
-  if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') throw new Error('local supervisor returned a non-loopback URL')
-  return address
-}
-
-async function handoffProject(project: DesktopProject, result: EnvironmentResult, preserve = false,
-  validate?: () => Promise<void>): Promise<void> {
-  const status = await environmentClient.run({ root: project.root!, operation: 'status' })
-  await validate?.()
-  for (const [managed, binding] of remoteWindows) {
-    if (binding.projectId !== project.id || managed.isDestroyed()) continue
-    if (!project.engines.some((engine) => engine.id === binding.engineId && engine.kind === 'local')) continue
-    // A restore preserves stopped engines; their windows must not reopen them.
-    if (result.engines !== undefined && !result.engines.some((engine) => engine.name === binding.engineId && engine.state !== 'stopped')) continue
-    const url = localEngineUrl(project, binding.engineId, result)
-    if (await engineServices(url) !== services) throw new Error(`The updated engine did not select ${services} services.`)
-    await validate?.()
-    binding.backendUrl = url
-    binding.development = status.sourceDescription !== undefined
-    if (binding.gateway) binding.gateway.setTarget(url)
-    else binding.url = url
-    if (!preserve) await managed.loadURL(projectAddress(binding.url, binding.libraryProject))
-  }
-}
-
-ipcMain.handle('desktop:projects-plan', (event, value: unknown, input: EnvironmentRequest) => serializeLifecycle(async () => {
-  trustedProjectIpc(event)
-  pendingProjectPlan = undefined
-  let project = parseProject(value)
-  if (input.operation === 'stop') {
-    const saved = (await readProjects(dataDirectory)).projects.find((entry) => entry.id === project.id)
-    project = parseProject({ ...project, sandboxPacks: saved?.sandboxPacks })
-  } else await requirePackSandbox(project)
-  if (!project.root || input.root !== project.root
-    || !['develop', 'setup', 'update', 'rollback', 'move', 'doctor', 'gc', 'cleanup', 'status', 'space', 'source', 'stop'].includes(input.operation)
-    || input.sourceApproval !== undefined || input.frontendApproval !== undefined || input.historyEntry !== undefined) throw new Error('invalid local project operation')
-  // Validate the shell binding before asking the environment owner to mutate it.
-  saveProject(await readProjects(dataDirectory), project)
-  if (input.operation === 'move') saveProject(await readProjects(dataDirectory), { ...project, root: input.destination })
-  const engine = project.engines.find((binding) => binding.kind === 'local' && binding.id === input.engine)
-  if (['setup', 'develop'].includes(input.operation) && (!engine || engine.kind !== 'local')) throw new Error('select the local engine binding before setup')
-  if (input.operation === 'develop' && !project.development) throw new Error('development requires explicit project sources')
-  let request: EnvironmentRequest = { ...input, root: project.root,
-    ...(input.operation === 'develop' ? { development: project.development! } : {}),
-    ...(['setup', 'develop'].includes(input.operation) && engine?.kind === 'local' ? { engine: engine.id, gpus: engine.gpus, port: engine.port } : {}) }
-  const result = await environmentClient.run(request)
-  if (result.status !== 'planned') return { result }
-  if (request.operation === 'develop' || (request.operation === 'source' && request.sourceAction !== 'release')) {
-    if (!result.sourceApproval) throw new Error('environment tools do not support reviewed managed sources')
-    request = { ...request, sourceApproval: result.sourceApproval }
-  }
-  if (request.frontendVersion !== undefined) {
-    if (!result.frontendApproval) throw new Error('environment tools do not support reviewed frontend versions')
-    request = { ...request, frontendApproval: result.frontendApproval }
-  }
-  if (request.operation === 'source' && request.sourceAction === 'release') {
-    if (result.restoredFrom === undefined) throw new Error('environment tools did not retain the release history entry')
-    request = { root: project.root, operation: 'restore', historyEntry: result.restoredFrom }
-  }
-  const token = randomUUID()
-  pendingProjectPlan = { token, project, request }
-  return { token, result }
-}))
-ipcMain.handle('desktop:projects-apply', (event, token: unknown) => serializeLifecycle(async () => {
-  trustedProjectIpc(event)
-  const planned = pendingProjectPlan
-  pendingProjectPlan = undefined
-  if (!planned || token !== planned.token) throw new Error('the plan expired; review a new plan before applying')
-  saveProject(await readProjects(dataDirectory), planned.project)
-  if (planned.request.operation === 'move') saveProject(await readProjects(dataDirectory), { ...planned.project, root: planned.request.destination })
-  if (planned.request.operation !== 'stop') await requirePackSandbox(planned.project)
-  const result = await environmentClient.run(planned.request, true)
-  if (planned.request.operation === 'cleanup') return result
-  if (result.status !== 'applied' && result.status !== 'clean') throw new Error('dinkster-env did not apply the confirmed operation')
-  const project = parseProject({
-    ...planned.project,
-    root: result.root,
-    ...(planned.request.channel ? { channel: planned.request.channel } : {}),
-  })
-  await writeProjects(dataDirectory, saveProject(await readProjects(dataDirectory), project))
-  for (const engine of result.engines ?? []) {
-    if (engine.state === 'ready' && project.engines.some((binding) => binding.kind === 'local' && binding.id === engine.name)) {
-      localEngines.set(`${project.id}/${engine.name}`, { root: project.root!, engine: engine.name })
-    }
-  }
-  if (planned.request.operation === 'move') {
-    for (const binding of localEngines.values()) if (binding.root === planned.project.root) binding.root = project.root!
-  }
-  if (['develop', 'setup', 'update', 'rollback', 'move', 'source', 'restore'].includes(planned.request.operation)) await handoffProject(project, result)
-  return result
-}))
-ipcMain.handle('desktop:projects-open', (event, projectId: unknown, engineId: unknown) => serializeLifecycle(async () => {
-  trustedProjectIpc(event)
-  await openManagedProject(projectId, engineId)
-}))
-
-function projectAddress(address: string, identifier?: string): string {
-  if (identifier === undefined) return address
-  const url = new URL(address)
-  url.searchParams.set('dinksterProject', identifier)
-  return url.href
-}
-
-async function prepareProjectFork(source: DesktopProject, engineId: string, selected: LibraryProject): Promise<LibraryFork> {
-  const local = source.engines.find((candidate) => candidate.id === engineId)
-  if (!source.root || local?.kind !== 'local') throw new Error('plan-stale')
-  const status = await environmentClient.run({ root: source.root, operation: 'status' })
-  const running = status.engines?.find((entry) => entry.name === local.id && entry.state === 'ready')
-  if (running && running.gpus === undefined) throw new Error('plan-stale')
-  const id = randomUUID()
-  const destination = join(dirname(source.root), `dinkster-environment-${id}`)
-  // A different backend port keeps stopped source windows from reaching the replacement.
-  const port = await new Promise<number>((resolve, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      if (!address || typeof address === 'string') { server.close(); reject(new Error('no separate environment port')); return }
-      server.close((error) => { if (error) reject(error); else resolve(address.port) })
-    })
-  })
-  const candidate = parseProject({ ...source, id, root: destination, name: `${selected.name} environment`.slice(0, 128),
-    engines: [{ ...local, id: 'main', name: 'Main', port, gpus: running?.gpus ?? local.gpus }] })
-  return { installation: candidate, destination, retain: async () => {
-    const saved = await readProjects(dataDirectory)
-    if (JSON.stringify(saved.projects.find((entry) => entry.id === source.id)) !== JSON.stringify(source)
-      || saved.projects.some((entry) => entry.id === id)) throw new Error('plan-stale')
-    await writeProjects(dataDirectory, saveProject(saved, candidate))
-  } }
-}
-
-async function openManagedProject(projectId: unknown, engineId: unknown, prepared?: Awaited<ReturnType<DesktopLibrary['prepareOpen']>>,
-  reuse?: { readonly window: BrowserWindow; readonly trusted: () => void; readonly ready: (project: DesktopProject, result: EnvironmentResult) => Promise<void> },
-  validate?: () => Promise<void>): Promise<void> {
-  if (!validProjectId(projectId) || !validProjectId(engineId)) throw new Error('invalid engine binding')
-  const libraryProject = prepared?.project.id
-  const project = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === projectId)
-  if (prepared && JSON.stringify(project) !== JSON.stringify(prepared.installation)) throw new Error('saved environment changed; open the project again')
-  const engine = project?.engines.find((candidate) => candidate.id === engineId)
-  if (!engine) throw new Error('engine binding not found')
-  let url: string
-  let development = false
-  let started: EnvironmentResult | undefined
-  if (engine.kind === 'remote') url = engine.url
-  else {
-    const root = project!.root!
-    await requirePackSandbox(project!, true)
-    const request: EnvironmentRequest = {
-      root, operation: 'start', engine: engine.id, gpus: engine.gpus,
-      sandboxPacks: project!.sandboxPacks === true,
-      ...(engine.port === undefined ? {} : { port: engine.port }),
-    }
-    await validate?.()
-    let result = await environmentClient.run(request, true)
-    if (result.status !== 'applied') throw new Error('dinkster-env did not start the selected engine')
-    url = localEngineUrl(project!, engine.id, result)
-    if (await engineServices(url) !== services) {
-      await environmentClient.run({ root, operation: 'stop', engine: engine.id }, true)
-      await validate?.()
-      result = await environmentClient.run(request, true)
-      url = localEngineUrl(project!, engine.id, result)
-      if (await engineServices(url) !== services) throw new Error(`The restarted engine did not select ${services} services.`)
-    }
-    localEngines.set(`${projectId}/${engineId}`, { root, engine: engine.id })
-    development = (await environmentClient.run({ root, operation: 'status' })).sourceDescription !== undefined
-    started = result
-  }
-  if (prepared && JSON.stringify(await library.prepareOpen(prepared.installation.id, prepared.project.id)) !== JSON.stringify(prepared)) {
-    throw new Error('project or environment changed during startup')
-  }
-  await validate?.()
-  if (reuse) {
-    const binding = remoteWindows.get(reuse.window)
-    if (!prepared || !started || !binding?.gateway) throw new Error('plan-stale')
-    await reuse.ready(project!, started)
-    reuse.trusted()
-    await writeFileAtomic(join(dataDirectory, 'project-gateways', projectId, `${engineId}.json`), `${JSON.stringify({ port: Number(new URL(binding.url).port) })}\n`)
-    reuse.trusted()
-    const previousPortFile = join('project-gateways', binding.projectId, `${binding.engineId}.json`)
-    if (await readPersistedPort(previousPortFile) === Number(new URL(binding.url).port)) {
-      reuse.trusted()
-      await rm(join(dataDirectory, previousPortFile), { force: true })
-    }
-    if (JSON.stringify(await library.prepareOpen(prepared.installation.id, prepared.project.id)) !== JSON.stringify(prepared)) {
-      throw new Error('project or environment changed during activation')
-    }
-    reuse.trusted()
-    binding.projectId = projectId
-    binding.engineId = engineId
-    binding.libraryUid = prepared.project.uid
-    binding.environmentId = prepared.environment.id
-    binding.backendUrl = url
-    binding.development = development
-    binding.gateway.setTarget(url)
-    return
-  }
-  const existing = [...remoteWindows].find(([managed, binding]) => !managed.isDestroyed() && binding.projectId === projectId && binding.engineId === engineId && binding.libraryProject === libraryProject && binding.libraryUid === prepared?.project.uid && binding.environmentId === prepared?.environment.id)
-  if (existing) {
-    existing[1].folderProject = undefined
-    existing[1].document++
-    existing[1].backendUrl = url
-    existing[1].development = development
-    if (existing[1].gateway) existing[1].gateway.setTarget(url)
-    else existing[1].url = url
-    await existing[0].loadURL(projectAddress(existing[1].url, libraryProject))
-    existing[0].show()
-    return
-  }
-  const remote = new BrowserWindow({
-    ...windowChromeOptions(chrome),
-    width: 1440, height: 900, title: desktopTitle(services),
-    icon: applicationIcon(), backgroundColor: windowBackground(),
-    webPreferences: engine.kind === 'local'
-      ? { ...secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')), additionalArguments: ['--dinkster-local-files'] }
-      : { contextIsolation: true, sandbox: true, nodeIntegration: false },
-  })
-  installWindowChrome(remote, chrome, () => binding.development, services)
-  remote.on('page-title-updated', (event) => event.preventDefault())
-  const binding: { projectId: string; engineId: string; url: string; backendUrl: string; gateway?: ProjectGateway; libraryProject?: string; libraryUid?: string; environmentId?: string; folderProject: string | undefined; document: number; development: boolean } = {
-    projectId, engineId, url, backendUrl: url, folderProject: undefined, document: 0, development,
-    ...(prepared === undefined ? {} : { libraryProject: prepared.project.id, libraryUid: prepared.project.uid, environmentId: prepared.environment.id }),
-  }
-  remoteWindows.set(remote, binding)
-  if (engine.kind === 'local') {
-    try {
-      const portFile = join('project-gateways', projectId, `${engineId}.json`)
-      let applyDocument = binding.document
-      const readProject = async () => {
-        const root = localEngines.get(`${binding.projectId}/${binding.engineId}`)?.root
-        if (!root || binding.libraryProject === undefined) throw new Error('plan-stale')
-        const selected = await environmentClient.run({ root, operation: 'project-get', libraryProject: binding.libraryProject })
-        if (!selected.project || selected.project.uid !== binding.libraryUid || selected.environment?.id !== binding.environmentId
-          || selected.project.environment?.id !== binding.environmentId) throw new Error('plan-stale')
-        return selected.project
-      }
-      const trustedDocument = (document: number) => {
-        if (quitting || remote.isDestroyed() || remoteWindows.get(remote) !== binding || binding.document !== document
-          || (binding.libraryProject !== undefined && binding.folderProject !== binding.libraryProject)
-          || !isTrustedDesktopIpc(remote.webContents, remote.webContents.mainFrame, new URL(binding.url).origin, remote.webContents, remote.webContents.mainFrame)) throw new Error('plan-stale')
-      }
-      const preferredPort = await readPersistedPort(portFile)
-      binding.gateway = await createProjectGateway({ get root() { return localEngines.get(`${binding.projectId}/${binding.engineId}`)!.root }, target: url, allowPackInstall: true,
-        preferredPort: [...remoteWindows.values()].some((other) => other.gateway && Number(new URL(other.url).port) === preferredPort) ? undefined : preferredPort,
-        ...(libraryProject === undefined ? {} : { project: readProject, fork: async (selected: LibraryProject) => {
-          const source = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === binding.projectId)
-          if (!source) throw new Error('plan-stale')
-          return prepareProjectFork(source, binding.engineId, selected)
-        } }),
-        serialize: serializeLifecycle,
-        run: (request, confirmed) => {
-          if (request.operation === 'packs-apply') applyDocument = binding.document
-          return environmentClient.run(request, confirmed)
-        },
-        owner: async () => {
-          const document = binding.document
-          const saved = (await readProjects(dataDirectory)).projects.find((candidate) => candidate.id === binding.projectId)
-          trustedDocument(document)
-          if (!saved || saved.root !== localEngines.get(`${binding.projectId}/${binding.engineId}`)?.root
-            || saved.engines.find((candidate) => candidate.id === binding.engineId)?.kind !== 'local') throw new Error('plan-stale')
-          const selected = binding.libraryProject === undefined ? undefined : await readProject()
-          trustedDocument(document)
-          return `${binding.projectId}/${binding.engineId}/${document}/${saved.root}/${selected?.uid ?? ''}/${selected?.revision ?? ''}`
-        },
-        activate: async (result, added) => {
-          const document = applyDocument
-          const trusted = () => trustedDocument(document)
-          trusted()
-          let activation: Record<string, unknown> | undefined
-          if (result.destination !== undefined) {
-            const saved = await readProjects(dataDirectory)
-            const target = saved.projects.find((entry) => entry.root === result.destination)
-            if (!target || !binding.libraryProject) throw new Error('activation-failed')
-            try {
-              await openLibraryProject(target.id, binding.libraryProject, trusted, { window: remote,
-                ready: async (project, started) => { activation = await packActivation(localEngineUrl(project, 'main', started), started.current, services, added) } })
-            } catch (error) {
-              await shellLog.append(redactDiagnosticText(`Separate project activation: ${error instanceof Error ? error.message : String(error)}`))
-              throw error
-            }
-          } else {
-            const project = (await readProjects(dataDirectory)).projects.find((entry) => entry.id === binding.projectId)
-            if (!project) throw new Error('activation-failed')
-            activation = await packActivation(localEngineUrl(project, binding.engineId, result), result.current, services, added)
-            trusted()
-            for (const [managed, other] of remoteWindows) {
-              if (other.projectId !== binding.projectId || managed.isDestroyed() || !other.gateway) continue
-              const target = localEngineUrl(project, other.engineId, result)
-              other.backendUrl = target
-              other.gateway.setTarget(target)
-            }
-          }
-          if (!activation) throw new Error('activation-failed')
-          return activation
-        },
-      })
-      binding.url = binding.gateway.url
-      await validate?.()
-      await writeFileAtomic(join(dataDirectory, portFile), `${JSON.stringify({ port: Number(new URL(binding.url).port) })}\n`)
-    } catch (error) {
-      await binding.gateway?.close()
-      remoteWindows.delete(remote)
-      remote.destroy()
-      throw error
-    }
-  }
-  remote.webContents.on('did-navigate', (_event, address) => {
-    // Match the frontend's immutable document scope, not later history.replaceState edits.
-    const project = new URL(address).searchParams.get('dinksterProject') ?? 'default'
-    binding.folderProject = validProjectId(project) && (binding.libraryProject === undefined || project === binding.libraryProject) ? project : undefined
-    binding.document++
-  })
-  denyRendererPermissions(remote.webContents.session)
-  remote.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  remote.webContents.on('will-navigate', (navigation, url) => {
-    if (new URL(url).origin !== new URL(binding.url).origin) navigation.preventDefault()
-  })
-  remote.on('closed', () => {
-    remoteWindows.delete(remote)
-    void binding.gateway?.close().catch(() => undefined)
-  })
-  try {
-    await validate?.()
-    await remote.loadURL(projectAddress(binding.url, binding.libraryProject))
-    await validate?.()
-  } catch (error) { remote.destroy(); throw error }
+  const info = await desktopInfo()
+  broadcastToWindows('desktop:info-changed', () => info)
 }
 
 async function shutdown(): Promise<void> {
   if (quitting) return
   quitting = true
   await windowQueue.run(async () => {})
-  await Promise.all([...remoteWindows.values()].map((binding) => binding.gateway?.close()))
-  const stopped = await Promise.allSettled([
-    ...[...localEngines.values()].map(({ root, engine }) => environmentClient.run({ root, operation: 'stop', engine }, true)),
-    Promise.resolve().then(() => webHost?.close()),
-  ])
   try {
-    if (stopped.every((result) => result.status === 'fulfilled')) await environmentClient.dispose()
-    else await shellLog.append('Retaining environment tools because shutdown did not stop every local service.')
-    window = undefined
-    await flushWindowLayout()
-    projectWindow?.destroy()
-    libraryWindow?.destroy()
-    for (const managed of remoteWindows.keys()) managed.destroy()
-    remoteWindows.clear()
+    await home.stop()
+    await environmentClient.dispose()
+    if (layoutWriteTimer !== undefined) clearTimeout(layoutWriteTimer)
+    await persistWindowLayout()
     for (const managed of windows.values()) managed.destroy()
     windows.clear()
+    documents.clear()
     tray?.destroy()
-  } finally {
     await lifecycleLease?.release()
     lifecycleLease = undefined
     app.exit(0)
+  } catch (error) {
+    quitting = false
+    logFailure(error)
+    await dialog.showMessageBox({ type: 'error', title: 'Dinkster could not quit',
+      message: 'Dinkster could not stop every process it started.', detail: 'Desktop is still running. Inspect its support report before trying Quit again.' })
   }
 }
 
 function displayWorkAreas(): readonly { x: number; y: number; width: number; height: number; primary?: boolean }[] {
   const primaryId = screen.getPrimaryDisplay().id
-  return screen.getAllDisplays().map((display) => ({
-    ...display.workArea,
-    ...(display.id === primaryId ? { primary: true } : {}),
-  }))
+  return screen.getAllDisplays().map((display) => ({ ...display.workArea, ...(display.id === primaryId ? { primary: true } : {}) }))
 }
 
 function placementFor(id: string): WorkspaceWindow | ChildWindow {
-  const found = windowLayout.workspaces.find((candidate) => candidate.id === id)
-    ?? windowLayout.children.find((candidate) => candidate.id === id)
+  const found = windowLayout.workspaces.find((candidate) => candidate.id === id) ?? windowLayout.children.find((candidate) => candidate.id === id)
   if (!found) throw new Error('window placement is not registered')
   return found
 }
@@ -942,37 +257,58 @@ function queryFor(id: string): string {
   const params = new URLSearchParams({ dinksterWindow: context.id, dinksterWindowKind: context.kind })
   if (context.kind === 'workflow') params.set('dinksterWorkflow', context.workflowId)
   if (context.kind === 'panel') params.set('dinksterPanel', context.panelId)
-  // The window loads into its own project's scope; windows sharing a project
-  // share one storage scope and tab authority. Default project = no param.
   const project = windowProject(id)
   if (project) params.set('dinksterProject', project)
   return params.toString()
 }
 
 async function createManagedWindow(id: string): Promise<BrowserWindow> {
-  if (!webHost) throw new Error('web host is not ready')
   const placement = placementFor(id)
   const bounds = normalizeWindowBounds(placement.bounds, displayWorkAreas())
   windowLayout = updateWindowPlacement(windowLayout, id, { bounds })
   const managed = new BrowserWindow({
-    ...windowChromeOptions(chrome),
-    ...bounds,
-    minWidth: Math.min(900, bounds.width),
-    minHeight: Math.min(640, bounds.height),
-    show: false,
-    title: desktopTitle(services),
-    icon: applicationIcon(),
-    backgroundColor: windowBackground(),
+    ...windowChromeOptions(chrome), ...bounds, minWidth: Math.min(900, bounds.width), minHeight: Math.min(640, bounds.height),
+    show: false, title: desktopTitle(services), icon: applicationIcon(), backgroundColor: windowBackground(),
     webPreferences: secureWebPreferences(join(app.getAppPath(), 'dist', 'preload.cjs')),
   })
   installWindowChrome(managed, chrome, undefined, services)
   managed.on('page-title-updated', (event) => event.preventDefault())
   windows.set(id, managed)
-  if (id === 'primary') window = managed
+  documents.set(id, { origin: new URL(home.url).origin })
   denyRendererPermissions(managed.webContents.session)
   managed.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  managed.webContents.on('will-navigate', (event, url) => {
-    if (new URL(url).origin !== new URL(webHost!.url).origin) event.preventDefault()
+  const bindDocument = (address: string): void => {
+    const origin = new URL(address).origin
+    if (!frontendOrigins.has(origin)) return
+    documents.set(id, { origin })
+    if (windowLayout.workspaces.some((workspace) => workspace.id === id)) {
+      const project = new URL(address).searchParams.get('dinksterProject') ?? undefined
+      if (project === undefined || validProjectId(project)) {
+        windowLayout = setWorkspaceProject(windowLayout, id, project)
+        scheduleWindowLayoutWrite()
+        sendWindowLayout()
+      }
+    }
+  }
+  managed.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
+    if (mainFrame) documents.delete(id)
+  })
+  managed.webContents.on('did-navigate', (_event, address) => bindDocument(address))
+  managed.webContents.on('did-navigate-in-page', (_event, address, mainFrame) => { if (mainFrame) bindDocument(address) })
+  managed.webContents.on('will-navigate', (event, address) => {
+    if (new URL(address).origin === new URL(home.url).origin) return
+    event.preventDefault()
+    void currentHome().then(async (status) => {
+      const selected = status.installationFrontend && new URL(status.installationFrontend)
+      const target = new URL(address)
+      if (!selected || selected.protocol !== 'http:' || selected.hostname !== '127.0.0.1'
+        || target.username || target.password || target.origin !== selected.origin || managed.isDestroyed()) return
+      frontendOrigins.add(selected.origin)
+      await managed.loadURL(address)
+    }).catch(logFailure)
+  })
+  managed.webContents.on('will-redirect', (event, address) => {
+    if (new URL(address).origin !== documents.get(id)?.origin) event.preventDefault()
   })
   managed.once('ready-to-show', () => {
     if (placement.maximized) managed.maximize()
@@ -985,104 +321,64 @@ async function createManagedWindow(id: string): Promise<BrowserWindow> {
   }
   managed.on('move', recordPlacement)
   managed.on('resize', recordPlacement)
-  managed.on('maximize', () => {
-    windowLayout = updateWindowPlacement(windowLayout, id, { maximized: true })
-    scheduleWindowLayoutWrite()
-  })
-  managed.on('unmaximize', () => {
-    windowLayout = updateWindowPlacement(windowLayout, id, { maximized: false, bounds: managed.getBounds() })
-    scheduleWindowLayoutWrite()
-  })
+  managed.on('maximize', () => { windowLayout = updateWindowPlacement(windowLayout, id, { maximized: true }); scheduleWindowLayoutWrite() })
+  managed.on('unmaximize', () => { windowLayout = updateWindowPlacement(windowLayout, id, { maximized: false, bounds: managed.getBounds() }); scheduleWindowLayoutWrite() })
   managed.on('close', (event) => {
     if (quitting) return
     if (id === 'primary') {
       event.preventDefault()
-      setImmediate(() => { void serializeLifecycle(shutdown) })
+      if (keepRunning) managed.hide()
+      else setImmediate(() => { void serializeLifecycle(shutdown) })
       return
     }
     remoteWorkerFileGrants.revokeWindow(id)
     if (redockingWindows.delete(id)) return
     windows.delete(id)
+    documents.delete(id)
     pendingDeepLinks.delete(id)
     windowLayout = removeWindow(windowLayout, id)
     scheduleWindowLayoutWrite()
     queueMicrotask(sendWindowLayout)
   })
-  const url = new URL(webHost.url)
+  const url = new URL(home.url)
   url.search = queryFor(id)
-  try {
-    await managed.loadURL(url.toString())
-  } catch (error) {
-    windows.delete(id)
-    if (id === 'primary') window = undefined
-    managed.destroy()
-    throw error
-  }
+  try { await managed.loadURL(url.toString()) }
+  catch (error) { windows.delete(id); documents.delete(id); managed.destroy(); throw error }
   return managed
 }
 
-/**
- * The web-host port is part of the renderer origin and so keys all renderer
- * localStorage; it must survive restarts or every launch would present an
- * empty app. Stored beside the other per-install state in dataDirectory.
- */
-async function readPersistedPort(filename: string): Promise<number | undefined> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(join(dataDirectory, filename), 'utf8'))
-    const port = (parsed as { port?: unknown } | null)?.port
-    return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535 ? port : undefined
-  } catch {
-    return undefined
-  }
-}
-
-async function createWindow(): Promise<void> {
-  const appDirectory = app.isPackaged
-    ? join(process.resourcesPath, 'app')
-    : join(app.getAppPath(), '..', 'app', 'dist')
-  webHost = await createWebHost(appDirectory, undefined, await readPersistedPort('web-host.json'))
-  try {
-    await writeFileAtomic(join(dataDirectory, 'web-host.json'), `${JSON.stringify({ port: Number(new URL(webHost.url).port) })}\n`)
-  } catch (error) {
-    void shellLog.append(redactDiagnosticText(`web host port: ${error instanceof Error ? error.message : String(error)}`))
-  }
-  const primary = screen.getPrimaryDisplay().workArea
-  windowLayout = await readWindowLayout(dataDirectory, defaultWindowLayout({
-    x: primary.x + Math.max(0, Math.floor((primary.width - 1440) / 2)),
-    y: primary.y + Math.max(0, Math.floor((primary.height - 900) / 2)),
-    width: Math.min(1440, primary.width),
-    height: Math.min(900, primary.height),
-  }))
-  await createManagedWindow('primary')
-  let restoreFailed = false
-  for (const workspace of windowLayout.workspaces) {
-    if (workspace.id === 'primary') continue
-    try {
-      await createManagedWindow(workspace.id)
-    } catch (error) {
-      windowLayout = removeWindow(windowLayout, workspace.id)
-      restoreFailed = true
-      await shellLog.append(redactDiagnosticText(
-        `window restore ${workspace.id}: ${error instanceof Error ? error.message : String(error)}`,
-      ))
+async function createWindows(): Promise<void> {
+  homeIdentity = await home.start()
+  // The preload can request new windows before the primary finishes loading.
+  await windowQueue.run(async () => {
+    const primary = screen.getPrimaryDisplay().workArea
+    windowLayout = await readWindowLayout(dataDirectory, defaultWindowLayout({
+      x: primary.x + Math.max(0, Math.floor((primary.width - 1440) / 2)),
+      y: primary.y + Math.max(0, Math.floor((primary.height - 900) / 2)),
+      width: Math.min(1440, primary.width), height: Math.min(900, primary.height),
+    }))
+    await createManagedWindow('primary')
+    let restoreFailed = false
+    for (const workspace of windowLayout.workspaces) {
+      if (workspace.id === 'primary') continue
+      try { await createManagedWindow(workspace.id) }
+      catch (error) { windowLayout = removeWindow(windowLayout, workspace.id); restoreFailed = true; logFailure(error) }
     }
+    const restored = await restoreChildWindows(windowLayout, (child) => createManagedWindow(child.id).then(() => undefined))
+    windowLayout = restored.layout
+    for (const failure of restored.failures) { restoreFailed = true; logFailure(failure.error) }
+    if (restoreFailed) await persistWindowLayout()
+    windowsReady = true
+    sendWindowLayout()
+  })
+  const initial = deepLinkFromArgv(process.argv)
+  if (initial) preReadyLinks.push(initial)
+  for (const link of preReadyLinks.splice(0)) await routeDeepLink(link)
+  if (homeIdentity.frontend !== appDirectory) {
+    void dialog.showMessageBox({ type: 'info', title: 'Using the running Dinkster frontend',
+      message: 'Dinkster is already running with a different frontend.',
+      detail: 'Desktop is showing the running process\'s frontend, not replacing it with its bundled frontend.' })
   }
-  const restored = await restoreChildWindows(windowLayout, (child) => createManagedWindow(child.id).then(() => undefined))
-  windowLayout = restored.layout
-  for (const failure of restored.failures) {
-    restoreFailed = true
-    await shellLog.append(redactDiagnosticText(
-      `window restore ${failure.child.id}: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`,
-    ))
-  }
-  if (restoreFailed) await persistWindowLayout()
-  sendWindowLayout()
-}
-
-function senderWindowId(event: Electron.IpcMainInvokeEvent): string {
-  const entry = [...windows].find(([, managed]) => managed.webContents === event.sender)
-  if (!entry) throw new Error('window is not registered')
-  return entry[0]
 }
 
 function validAssignmentId(value: unknown): value is string {
@@ -1091,200 +387,87 @@ function validAssignmentId(value: unknown): value is string {
 
 async function openChildWindow(child: ChildWindow): Promise<void> {
   windowLayout = addChildWindow(windowLayout, child)
-  try {
-    await persistWindowLayout()
-    await createManagedWindow(child.id)
-  } catch (error) {
-    windowLayout = removeWindow(windowLayout, child.id)
-    await persistWindowLayout().catch(() => {})
-    throw error
-  }
+  try { await persistWindowLayout(); await createManagedWindow(child.id) }
+  catch (error) { windowLayout = removeWindow(windowLayout, child.id); await persistWindowLayout().catch(() => {}); throw error }
   sendWindowLayout()
 }
 
-/** Open an additional workspace window bound to a project (undefined = default). */
-async function openWorkspaceWindow(
-  projectId: string | undefined,
-  base: { x: number; y: number; width: number; height: number },
-): Promise<WorkspaceWindow> {
+async function openWorkspaceWindow(projectId: string | undefined, base: { x: number; y: number; width: number; height: number }): Promise<WorkspaceWindow> {
   const workspace: WorkspaceWindow = {
     id: `workspace-${randomUUID()}`,
-    bounds: normalizeWindowBounds(
-      { x: base.x + 48, y: base.y + 48, width: base.width, height: base.height },
-      displayWorkAreas(),
-    ),
-    maximized: false,
-    ...(projectId ? { projectId } : {}),
+    bounds: normalizeWindowBounds({ x: base.x + 48, y: base.y + 48, width: base.width, height: base.height }, displayWorkAreas()),
+    maximized: false, ...(projectId ? { projectId } : {}),
   }
   windowLayout = addWorkspaceWindow(windowLayout, workspace)
-  try {
-    await persistWindowLayout()
-    await createManagedWindow(workspace.id)
-  } catch (error) {
-    windowLayout = removeWindow(windowLayout, workspace.id)
-    await persistWindowLayout().catch(() => {})
-    throw error
-  }
+  try { await persistWindowLayout(); await createManagedWindow(workspace.id) }
+  catch (error) { windowLayout = removeWindow(windowLayout, workspace.id); await persistWindowLayout().catch(() => {}); throw error }
   sendWindowLayout()
   return workspace
 }
 
 function desktopCredentialCipher(): CredentialCipher {
-  return {
-    available: () => safeStorage.isEncryptionAvailable(),
-    encrypt: (plain) => safeStorage.encryptString(plain),
-    decrypt: (blob) => safeStorage.decryptString(blob),
-  }
+  return { available: () => safeStorage.isEncryptionAvailable(), encrypt: (plain) => safeStorage.encryptString(plain), decrypt: (blob) => safeStorage.decryptString(blob) }
 }
 
-/** The http(s) origin a request authenticates against; ws(s) maps to http(s). */
 function requestOrigin(url: string): string | undefined {
   let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return undefined
-  }
+  try { parsed = new URL(url) } catch { return undefined }
   const protocol = parsed.protocol === 'ws:' ? 'http:' : parsed.protocol === 'wss:' ? 'https:' : parsed.protocol
-  if (protocol !== 'http:' && protocol !== 'https:') return undefined
-  return `${protocol}//${parsed.host}`
+  return protocol === 'http:' || protocol === 'https:' ? `${protocol}//${parsed.host}` : undefined
 }
 
-/**
- * Inject stored credentials as Authorization headers in the main process,
- * scoped to the exact origins that have one. The renderer never handles the
- * secret; fetch and WebSocket requests both pass through the session. An
- * Authorization header the renderer set itself is never overwritten.
- */
 function applyCredentialHeaders(): void {
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (details, callback) => {
     const origin = requestOrigin(details.url)
-    for (const key of Object.keys(details.requestHeaders)) if (key.toLowerCase() === PROJECT_INSTALL_HEADER) delete details.requestHeaders[key]
-    const bound = [...remoteWindows].find(([managed]) => managed.webContents.id === details.webContentsId)
-    if (bound) {
-      const [managed, binding] = bound
-      if (!quitting && binding.gateway && origin === binding.url && details.method === 'POST'
-        && ['/api/packs/install/plan', '/api/packs/install/apply', '/api/packs/install/prepare',
-          '/api/packs/install/preparation/status', '/api/packs/install/preparation/cancel'].includes(new URL(details.url).pathname)
-        && isTrustedDesktopIpc(managed.webContents, managed.webContents.mainFrame, origin, managed.webContents, details.frame ?? null)
-        && !hasAuthorizationHeader(details.requestHeaders)) {
-        details.requestHeaders[PROJECT_INSTALL_HEADER] = binding.gateway.capability
-      }
-    }
     const secret = origin !== undefined ? credentialStore?.secretFor(origin) : undefined
-    if (secret !== undefined && !hasAuthorizationHeader(details.requestHeaders)) {
-      details.requestHeaders['Authorization'] = `Bearer ${secret}`
-    }
+    if (secret !== undefined && !hasAuthorizationHeader(details.requestHeaders)) details.requestHeaders['Authorization'] = `Bearer ${secret}`
     callback({ requestHeaders: details.requestHeaders })
   })
 }
 
-/**
- * Route a validated deep link to the workspace window bound to its project,
- * opening one when none exists. The payload is queued per window and the
- * renderer drains the queue over IPC, so a link arriving while the window
- * is still loading is delivered once the renderer is ready. Links arriving
- * before the first window exists (macOS open-url fires before ready; a
- * second instance can race startup) are staged and routed after it does.
- */
-let windowsReady = false
-const preReadyLinks: DesktopDeepLink[] = []
-
 function routeDeepLink(link: DesktopDeepLink): Promise<void> {
-  if (!windowsReady) {
-    preReadyLinks.push(link)
-    return Promise.resolve()
-  }
+  if (!windowsReady) { preReadyLinks.push(link); return Promise.resolve() }
   return windowQueue.run(async () => {
-    const project = link.projectId === 'default' ? undefined : link.projectId
-    let target = windowLayout.workspaces.find((workspace) =>
-      workspace.projectId === project && windows.has(workspace.id))
-    if (!target) {
-      const base = window && !window.isDestroyed()
-        ? window.getBounds()
-        : { x: 80, y: 80, width: 1280, height: 800 }
-      target = await openWorkspaceWindow(project, base)
-    }
+    const project = link.projectId
+    let target = windowLayout.workspaces.find((workspace) => workspace.projectId === project && windows.has(workspace.id))
+    if (!target) target = await openWorkspaceWindow(project, windows.get('primary')?.getBounds() ?? { x: 80, y: 80, width: 1280, height: 800 })
     const queue = pendingDeepLinks.get(target.id) ?? []
     queue.push(link)
     pendingDeepLinks.set(target.id, queue)
     const managed = windows.get(target.id)
-    if (managed && !managed.isDestroyed()) {
-      managed.show()
-      managed.focus()
-      managed.webContents.send('desktop:deep-link-pending')
-    }
-  }).catch((error: unknown) => {
-    void shellLog.append(redactDiagnosticText(
-      `deep link: ${error instanceof Error ? error.message : String(error)}`,
-    ))
-  })
+    if (managed && !managed.isDestroyed()) { managed.show(); managed.focus(); managed.webContents.send('desktop:deep-link-pending') }
+  }).catch(logFailure)
 }
 
 ipcMain.handle('desktop:locale', (event) => { trustedIpc(event); return app.getLocale() })
 ipcMain.handle('desktop:info', (event) => { trustedIpc(event); return desktopInfo() })
-ipcMain.handle('desktop:window-context', (event) => {
-  trustedIpc(event)
-  return windowContext(senderWindowId(event))
-})
-ipcMain.handle('desktop:window-layout', (event) => {
-  trustedIpc(event)
-  return publicWindowLayout(windowProject(senderWindowId(event)))
-})
+ipcMain.handle('desktop:window-context', (event) => { trustedIpc(event); return windowContext(senderWindowId(event)) })
+ipcMain.handle('desktop:window-layout', (event) => { trustedIpc(event); return publicWindowLayout(windowProject(senderWindowId(event))) })
 ipcMain.handle('desktop:open-workflow-window', (event, workflowId: unknown, x: unknown, y: unknown) => windowQueue.run(async () => {
   trustedIpc(event)
   if (!validAssignmentId(workflowId)) throw new Error('invalid workflow id')
   const senderId = senderWindowId(event)
   const project = windowProject(senderId)
-  const existing = windowLayout.children.find((child) =>
-    child.kind === 'workflow' && child.workflowId === workflowId && child.projectId === project)
-  if (existing) {
-    windows.get(existing.id)?.show()
-    windows.get(existing.id)?.focus()
-    return
-  }
-  const owner = windows.get(senderId)!
-  const current = owner.getBounds()
+  const existing = windowLayout.children.find((child) => child.kind === 'workflow' && child.workflowId === workflowId && child.projectId === project)
+  if (existing) { windows.get(existing.id)?.show(); windows.get(existing.id)?.focus(); return }
+  const current = windows.get(senderId)!.getBounds()
   const left = typeof x === 'number' && Number.isFinite(x) ? Math.round(x) : current.x + 48
   const top = typeof y === 'number' && Number.isFinite(y) ? Math.round(y) : current.y + 48
-  await openChildWindow({
-    id: `workflow-${randomUUID()}`,
-    kind: 'workflow',
-    workflowId,
+  await openChildWindow({ id: `workflow-${randomUUID()}`, kind: 'workflow', workflowId,
     bounds: normalizeWindowBounds({ x: left, y: top, width: current.width, height: current.height }, displayWorkAreas()),
-    maximized: false,
-    ...(project ? { projectId: project } : {}),
-  })
+    maximized: false, ...(project ? { projectId: project } : {}) })
 }))
 ipcMain.handle('desktop:open-panel-window', (event, panelId: unknown, returnPlacement: unknown) => windowQueue.run(async () => {
   trustedIpc(event)
-  if (!validAssignmentId(panelId) || (returnPlacement !== 'dock' && returnPlacement !== 'rail' && returnPlacement !== 'bottom')) {
-    throw new Error('invalid panel window request')
-  }
+  if (!validAssignmentId(panelId) || (returnPlacement !== 'dock' && returnPlacement !== 'rail' && returnPlacement !== 'bottom')) throw new Error('invalid panel window request')
   const senderId = senderWindowId(event)
   const project = windowProject(senderId)
-  const existing = windowLayout.children.find((child) =>
-    child.kind === 'panel' && child.panelId === panelId && child.projectId === project)
-  if (existing) {
-    windows.get(existing.id)?.show()
-    windows.get(existing.id)?.focus()
-    return
-  }
+  const existing = windowLayout.children.find((child) => child.kind === 'panel' && child.panelId === panelId && child.projectId === project)
+  if (existing) { windows.get(existing.id)?.show(); windows.get(existing.id)?.focus(); return }
   const current = windows.get(senderId)!.getBounds()
-  await openChildWindow({
-    id: `panel-${randomUUID()}`,
-    kind: 'panel',
-    panelId,
-    returnPlacement: returnPlacement as DesktopPanelPlacement,
-    bounds: normalizeWindowBounds({
-      x: current.x + 64,
-      y: current.y + 64,
-      width: Math.min(900, current.width),
-      height: Math.min(700, current.height),
-    }, displayWorkAreas()),
-    maximized: false,
-    ...(project ? { projectId: project } : {}),
-  })
+  await openChildWindow({ id: `panel-${randomUUID()}`, kind: 'panel', panelId, returnPlacement: returnPlacement as DesktopPanelPlacement,
+    bounds: normalizeWindowBounds({ x: current.x + 64, y: current.y + 64, width: Math.min(900, current.width), height: Math.min(700, current.height) }, displayWorkAreas()),
+    maximized: false, ...(project ? { projectId: project } : {}) })
 }))
 ipcMain.handle('desktop:redock-window', (event) => windowQueue.run(async () => {
   trustedIpc(event)
@@ -1293,53 +476,33 @@ ipcMain.handle('desktop:redock-window', (event) => windowQueue.run(async () => {
   const managed = windows.get(id)
   redockingWindows.add(id)
   windows.delete(id)
+  documents.delete(id)
   windowLayout = removeWindow(windowLayout, id)
-  try {
-    await persistWindowLayout()
-  } catch (error) {
-    scheduleWindowLayoutWrite()
-    throw error
-  } finally {
-    if (managed && !managed.isDestroyed()) managed.close()
-    redockingWindows.delete(id)
-    sendWindowLayout()
-  }
+  try { await persistWindowLayout() }
+  catch (error) { scheduleWindowLayoutWrite(); throw error }
+  finally { if (managed && !managed.isDestroyed()) managed.close(); redockingWindows.delete(id); sendWindowLayout() }
 }))
 ipcMain.handle('desktop:switch-project', (event, projectId: unknown) => windowQueue.run(async () => {
   trustedIpc(event)
   const id = senderWindowId(event)
-  if (!windowLayout.workspaces.some((workspace) => workspace.id === id)) {
-    throw new Error('projects are switched from a workspace window')
-  }
+  if (!windowLayout.workspaces.some((workspace) => workspace.id === id)) throw new Error('projects are switched from a workspace window')
   if (!validProjectId(projectId)) throw new Error('invalid project id')
-  const next = projectId === 'default' ? undefined : projectId
+  const next = projectId
   if (windowProject(id) === next) return
-  // Tear-out children stay bound to their own project and keep working;
-  // only this workspace window reloads into the new scope.
   const previousProject = windowProject(id)
   windowLayout = setWorkspaceProject(windowLayout, id, next)
   try {
     await persistWindowLayout()
-    const managed = windows.get(id)
-    if (managed && webHost) {
-      const url = new URL(webHost.url)
-      url.search = queryFor(id)
-      await managed.loadURL(url.toString())
-    }
+    const url = new URL(home.url)
+    url.search = queryFor(id)
+    await windows.get(id)?.loadURL(url.toString())
   } catch (error) {
-    // Restore only this window's binding, on the current layout, so main
-    // never routes new pop-outs to a renderer still running the previous
-    // project. Concurrent close/move/resize changes stay intact; a window
-    // closed mid-switch stays closed.
     if (windowLayout.workspaces.some((workspace) => workspace.id === id)) {
       windowLayout = setWorkspaceProject(windowLayout, id, previousProject)
       await persistWindowLayout().catch(() => {})
-      const managed = windows.get(id)
-      if (managed && webHost && !managed.isDestroyed()) {
-        const url = new URL(webHost.url)
-        url.search = queryFor(id)
-        await managed.loadURL(url.toString()).catch(() => {})
-      }
+      const url = new URL(home.url)
+      url.search = queryFor(id)
+      await windows.get(id)?.loadURL(url.toString()).catch(() => {})
     }
     throw error
   }
@@ -1348,8 +511,7 @@ ipcMain.handle('desktop:switch-project', (event, projectId: unknown) => windowQu
 ipcMain.handle('desktop:open-project-window', (event, projectId: unknown) => windowQueue.run(async () => {
   trustedIpc(event)
   if (!validProjectId(projectId)) throw new Error('invalid project id')
-  const next = projectId === 'default' ? undefined : projectId
-  await openWorkspaceWindow(next, windows.get(senderWindowId(event))!.getBounds())
+  await openWorkspaceWindow(projectId, windows.get(senderWindowId(event))!.getBounds())
 }))
 ipcMain.handle('desktop:take-deep-links', (event) => {
   trustedIpc(event)
@@ -1360,21 +522,14 @@ ipcMain.handle('desktop:take-deep-links', (event) => {
 })
 ipcMain.handle('desktop:connection-credentials', (event) => {
   trustedIpc(event)
-  return {
-    custody: credentialStore !== undefined && safeStorage.isEncryptionAvailable(),
-    profiles: credentialStore?.list().map((entry) => entry.profileId) ?? [],
-  }
+  return { custody: credentialStore !== undefined && safeStorage.isEncryptionAvailable(), profiles: credentialStore?.list().map((entry) => entry.profileId) ?? [] }
 })
 const CONNECTION_PROFILE_ID = /^cp-[a-z0-9-]{1,64}$/
 ipcMain.handle('desktop:set-connection-credential', async (event, profileId: unknown, url: unknown, secret: unknown) => {
   trustedIpc(event)
   if (typeof profileId !== 'string' || !CONNECTION_PROFILE_ID.test(profileId)) throw new Error('invalid connection profile id')
   if (!credentialStore) throw new Error('the credential store is not ready')
-  if (secret === null) {
-    await credentialStore.remove(profileId)
-    applyCredentialHeaders()
-    return
-  }
+  if (secret === null) { await credentialStore.remove(profileId); applyCredentialHeaders(); return }
   if (typeof secret !== 'string' || secret.length === 0 || secret.length > 4096) throw new Error('invalid credential')
   const origin = credentialOrigin(url)
   if (origin === undefined) throw new Error('credentials require an http(s) server address')
@@ -1388,42 +543,39 @@ ipcMain.handle('desktop:retire-connection-profile', async (event, profileId: unk
   await credentialStore.retire(profileId)
   applyCredentialHeaders()
 })
-ipcMain.handle('desktop:remote-workers', (event) => {
-  trustedIpc(event)
-  return remoteWorkerLifecycle.list()
-})
-ipcMain.handle('desktop:save-remote-worker', (event, worker: unknown) => {
-  trustedIpc(event)
-  const windowId = senderWindowId(event)
-  return remoteWorkerLifecycle.save(windowId, worker)
-})
-ipcMain.handle('desktop:remove-remote-worker', (event, name: unknown) => {
-  trustedIpc(event)
-  return remoteWorkerLifecycle.remove(name)
-})
+ipcMain.handle('desktop:remote-workers', (event) => { trustedIpc(event); return remoteWorkerLifecycle.list() })
+ipcMain.handle('desktop:save-remote-worker', (event, worker: unknown) => { trustedIpc(event); return remoteWorkerLifecycle.save(senderWindowId(event), worker) })
+ipcMain.handle('desktop:remove-remote-worker', (event, name: unknown) => { trustedIpc(event); return remoteWorkerLifecycle.remove(name) })
 ipcMain.handle('desktop:choose-remote-worker-file', async (event, kind: unknown) => {
   trustedIpc(event)
   if (kind !== 'token' && kind !== 'tls-ca') throw new Error('invalid remote-worker file kind')
   const windowId = senderWindowId(event)
   const result = await dialog.showOpenDialog(windows.get(windowId)!, {
-    title: kind === 'token' ? 'Choose the worker token file' : 'Choose the worker TLS certificate or CA file',
-    properties: ['openFile'],
-    ...(kind === 'tls-ca'
-      ? { filters: [{ name: 'TLS certificates', extensions: ['pem', 'crt', 'cer'] }, { name: 'All files', extensions: ['*'] }] }
-      : {}),
+    title: kind === 'token' ? 'Choose the worker token file' : 'Choose the worker TLS certificate or CA file', properties: ['openFile'],
+    ...(kind === 'tls-ca' ? { filters: [{ name: 'TLS certificates', extensions: ['pem', 'crt', 'cer'] }, { name: 'All files', extensions: ['*'] }] } : {}),
   })
+  trustedIpc(event)
   const path = result.canceled ? undefined : result.filePaths[0]
   return path === undefined ? undefined : remoteWorkerFileGrants.issue(windowId, kind, path)
 })
-ipcMain.handle('desktop:check-for-updates', async (event) => {
+ipcMain.handle('desktop:check-for-updates', async (event) => { trustedIpc(event); await sendInfo(); return shellUpdater.manualStatus() })
+ipcMain.handle('desktop:install-update', (event) => { trustedIpc(event); return shellUpdater.manualStatus() })
+ipcMain.handle('desktop:wsl-status', (event) => { trustedIpc(event); return wslHost.status() })
+ipcMain.handle('desktop:wsl-prepare', (event) => serializeLifecycle(async () => { trustedIpc(event); return wslHost.prepare() }))
+ipcMain.handle('desktop:wsl-project-root', async (event, id: unknown) => {
   trustedIpc(event)
-  await sendInfo()
-  return shellUpdater.manualStatus()
+  if (!validProjectId(id)) throw new Error('Invalid WSL project id')
+  const status = await wslHost.status()
+  if (!status.ready) throw new Error(status.detail)
+  return wslHost.projectRoot(id)
 })
-ipcMain.handle('desktop:install-update', async (event) => {
+ipcMain.handle('desktop:wsl-copy-models', (event) => serializeLifecycle(async () => {
   trustedIpc(event)
-  return shellUpdater.manualStatus()
-})
+  const result = await dialog.showOpenDialog(windows.get(senderWindowId(event))!, { title: 'Copy a Windows model folder to the private WSL disk', properties: ['openDirectory'] })
+  trustedIpc(event)
+  const path = result.filePaths[0]
+  return result.canceled || !path ? undefined : wslHost.copyModels(path)
+}))
 ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) => {
   let context: Awaited<ReturnType<typeof managedFiles>>
   try { context = await managedFiles(event, backendUrl) }
@@ -1431,10 +583,8 @@ ipcMain.handle('desktop:file-capabilities', async (event, backendUrl: unknown) =
   const { url, project, revalidate, distribution } = context
   const resolvePath = await dropResolutionSupported(url)
   let exact = false
-  try {
-    await assetLocations(url, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project, distribution)
-    exact = true
-  } catch { /* Folder choice does not depend on exact-file lookup support. */ }
+  try { await assetLocations(url, { digest: `blake3:${'0'.repeat(64)}`, scope: 'local', project }, project, distribution); exact = true }
+  catch { /* Folder choice does not depend on exact-file lookup support. */ }
   await revalidate()
   return { nativeFolderChoice: true, reveal: exact, resolvePath }
 })
@@ -1453,47 +603,31 @@ ipcMain.handle('desktop:reveal-model-location', async (event, backendUrl: unknow
 })
 ipcMain.handle('desktop:resolve-dropped-file', async (event, backendUrl: unknown, path: unknown) => {
   const context = await managedFiles(event, backendUrl)
-  return resolveDroppedPath(context.url, path, context.project, context.revalidate, context.distribution)
+  return resolveDroppedPath(context.url, path, context.project, context.revalidate, context.execution, context.distribution)
 })
 ipcMain.handle('desktop:reveal-file', async (event, backendUrl: unknown, asset: unknown) => {
   const context = await managedFiles(event, backendUrl)
-  const locations = await assetLocations(context.url, asset, context.project, context.distribution)
-  const location = locations[0]
+  const location = (await assetLocations(context.url, asset, context.project, context.distribution))[0]
   if (!location) throw new Error('No verified local copy exists in this project; copy the server path instead')
   return revealGrantedFile(location.path, [location.root], shell, async () => {
     await context.revalidate()
     const active = await assetLocations(context.url, asset, context.project, context.distribution)
-    if (!active.some((item) => item.path === location.path && item.root === location.root)) {
-      throw new Error('The local asset location is no longer authorized')
-    }
+    if (!active.some((item) => item.path === location.path && item.root === location.root)) throw new Error('The local asset location is no longer authorized')
     await context.revalidate()
   })
 })
 ipcMain.handle('desktop:save-file', async (event, bytes: unknown, suggestedName: unknown) => {
-  const parent = BrowserWindow.fromWebContents(event.sender)
-  if (!parent) throw new Error('Save requires a Desktop window')
-  const binding = remoteWindows.get(parent)
-  const document = binding?.document
-  const frame = event.senderFrame
-  const url = frame?.url
+  trustedIpc(event)
+  const id = senderWindowId(event)
+  const document = documents.get(id)
+  const parent = windows.get(id)!
   const revalidate = (): void => {
-    if (quitting || parent.isDestroyed() || event.sender.mainFrame !== frame || frame?.url !== url) {
-      throw new Error('The saving window changed')
-    }
-    if (binding) {
-      if (remoteWindows.get(parent) !== binding || binding.document !== document
-        || !isTrustedDesktopIpc(parent.webContents, parent.webContents.mainFrame, new URL(binding.url).origin, event.sender, event.senderFrame)) {
-        throw new Error('Save denied for an untrusted renderer')
-      }
-    } else trustedIpc(event)
+    trustedIpc(event)
+    if (parent.isDestroyed() || documents.get(id) !== document) throw new Error('The saving window changed')
   }
-  revalidate()
   return saveFile(bytes, suggestedName, parent, revalidate)
 })
-ipcMain.handle('desktop:system-check', async (event) => {
-  trustedIpc(event)
-  return systemCheck(dataDirectory, environmentClient)
-})
+ipcMain.handle('desktop:system-check', (event) => { trustedIpc(event); return systemCheck(dataDirectory, environmentClient) })
 ipcMain.handle('desktop:clear-cache', (event) => serializeLifecycle(async () => {
   trustedIpc(event)
   await rm(join(dataDirectory, 'cache', 'uv'), { recursive: true, force: true })
@@ -1501,103 +635,64 @@ ipcMain.handle('desktop:clear-cache', (event) => serializeLifecycle(async () => 
 }))
 ipcMain.handle('desktop:export-support-report', (event) => serializeLifecycle(async () => {
   trustedIpc(event)
-  const result = await dialog.showSaveDialog(window!, {
-    title: 'Export Dinkster support report',
-    defaultPath: `dinkster-support-${new Date().toISOString().slice(0, 10)}.json`,
+  const result = await dialog.showSaveDialog(windows.get(senderWindowId(event))!, {
+    title: 'Export Dinkster support report', defaultPath: `dinkster-support-${new Date().toISOString().slice(0, 10)}.json`,
     filters: [{ name: 'JSON report', extensions: ['json'] }],
   })
   if (result.canceled || !result.filePath) return undefined
-  const report = `${JSON.stringify({
-    createdAt: new Date().toISOString(),
-    platform: process.platform,
-    architecture: process.arch,
-    desktop: await desktopInfo(),
-    system: await systemCheck(dataDirectory, environmentClient),
-    logs: {
-      desktop: await shellLog.readTail(),
-    },
+  const report = `${JSON.stringify({ createdAt: new Date().toISOString(), platform: process.platform, architecture: process.arch,
+    desktop: await desktopInfo(), system: await systemCheck(dataDirectory, environmentClient), logs: { desktop: await shellLog.readTail() },
   }, null, 2)}\n`
   await writeFile(result.filePath, redactDiagnosticText(report))
   return result.filePath
 }))
 
-autoUpdater.on('error', () => {
-  void shellLog.append('Desktop updater reported an error; startup update status contains the result.')
-})
-
+autoUpdater.on('error', () => { void shellLog.append('Desktop updater reported an error; startup update status contains the result.') })
 app.on('before-quit', (event) => {
   if (quitting) return
   event.preventDefault()
   setImmediate(() => { void serializeLifecycle(shutdown) })
 })
-
-// dinkster:// launches. In dev (process.defaultApp) the OS must invoke the
-// electron binary with the app path, or the registration would point at a
-// bare electron that cannot find the app.
 if (process.defaultApp) {
-  if (process.argv.length >= 2 && process.argv[1]) {
-    app.setAsDefaultProtocolClient('dinkster', process.execPath, [resolve(process.argv[1])])
-  }
-} else {
-  app.setAsDefaultProtocolClient('dinkster')
-}
-
+  if (process.argv.length >= 2 && process.argv[1]) app.setAsDefaultProtocolClient('dinkster', process.execPath, [resolve(process.argv[1])])
+} else app.setAsDefaultProtocolClient('dinkster')
 const primaryInstance = app.requestSingleInstanceLock({ services })
 if (!primaryInstance) app.quit()
 app.on('second-instance', (_event, argv, _directory, additionalData) => {
   const incoming = (additionalData as { services?: unknown } | undefined)?.services
-  if (incoming !== services) {
-    dialog.showErrorBox('Hosted services do not match', `The running Desktop uses ${services} services. Close it before launching with different services.`)
-    return
-  }
+  if (incoming !== services) { dialog.showErrorBox('Hosted services do not match', `The running Desktop uses ${services} services. Close it before launching with different services.`); return }
   const link = deepLinkFromArgv(argv)
-  if (link) {
-    void routeDeepLink(link)
-    return
-  }
-  if (window) { window.show(); window.focus() }
-  else void createLibraryWindow()
+  if (link) { void routeDeepLink(link); return }
+  const primary = windows.get('primary')
+  if (primary) { primary.show(); primary.focus() }
 })
-// macOS delivers protocol launches as open-url instead of argv.
-app.on('open-url', (event, url) => {
-  event.preventDefault()
-  const link = parseDeepLink(url)
-  if (link) void routeDeepLink(link)
-})
-
+app.on('open-url', (event, url) => { event.preventDefault(); const link = parseDeepLink(url); if (link) void routeDeepLink(link) })
+app.on('activate', () => { const primary = windows.get('primary'); if (primary) { primary.show(); primary.focus() } })
 if (primaryInstance) app.whenReady().then(async () => {
   lifecycleLease = await acquireLifecycleLease(dataDirectory)
   await shellLog.append(JSON.stringify({ event: 'desktop-startup', version: app.getVersion(), pid: process.pid }))
-  // Unsigned macOS releases cannot replace an installed app.
   const shellUpdate = process.platform === 'darwin' ? undefined : await shellUpdater.start()
   if (shellUpdate?.state === 'installing') return
-  nativeTheme.on('updated', () => {
-    for (const managed of windows.values()) managed.setBackgroundColor(windowBackground())
-    if (projectWindow && !projectWindow.isDestroyed()) projectWindow.setBackgroundColor(windowBackground())
-    for (const remote of remoteWindows.keys()) remote.setBackgroundColor(windowBackground())
-  })
+  nativeTheme.on('updated', () => { for (const managed of windows.values()) managed.setBackgroundColor(windowBackground()) })
   credentialStore = await CredentialStore.open(join(dataDirectory, 'credentials.json'), desktopCredentialCipher())
   applyCredentialHeaders()
-  await createLibraryWindow()
+  await createWindows()
   tray = new Tray(trayIcon())
   tray.setToolTip(desktopTitle(services))
   const navigation: Electron.MenuItemConstructorOptions[] = [
-    { id: 'desktop-projects', label: 'Projects', click: () => { void createLibraryWindow() } },
-    { id: 'desktop-installations', label: 'Installations', click: () => { void createProjectManager() } },
+    { id: 'desktop-projects', label: 'Projects', click: () => {
+      const primary = windows.get('primary')
+      if (primary) { void primary.loadURL(home.url).catch(logFailure); primary.show(); primary.focus() }
+    } },
+    { label: 'Keep running when the window closes', type: 'checkbox', checked: keepRunning, click: (item) => { keepRunning = item.checked } },
     { label: 'About Dinkster Desktop', click: () => { void showAbout(services) } },
     { type: 'separator' },
     { label: 'Quit', click: () => { void serializeLifecycle(shutdown) } },
   ]
   tray.setContextMenu(Menu.buildFromTemplate(navigation))
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: desktopTitle(services), submenu: navigation },
-    { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+    { label: desktopTitle(services), submenu: navigation }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
   ]))
-  tray.on('double-click', () => { void createLibraryWindow() })
-}).catch((error: unknown) => {
-  console.error(error)
-  void shellLog.append(redactDiagnosticText(error instanceof Error ? error.stack ?? error.message : String(error)))
-  app.quit()
-})
-
-app.on('window-all-closed', () => { void serializeLifecycle(shutdown) })
+  tray.on('double-click', () => { const primary = windows.get('primary'); if (primary) { primary.show(); primary.focus() } })
+}).catch((error: unknown) => { logFailure(error); app.quit() })
+app.on('window-all-closed', () => { if (!keepRunning) void serializeLifecycle(shutdown) })

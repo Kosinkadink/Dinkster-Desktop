@@ -30,11 +30,9 @@
     "@decimalturn/toml-patch": "3.0.4",
     "electron-updater": "^6.6.2",
     "extract-zip": "2.0.1",
-    "http-proxy": "^1.18.1",
     "semver": "^7.8.5"
   },
   "devDependencies": {
-    "@types/http-proxy": "^1.17.16",
     "@types/node": "^22.10.0",
     "@types/semver": "^7.8.0",
     "electron": "^37.2.6",

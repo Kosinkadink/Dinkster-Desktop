@@ -25,7 +25,7 @@ export interface WindowPlacement {
  */
 export interface WorkspaceWindow extends WindowPlacement {
   readonly id: string
-  /** Project this window is bound to; absent = the default project. */
+  /** Project this window is bound to; absent = the Projects page. */
   readonly projectId?: string
 }
 
@@ -33,7 +33,7 @@ export interface WorkflowWindow extends WindowPlacement {
   readonly id: string
   readonly kind: 'workflow'
   readonly workflowId: string
-  /** Project whose tab authority this tear-out belongs to; absent = default. */
+  /** Project whose tab authority this tear-out belongs to. */
   readonly projectId?: string
 }
 
@@ -42,7 +42,7 @@ export interface PanelWindow extends WindowPlacement {
   readonly kind: 'panel'
   readonly panelId: string
   readonly returnPlacement: 'dock' | 'rail' | 'bottom'
-  /** Project whose tab authority this panel belongs to; absent = default. */
+  /** Project whose tab authority this panel belongs to. */
   readonly projectId?: string
 }
 
@@ -100,16 +100,15 @@ function decodePlacement(value: Record<string, unknown>): WindowPlacement | unde
     : undefined
 }
 
-/** 'default' is normalized to absence so the two spellings cannot diverge. */
 function decodeProject(value: unknown): { readonly projectId?: string } {
-  return validProjectId(value) && value !== 'default' ? { projectId: value } : {}
+  return validProjectId(value) ? { projectId: value } : {}
 }
 
 export function decodeWindowLayout(value: unknown): WindowLayout | undefined {
   const root = record(value)
   if (!root || !Array.isArray(root['children'])) return undefined
   // Version 1 stored a single primary window; it migrates to a one-entry
-  // workspace list bound to the default project.
+  // workspace list with its recorded project context.
   let workspacesRaw: unknown
   if (root['version'] === 1) workspacesRaw = [root['primary']]
   else if (root['version'] === WINDOW_LAYOUT_VERSION) workspacesRaw = root['workspaces']

@@ -1,8 +1,9 @@
 # Dinkster Desktop
 
-Electron host for the Dinkster application and its local engine lifecycle.
-The [Desktop engine boundaries](docs/desktop.md) document the release mirror,
-project install-root bindings, and supervisor-per-snapshot swap contract.
+Electron host for the shared Dinkster process and its pages. Desktop verifies
+the native tools, starts or adopts Home, and retains native window, file,
+credential and update capabilities. Projects and engines belong to the shared
+process, not a second Desktop manager. See [Desktop boundaries](docs/desktop.md).
 
 ## Inputs
 
@@ -32,31 +33,12 @@ The desk controls release timing through the `Release` label; the tag job create
 
 ## WSL2 engine on Windows x64
 
-In **Manage a local installation**, select **WSL2 - private Linux disk**.
-**Check WSL2** reports availability and installation guidance; Desktop never
-changes the Windows version. After WSL2 is enabled, **Prepare private
-distribution** downloads Ubuntu 24.04, installs Bubblewrap, and creates a
-Desktop-owned distribution. It does not adopt or reconfigure existing user
-distributions. The private distribution disables Windows drive automount and
-Windows executable interop.
-
-**Use Linux project folder** selects a project under `/home/dinkster/projects`
-on that distribution's disk. Its environment tools, library and engines run
-through `wsl.exe` as a non-root Linux user, with verified Linux tools acquired
-from the pinned tools release or the selected channel's tools pin. Each immutable
-tools pin has a separate cache under `/home/dinkster/tools`, so switching pins
-does not remove an interpreter still used by another operation or supervisor.
-These WSL caches retain acquired pins; the native tools cache policy is unchanged.
-Windows Python and development-executable overrides do not run WSL projects.
-
-**Copy Windows model folder** makes a separate copy under
-`/home/dinkster/models`; originals stay in place. Links and existing destination
-names are refused. Add the copied Linux folder in the engine's model settings.
-Native folder choice, dropped paths and exact-file reveal translate only paths
-on the project's private WSL disk. A Windows-drive folder must be copied first;
-it is not passed into the pack jail. The project manager stores the native
-`\\wsl.localhost\Dinkster-Desktop-...` path while environment commands receive
-its Linux spelling.
+Desktop offers WSL status, preparation, project-root and model-copy operations
+to the shared page without a separate installation manager. Preparation creates
+a private Ubuntu 24.04 distribution, disables Windows drive automount and
+executable interop, and does not adopt other distributions. Tools run through
+`wsl.exe` as a non-root user. Model copying leaves the Windows originals in
+place. See [WSL2 boundaries](docs/desktop.md#wsl2-on-windows-x64).
 
 ## Windows native pack sandbox
 
@@ -106,104 +88,16 @@ Local project commands use the native environment tools, not host Python or uv.
 
 ## Environment client development
 
-Normal startup opens the project manager. Remote projects use the frontend
-served by their engine and do not invoke local environment commands. For local
-project development, set `DINKSTER_TOOLS_PYTHON` to an explicit environment-tools
-interpreter with `dinkster-supervisor` installed, or set `DINKSTER_ENV` to its
-`dinkster-env` executable. Desktop does not install tools with pip or uv as a
-fallback. Interpreter launches use `-I` and a child-only PATH containing the
-bundled scripts directory, not host Python or package managers. Inherited
-`PYTHON*` configuration is removed from that child and its engine descendants.
+Startup loads the shared Home page at `http://127.0.0.1:3638`, starting verified
+native tools if the process is not already running. Desktop does not import
+`projects.json`, select an engine snapshot or provide an installation manager.
+The shared process owns those operations. Quit stops only a process Desktop
+started; an adopted process is left running.
 
-Packaged Desktop uses the bundled tools for local operations without a runtime
-tools download. Extraction verifies the manifest and native ZIP, rejects links
-and escaping or duplicate paths, and preserves executable modes. The completed
-tree lives under the Desktop user-data
-`environment-tools/<tools-date>-<version>-<os>-<arch>` directory, survives normal
-shutdown, and is reused by full archive SHA256, even if its label changes.
-Different archives sharing a label receive `--2`, `--3` suffixes. Existing
-digest-named extractions are reused in place. A different pinned archive is
-fully checked before the previous payload is removed; small identity records
-reserve those paths for later reuse. Remote projects never acquire tools. First
-setup and engine updates still acquire their engine and base artifacts from the
-configured mirrors.
-
-For development the runtime-download pin remains an explicit input:
-`DINKSTER_TOOLS_MANIFEST` identifies the immutable `dinkster.tools/1` manifest,
-`DINKSTER_TOOLS_MANIFEST_SHA256` (or `DINKSTER_TOOLS_SHA256`) pins its bytes, and `DINKSTER_TOOLS_RELEASE`
-identifies its release directory. Locations are absolute local paths or
-credential-free HTTPS. Desktop selects the existing native tools artifact row,
-verifies its size and SHA256 before standard ZIP extraction into a new owned
-temporary directory. These overrides take precedence over the bundled payload;
-their temporary trees are removed after commands drain and local engines stop.
-A failed stop retains those tools and records a diagnostic. Downloads reject TLS
-downgrades and stop at the artifact's declared size; tools metadata is bounded
-to 8 MiB. Explicit development interpreter/command overrides take precedence.
-
-Before setup, update or catalog invokes an environment command, packaged Desktop
-authenticates the selected Stable or Nightly channel with an independently
-pinned Ed25519 public key, then enforces `minimumDesktopVersion`, reporting
-`DesktopVersionTooOld` when the shell must update first. Status, doctor, start,
-stop and other installed-snapshot operations do not fetch channel metadata.
-A trusted channel may explicitly supply a `tools` object with `label`, `manifest`,
-`sha256` and `release` to select newer tools through the same verified acquisition
-path. Desktop first tries each configured mirror's `tools/<label>` directory,
-then the signed origin URLs, without rewriting signed metadata. Each candidate
-must match the signed manifest digest and its native archive's size and digest.
-A complete mirror does not need the official tools host to be reachable.
-A newer engine alone does not force a tools download. Third-party HTTPS
-mirrors use the same signature check as official hosts and local copies; unsigned
-or unknown-key channels refuse. The pinned root has key ID
-`sha256:4b5b2c78b32db1ebedc4702a92d6e4e252c17531f0e102ab82dd910be6dec7b9`.
-
-Local operations review the command's plan before confirmation. A saved engine
-binding starts the existing snapshot through `dinkster-env start`; updates
-and restores route open windows to the newly returned supervisor URL, not the
-previous port. Desktop metadata stores bindings only; the environment command
-owns `environment.json`, `builds/<n>/build.json`, store discovery and process
-identity. The bundled supervisor tools must understand the same disk layout as
-any engine offered to this Desktop by a release channel. Desktop 0.2.9 bundles
-supervisor 0.0.13 to control environments written by Stable 0.0.16, including
-readiness, start and stop while offline. Legacy `project.json` settings are read
-only until the supervisor performs its one-time environment migration; Desktop's
-separate `projects.json` file remains a registry of shell bindings.
-
-The local manager's **Cleanup status (read-only)** operation displays backend
-retention reasons, automatic-cleanup preference, quarantined snapshots and
-persistent retry warnings. **Snapshot cleanup / retry** reviews a plan before
-confirmation. Keep the preference to retry snapshot-only cleanup, or select
-on/off to change the backend preference without collecting immediately. The
-adjacent previous-snapshots field accepts 1-100 (default 1), in addition to
-current; leave it blank to keep the saved count. Both settings use the backend's
-project policy. A count change takes effect on the next eligible cleanup, not
-while saving it. Preview and status show the effective count. Shared
-caches remain under the separate **Garbage collection** operation. Desktop
-does not duplicate retention policy, delete snapshot files or stop engines
-for cleanup. Older tools without cleanup details report that they are unavailable;
-this UI does not update the immutable bundled tools pin.
-
-The Linux Electron client boundary check runs with
-`node packages/e2e/scripts/verify-environment-client.mjs` under a display (or
-`xvfb-run --auto-servernum`). It uses subprocess response stubs to check plan
-confirmation, changed-port handoff, restore, remote-only routing and shutdown
-delegation. It is not a substitute for real CLI/snapshot file comparisons.
-`DINKSTER_ELECTRON_EXECUTABLE` optionally selects the installed Electron binary;
-`DINKSTER_SMOKE_ARTIFACTS` optionally retains screenshots.
-
-Pull requests run formatting, types, unit tests, and the Linux build with a
-10-minute budget. Main adds the pinned frontend browser suite and Windows
-packaging in parallel, with a 20-minute end-to-end budget. The `CI_RUNNERS`
-repository variable is required and selects GitHub-hosted images for every
-job:
-
-```json
-{
-  "linux": ["ubuntu-latest"],
-  "windows": ["windows-latest"],
-  "macos": ["macos-latest"],
-  "forkLinux": ["ubuntu-latest"]
-}
-```
-
-Every main run uploads `main-validation-status` with the Linux, browser, and
-Windows results. The aggregate status fails unless every lane passed.
+Development interpreter and manifest overrides, tools verification and the
+real process/native-window checks are documented under
+[Tools and development](docs/desktop.md#tools-and-development). Isolate HOME,
+the shared library/model registry and Desktop data when running those checks.
+Pull requests run formatting, types, unit tests, a Linux build, cross-platform
+process ownership and Linux/Windows native-window checks. Installer and update
+validation remain separate workflows; local checks never publish releases.

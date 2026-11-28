@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict'
-import { installationManager } from './installation-manager.mjs'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  readdir,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -32,6 +38,8 @@ const executablePath = process.env.DINKSTER_DESKTOP_EXECUTABLE
   : createRequire(join(repository, 'packages/desktop/package.json'))('electron')
 const baseArgs = [
   '--no-sandbox',
+  // Hosted macOS checks must not wait for an interactive Keychain prompt.
+  ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
   `--user-data-dir=${join(root, 'electron')}`,
   ...(process.env.DINKSTER_DESKTOP_EXECUTABLE
     ? []
@@ -47,22 +55,41 @@ const env = Object.fromEntries(
   ),
 )
 Object.assign(env, {
+  HOME: join(root, 'home'),
+  USERPROFILE: join(root, 'home'),
+  DINKSTER_HOME: join(root, 'home'),
   DINKSTER_DESKTOP_DATA: join(root, 'data'),
   DINKSTER_ACCELERATOR: 'cpu',
   CUDA_VISIBLE_DEVICES: '',
   XDG_DATA_HOME: join(root, 'xdg-data'),
+  XDG_CONFIG_HOME: join(root, 'xdg-config'),
   XDG_CACHE_HOME: join(root, 'xdg-cache'),
   APPDATA: join(root, 'app-data'),
   LOCALAPPDATA: join(root, 'local-app-data'),
 })
-const fixture = createServer((_request, response) => {
-  response.setHeader('Content-Type', 'text/html')
-  response.end(
-    '<!doctype html><title>Remote content title</title><style>body{background:#202020;color:#ededed;font:18px sans-serif;margin:24px}</style><h1>Remote engine fixture</h1>',
-  )
-})
-await new Promise((done) => fixture.listen(0, '127.0.0.1', done))
-const fixtureUrl = `http://127.0.0.1:${fixture.address().port}`
+await mkdir(env.DINKSTER_HOME)
+await writeFile(
+  join(env.DINKSTER_HOME, 'model-settings.json'),
+  JSON.stringify({ version: 1, downloadLocation: null, locations: [] }),
+)
+const homeUrl = 'http://127.0.0.1:3638'
+async function homeStopped() {
+  try {
+    await fetch(`${homeUrl}/supervisor/status`, {
+      signal: AbortSignal.timeout(2000),
+    })
+    return false
+  } catch (error) {
+    if (error.cause?.code === 'ECONNREFUSED') return true
+    if (error.cause?.code === 'ECONNRESET') return false
+    throw error
+  }
+}
+assert.equal(
+  await homeStopped(),
+  true,
+  'Leave an existing process on port 3638 alone',
+)
 const receipt = {
   sourceOnly,
   platform: process.platform,
@@ -128,11 +155,34 @@ async function launch(selection) {
     await app.evaluate(() => process.env.DINKSTER_SERVICES),
     selection,
   )
-  const manager = await installationManager(app)
-  await manager
-    .getByRole('heading', { name: 'Environments', exact: true })
-    .waitFor()
-  return manager
+  const page = await app.firstWindow({ timeout: 180_000 })
+  await expect(page).toHaveURL(
+    new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),
+  )
+  await expect(page.locator('.dinkster-window-toolbar-host')).toHaveAttribute(
+    'data-desktop-chrome',
+    '',
+  )
+  const status = await fetch(`${homeUrl}/supervisor/status`).then((response) =>
+    response.json(),
+  )
+  assert.equal(status.role, 'home')
+  assert.equal(status.state, 'stopped')
+  return page
+}
+
+async function quit() {
+  const closed = app.waitForEvent('close')
+  await app
+    .evaluate(({ Menu }) => {
+      Menu.getApplicationMenu()
+        .items[0].submenu.items.find((item) => item.label === 'Quit')
+        .click()
+    })
+    .catch(() => undefined)
+  await closed
+  app = undefined
+  await expect.poll(homeStopped, { timeout: 30_000 }).toBe(true)
 }
 
 async function mark(page, selection, kind) {
@@ -241,6 +291,7 @@ async function configuration(directory) {
           'logs',
           'cache',
           'environment-tools',
+          'home-tools',
           'library',
           'stores',
           'store',
@@ -292,43 +343,35 @@ async function configuration(directory) {
 }
 
 try {
-  let savedProjects
   let desktopBaseline
   for (const selection of ['production', 'qa', 'production']) {
-    const manager = await launch(selection)
-    await mark(manager, selection, 'manager')
+    const home = await launch(selection)
+    await mark(home, selection, 'home')
     assert.equal(
-      await manager
+      await home
         .locator('input, select, button, label')
         .filter({ hasText: /services|QA services/i })
         .count(),
       0,
     )
-    if (!savedProjects) {
-      await manager.evaluate(
-        (url) =>
-          window.dinksterProjects.save({
-            id: 'remote',
-            name: 'Remote fixture',
-            channel: 'stable',
-            engines: [{ id: 'remote', name: 'Remote', kind: 'remote', url }],
-          }),
-        fixtureUrl,
-      )
-      savedProjects = await readFile(
-        join(env.DINKSTER_DESKTOP_DATA, 'projects.json'),
-        'utf8',
-      )
-    }
-    const opened = app.waitForEvent('window')
-    await manager.evaluate(() =>
-      window.dinksterProjects.open('remote', 'remote'),
+    assert.deepEqual(
+      await home.evaluate(() => ({
+        projects: typeof window.dinksterProjects,
+        library: typeof window.dinksterLibrary,
+      })),
+      { projects: 'undefined', library: 'undefined' },
     )
-    const remote = await opened
-    await remote
-      .getByRole('heading', { name: 'Remote engine fixture' })
-      .waitFor()
-    await mark(remote, selection, 'fallback')
+    await assert.rejects(
+      stat(join(env.DINKSTER_DESKTOP_DATA, 'projects.json')),
+      { code: 'ENOENT' },
+    )
+    const opened = app.waitForEvent('window')
+    await home.evaluate(() =>
+      window.dinksterDesktop.openWorkflowWindow('services-check'),
+    )
+    const workflow = await opened
+    await expect(workflow).toHaveURL(/dinksterWorkflow=services-check/)
+    await mark(workflow, selection, 'workflow')
     const aboutOpened = app.waitForEvent('window')
     await app.evaluate(async ({ app }, selection) => {
       const require = process
@@ -366,10 +409,15 @@ try {
       )
     }
     await secondInstance(selection)
-    await mark(manager, selection, 'manager')
-    assert.equal(
-      await readFile(join(env.DINKSTER_DESKTOP_DATA, 'projects.json'), 'utf8'),
-      savedProjects,
+    await mark(home, selection, 'home')
+    const workflowClosed = workflow.waitForEvent('close')
+    await workflow
+      .evaluate(() => window.dinksterDesktop.redockWindow())
+      .catch(() => undefined)
+    await workflowClosed
+    await assert.rejects(
+      stat(join(env.DINKSTER_DESKTOP_DATA, 'projects.json')),
+      { code: 'ENOENT' },
     )
     await configuration(env.DINKSTER_DESKTOP_DATA)
     receipt.launches.push({
@@ -377,8 +425,7 @@ try {
       inherited: selection === 'qa' ? 'production' : 'qa',
       oppositeInstanceRefused: true,
     })
-    await app.close()
-    app = undefined
+    await quit()
     const saved = await configuration(env.DINKSTER_DESKTOP_DATA)
     if (desktopBaseline) {
       assert.deepEqual(
@@ -509,43 +556,36 @@ try {
     )
     if (invalid.exitCode === null) invalid.kill()
   }
-  if (!sourceOnly) {
+  if (!sourceOnly && wsl) {
+    const artifacts = join(root, 'wsl')
+    const result = await promisify(execFile)(
+      process.execPath,
+      [join(repository, 'packages/e2e/scripts/verify-wsl-project.mjs')],
+      {
+        env: {
+          ...env,
+          DINKSTER_WSL_ARTIFACTS: artifacts,
+          DINKSTER_DESKTOP_EXECUTABLE: executablePath,
+        },
+        timeout: 35 * 60_000,
+        maxBuffer: 4 * 1024 * 1024,
+      },
+    )
+    await writeFile(join(root, 'wsl-output.log'), result.stdout + result.stderr)
+    const entries = await readdir(artifacts)
+    assert.equal(entries.length, 1)
+    receipt.wsl = JSON.parse(
+      await readFile(join(artifacts, entries[0], 'receipt.json'), 'utf8'),
+    )
+    assert.equal(receipt.wsl.result, 'pass')
+  }
+  if (!sourceOnly && !wsl) {
     for (const channel of ['stable', 'nightly']) {
       progress('setup started', channel)
-      const portProbe = createServer()
-      await new Promise((done) => portProbe.listen(0, '127.0.0.1', done))
-      const port = portProbe.address().port
-      await new Promise((done) => portProbe.close(done))
-      const manager = await launch('production')
-      let guest
-      if (wsl) {
-        await manager.evaluate(async () => {
-          const status = await window.dinksterProjects.prepareWsl()
-          if (!status.ready) throw new Error(status.detail)
-        })
-        const { WslHost } = await import('../../desktop/dist/wsl.js')
-        const pin = JSON.parse(
-          await readFile(
-            join(
-              repository,
-              'packages/desktop/src/environment-tools-release.json',
-            ),
-            'utf8',
-          ),
-        )
-        guest = new WslHost(env.DINKSTER_DESKTOP_DATA, {
-          manifest: `https://releases.dinkster.org/tools/${pin.label}/tools-manifest.json`,
-          release: `https://releases.dinkster.org/tools/${pin.label}`,
-          sha256: pin.manifest.sha256,
-        })
-        receipt.distribution = guest.distribution
-      }
+      const home = await launch('production')
       const project = {
-        id: channel,
-        name: `${channel} services check`,
         channel,
-        root: guest ? guest.projectRoot(channel) : join(root, channel),
-        engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [], port }],
+        root: join(root, channel),
       }
       runtimeRoots.set(channel, join(project.root, 'runtime'))
       const request = {
@@ -553,30 +593,45 @@ try {
         operation: 'setup',
         channel,
         mirrors: ['https://releases.dinkster.org'],
-        port,
-        variant: wsl
-          ? 'linux-cpu'
-          : { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
-              process.platform
-            ],
-        data: guest ? guest.projectRoot('store') : join(root, 'store'),
-        engine: 'main',
-        gpus: [],
+        variant: { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
+          process.platform
+        ],
       }
-      const planned = await manager.evaluate(
-        ({ project, request }) =>
-          window.dinksterProjects.plan(project, request),
-        { project, request },
+      const planResponse = await home.request.get(
+        `${homeUrl}/supervisor/setup`,
+        {
+          params: { root: project.root, channel, variant: request.variant },
+          timeout: 120_000,
+        },
       )
-      assert.equal(planned.result.status, 'planned')
-      const applied = await manager.evaluate(
-        (token) => window.dinksterProjects.apply(token),
-        planned.token,
-      )
-      assert.equal(applied.status, 'applied')
+      assert.equal(planResponse.status(), 200)
+      const { plan } = await planResponse.json()
+      assert.equal(plan.refusal, null)
+      const started = await home.request.post(`${homeUrl}/supervisor/setup`, {
+        data: { planId: plan.id },
+      })
+      assert.equal(started.status(), 202)
+      const job = await started.json()
+      await expect
+        .poll(
+          async () => {
+            const response = await home.request.get(
+              `${homeUrl}/supervisor/setup/${job.id}`,
+            )
+            assert.equal(response.status(), 200)
+            const current = await response.json()
+            assert.notEqual(
+              current.state,
+              'failed',
+              JSON.stringify(current.error),
+            )
+            return current.state
+          },
+          { timeout: 30 * 60_000 },
+        )
+        .toBe('completed')
       progress('setup applied; closing Desktop', channel)
-      await app.close()
-      app = undefined
+      await quit()
       progress('Desktop closed; reading baseline', channel)
       const baseline = await configuration(project.root)
       progress('baseline read', channel)
@@ -596,87 +651,64 @@ try {
         ).version,
       )
       assert(toolsInput)
-      const tools = guest
-        ? undefined
-        : await acquireEnvironmentTools({
-            ...toolsInput,
-            cacheRoot: join(root, 'foreign-tools'),
-          })
-      async function runTools(args, services = 'production') {
-        if (guest) {
-          const { wslLinuxPath } = await import('../../desktop/dist/wsl.js')
-          return JSON.parse(
-            await guest.run(
-              [
-                '--root',
-                wslLinuxPath(guest.distribution, project.root),
-                ...args,
-              ],
-              toolsInput,
-              services,
-            ),
-          )
-        }
-        const result = await promisify(execFile)(
-          tools.python,
-          [
-            '-I',
-            '-m',
-            'dinkster_supervisor.environment',
-            '--root',
-            project.root,
-            ...args,
-          ],
-          {
-            env: { ...env, DINKSTER_SERVICES: services },
-            timeout: 120_000,
-            maxBuffer: 4 * 1024 * 1024,
-          },
-        )
-        return JSON.parse(result.stdout)
-      }
-      const installed = await runTools(['status', '--json'])
+      const tools = await acquireEnvironmentTools({
+        ...toolsInput,
+        cacheRoot: join(root, 'foreign-tools'),
+      })
+      const result = await promisify(execFile)(
+        tools.python,
+        [
+          '-I',
+          '-m',
+          'dinkster_supervisor.environment',
+          '--root',
+          project.root,
+          'status',
+          '--json',
+        ],
+        {
+          env,
+          timeout: 120_000,
+          maxBuffer: 4 * 1024 * 1024,
+        },
+      )
+      const installed = JSON.parse(result.stdout)
       assert.equal(installed.status, 'clean')
       assert.equal(typeof installed.engine?.version, 'string')
       assert.match(installed.engine.release, /^sha256:[a-f0-9]{64}$/)
       receipt.installations.push({ channel, engine: installed.engine })
-      let previous
       for (const selection of ['production', 'qa', 'production']) {
-        appendFileSync(
-          join(root, 'desktop-stderr.log'),
-          `\nStarting ${channel} ${selection}; previous: ${previous ?? 'none'}\n`,
-        )
-        if (previous) {
-          progress('starting previous services', channel, selection)
-          const result = await runTools(
-            [
-              'start',
-              '--engine',
-              'main',
-              '--port',
-              String(port),
-              '--json',
-              '--yes',
-            ],
-            previous,
-          )
-          assert.equal(result.status, 'applied')
-          const foreign = await fetch(
-            `http://127.0.0.1:${port}/api/nodes?wire=1`,
-          ).then((response) => response.json())
-          assert.equal(foreign.dinkster.services.name, previous)
-        }
         progress('launching Desktop', channel, selection)
-        const manager = await launch(selection)
+        const engine = await launch(selection)
         progress('opening engine', channel, selection)
-        const opened = app.waitForEvent('window', { timeout: 120_000 })
-        const [, engine] = await Promise.all([
-          manager.evaluate(
-            (id) => window.dinksterProjects.open(id, 'main'),
-            channel,
-          ),
-          opened,
-        ])
+        const opened = await engine.request.post(
+          `${homeUrl}/supervisor/engine`,
+          {
+            data: { root: project.root, engine: 'main' },
+          },
+        )
+        assert.equal(opened.status(), 200)
+        let installationFrontend
+        await expect
+          .poll(
+            async () => {
+              const response = await engine.request.get(
+                `${homeUrl}/supervisor/status`,
+              )
+              const status = await response.json()
+              assert.equal(status.open.root, project.root)
+              assert.notEqual(status.state, 'failed', JSON.stringify(status))
+              installationFrontend = status.installationFrontend
+              return status.state
+            },
+            { timeout: 120_000 },
+          )
+          .toBe('ready')
+        assert.equal(typeof installationFrontend, 'string')
+        await engine.evaluate((url) => {
+          location.href = url
+        }, installationFrontend)
+        await expect(engine).toHaveURL(new URL(installationFrontend).href)
         progress('engine opened; checking canvas', channel, selection)
         await expect(engine.getByTestId('graph-canvas')).toBeVisible({
           timeout: 120_000,
@@ -725,14 +757,11 @@ try {
           channel,
           selection,
           reported: selection,
-          restartedFrom: previous ?? null,
           announcedPacks: Object.keys(composition.packs).length,
           qaServicesBadge: await badge.isVisible(),
         })
-        previous = selection
         progress('engine verified; closing Desktop', channel, selection)
-        await app.close()
-        app = undefined
+        await quit()
         progress(
           'Desktop closed; checking environment configuration',
           channel,
@@ -821,13 +850,13 @@ try {
         await expect
           .poll(() => browser.contexts()[0]?.pages().length ?? 0)
           .toBeGreaterThan(0)
-        const manager = browser.contexts()[0].pages()[0]
-        await manager
-          .getByRole('heading', { name: 'Projects', exact: true })
-          .waitFor()
+        const home = browser.contexts()[0].pages()[0]
+        await expect(home).toHaveURL(
+          new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),
+        )
         await expect
           .poll(() =>
-            manager.evaluate(() =>
+            home.evaluate(() =>
               [
                 ...document.querySelectorAll(
                   '[data-desktop-chrome] .dinkster-window-identity-wide',
@@ -836,8 +865,8 @@ try {
             ),
           )
           .toBe(selection === 'qa')
-        await manager.screenshot({
-          path: join(root, `${selection}-shortcut-manager.png`),
+        await home.screenshot({
+          path: join(root, `${selection}-shortcut-home.png`),
           fullPage: true,
         })
       } finally {
@@ -870,12 +899,12 @@ try {
   try {
     await app?.close()
   } finally {
-    try {
-      for (const [channel, directory] of runtimeRoots) {
-        await retainRuntimeLogs(directory, join(root, 'runtime-logs', channel))
-      }
-    } finally {
-      await new Promise((done) => fixture.close(done))
+    for (const [channel, directory] of runtimeRoots) {
+      await retainRuntimeLogs(directory, join(root, 'runtime-logs', channel))
     }
+    await copyFile(
+      join(env.DINKSTER_DESKTOP_DATA, 'home.log'),
+      join(root, 'home.log'),
+    ).catch(() => undefined)
   }
 }

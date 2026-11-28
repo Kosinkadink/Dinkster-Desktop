@@ -28,6 +28,7 @@ export function fileCapabilities(backendUrl: unknown, managedUrl: string | undef
       const candidate = new URL(backendUrl)
       const managed = new URL(managedUrl)
       local = !candidate.username && !candidate.password && !candidate.search && !candidate.hash
+        && validProjectId(managed.searchParams.get('dinksterProject'))
         && candidate.origin === managed.origin && candidate.pathname === '/'
     }
   } catch { /* An invalid connection has no native file authority. */ }
@@ -138,7 +139,7 @@ export async function dropResolutionSupported(backendUrl: string): Promise<boole
 }
 
 /** Only advertised support permits sending a native path to the resolver. */
-export async function resolveDroppedPath(backendUrl: string, path: unknown, project: string, authorize: () => Promise<void>, distribution?: string): Promise<DesktopDroppedFileResult> {
+export async function resolveDroppedPath(backendUrl: string, path: unknown, project: string, authorize: () => Promise<void>, execution: string, distribution?: string): Promise<DesktopDroppedFileResult> {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || !validProjectId(project)) {
     throw new Error('Invalid native file resolution request')
   }
@@ -150,7 +151,8 @@ export async function resolveDroppedPath(backendUrl: string, path: unknown, proj
     await authorize()
     if (!supported) return { status: 'refused', reason: 'unsupported-backend' }
     const response = await fetch(url, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json',
+        'X-Dinkster-Execution': execution.replace(/[\u007f-\uffff]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`) },
       body: JSON.stringify({ path: enginePath, project, scope: 'local' }),
       redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
     })
@@ -207,6 +209,7 @@ export async function revealGrantedFile(
   const target = await grantedFile(path, roots)
   await authorize()
   if (await grantedFile(path, roots) !== target) throw new Error('The local file changed during verification')
+  await authorize()
   if (platform === 'win32' || platform === 'darwin') {
     shell.showItemInFolder(target)
     return { mode: 'selected' }

@@ -1,6 +1,4 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { DesktopLibraryBridge } from './library.js'
-import type { DesktopProjects } from './projects.js'
 import type {
   DesktopBridge,
   DesktopConnectionCredentials,
@@ -13,10 +11,13 @@ import type {
   DesktopSystemCheck,
   DesktopWindowContext,
   DesktopWindowLayout,
-  ProjectDialogBridge,
 } from './types.js'
 
 const bridge: DesktopBridge = {
+  wslStatus: () => ipcRenderer.invoke('desktop:wsl-status'),
+  prepareWsl: () => ipcRenderer.invoke('desktop:wsl-prepare'),
+  wslProjectRoot: (id) => ipcRenderer.invoke('desktop:wsl-project-root', id),
+  copyWslModels: () => ipcRenderer.invoke('desktop:wsl-copy-models'),
   saveFile: (bytes, suggestedName) => ipcRenderer.invoke('desktop:save-file', bytes, suggestedName),
   locale: () => ipcRenderer.invoke('desktop:locale') as Promise<string>,
   info: () => ipcRenderer.invoke('desktop:info') as Promise<DesktopInfo>,
@@ -68,40 +69,4 @@ const bridge: DesktopBridge = {
   },
 }
 
-const localFilesOnly = process.argv.includes('--dinkster-local-files')
-const libraryOnly = process.argv.includes('--dinkster-library')
-const library: DesktopLibraryBridge = {
-  reviewRestore: (installation, project, entry, scope) => ipcRenderer.invoke('desktop:library-restore-review', installation, project, entry, scope),
-  applyRestore: (token, alternative) => ipcRenderer.invoke('desktop:library-restore-apply', token, alternative),
-  history: (installation, project) => ipcRenderer.invoke('desktop:library-history', installation, project),
-  open: (installation, project) => ipcRenderer.invoke('desktop:library-open', installation, project),
-  installations: () => ipcRenderer.invoke('desktop:library-installations'),
-  projects: (installation, cursor) => ipcRenderer.invoke('desktop:library-projects', installation, cursor),
-  workflows: (installation, project, cursor) => ipcRenderer.invoke('desktop:library-workflows', installation, project, cursor),
-  assets: (installation, project, cursor) => ipcRenderer.invoke('desktop:library-assets', installation, project, cursor),
-}
-if (libraryOnly) contextBridge.exposeInMainWorld('dinksterLibrary', library)
-if (!libraryOnly) contextBridge.exposeInMainWorld('dinksterDesktop', localFilesOnly ? {
-  saveFile: bridge.saveFile,
-  fileCapabilities: bridge.fileCapabilities,
-  chooseDirectory: bridge.chooseDirectory,
-  revealFile: bridge.revealFile,
-  revealModelLocation: bridge.revealModelLocation,
-  resolveDroppedFile: bridge.resolveDroppedFile,
-} : bridge)
-
-const projects: ProjectDialogBridge = {
-  wslStatus: () => ipcRenderer.invoke('desktop:wsl-status'),
-  prepareWsl: () => ipcRenderer.invoke('desktop:wsl-prepare'),
-  wslProjectRoot: (id) => ipcRenderer.invoke('desktop:wsl-project-root', id),
-  copyWslModels: () => ipcRenderer.invoke('desktop:wsl-copy-models'),
-  list: () => ipcRenderer.invoke('desktop:projects-list') as Promise<DesktopProjects>,
-  save: (project) => ipcRenderer.invoke('desktop:projects-save', project) as Promise<void>,
-  sandbox: (root) => ipcRenderer.invoke('desktop:projects-sandbox', root),
-  remove: (projectId) => ipcRenderer.invoke('desktop:projects-remove', projectId) as Promise<void>,
-  open: (projectId, engineId) => ipcRenderer.invoke('desktop:projects-open', projectId, engineId) as Promise<void>,
-  inspect: (request) => ipcRenderer.invoke('desktop:projects-inspect', request),
-  plan: (project, request) => ipcRenderer.invoke('desktop:projects-plan', project, request),
-  apply: (token) => ipcRenderer.invoke('desktop:projects-apply', token),
-}
-if (!localFilesOnly && !libraryOnly) contextBridge.exposeInMainWorld('dinksterProjects', projects)
+contextBridge.exposeInMainWorld('dinksterDesktop', bridge)

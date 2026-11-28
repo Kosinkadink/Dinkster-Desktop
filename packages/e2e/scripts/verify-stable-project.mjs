@@ -1,26 +1,42 @@
 import assert from 'node:assert/strict'
-import { installationManager } from './installation-manager.mjs'
 import { createHash } from 'node:crypto'
 import { execFileSync, spawn } from 'node:child_process'
-import { once } from 'node:events'
+import { appendFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import { createServer as createMirror } from 'node:http'
-import { createServer } from 'node:net'
+import { createServer } from 'node:http'
 import { join, resolve } from 'node:path'
-import { writeFileSync } from 'node:fs'
-import { forwardMirror } from './forward-mirror.mjs'
 import { _electron as electron, expect } from '@playwright/test'
 import { verifyChannel } from '../../desktop/src/channel-signatures.ts'
+import { forwardMirror } from './forward-mirror.mjs'
 
 assert.equal(
   process.env.RUNNER_ENVIRONMENT,
   'github-hosted',
   'Fresh install proof requires a disposable hosted runner',
 )
+assert(process.env.DINKSTER_DESKTOP_EXECUTABLE)
+assert(process.env.DINKSTER_DESKTOP_VERIFY_ROOT)
 const executablePath = resolve(process.env.DINKSTER_DESKTOP_EXECUTABLE)
 const root = resolve(process.env.DINKSTER_DESKTOP_VERIFY_ROOT)
 await mkdir(root)
-await mkdir(join(root, 'temporary'))
+const homeUrl = 'http://127.0.0.1:3638'
+async function homeStopped() {
+  try {
+    await fetch(`${homeUrl}/supervisor/status`, {
+      signal: AbortSignal.timeout(2000),
+    })
+    return false
+  } catch (error) {
+    if (error.cause?.code === 'ECONNREFUSED') return true
+    if (error.cause?.code === 'ECONNRESET') return false
+    throw error
+  }
+}
+assert.equal(
+  await homeStopped(),
+  true,
+  'Leave an existing Home on port 3638 alone',
+)
 const publicRoot = 'https://releases.dinkster.org'
 const channelText = await fetch(`${publicRoot}/channels/stable.json`).then(
   (response) => {
@@ -54,8 +70,8 @@ assert.equal(
   createHash('sha256').update(toolsBytes).digest('hex'),
   channel.tools.sha256,
 )
-assert.equal(JSON.parse(toolsBytes).commit, manifest.commit)
 const toolsManifest = JSON.parse(toolsBytes)
+assert.equal(toolsManifest.commit, manifest.commit)
 const toolsOs = { win32: 'windows', linux: 'linux', darwin: 'macos' }[
   process.platform
 ]
@@ -75,7 +91,13 @@ assert.equal(
   createHash('sha256').update(toolsArchive).digest('hex'),
   toolsRow.sha256,
 )
-const toolsPath = `/tools/${channel.tools.label}`
+const home = join(root, 'home')
+await mkdir(home)
+await mkdir(join(root, 'temporary'))
+await writeFile(
+  join(home, 'model-settings.json'),
+  JSON.stringify({ version: 1, downloadLocation: null, locations: [] }),
+)
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([name, value]) =>
@@ -86,10 +108,14 @@ const env = Object.fromEntries(
   ),
 )
 Object.assign(env, {
+  HOME: home,
+  USERPROFILE: home,
+  DINKSTER_HOME: home,
   DINKSTER_DESKTOP_DATA: join(root, 'desktop'),
   DINKSTER_ACCELERATOR: 'cpu',
   CUDA_VISIBLE_DEVICES: '',
   XDG_DATA_HOME: join(root, 'xdg-data'),
+  XDG_CONFIG_HOME: join(root, 'xdg-config'),
   XDG_CACHE_HOME: join(root, 'xdg-cache'),
   LOCALAPPDATA: join(root, 'local-app-data'),
   APPDATA: join(root, 'app-data'),
@@ -102,114 +128,159 @@ Object.assign(env, {
       ? join(process.env.SystemRoot, 'System32')
       : '/usr/bin:/bin',
 })
-const server = createServer()
-await new Promise((done) => server.listen(0, '127.0.0.1', done))
-const port = server.address().port
-await new Promise((done) => server.close(done))
-const projectRoot = join(root, 'project')
+const installation = join(root, 'project')
 let mirrorChannel = channelText
-let mirrorOnline = true
 const mirrorRequests = []
 const mirrorFailures = []
-const failedMirrorRequests = new Set()
-const mirror = createMirror(async (request, response) => {
+const mirror = createServer(async (request, response) => {
   mirrorRequests.push(request.url)
-  if (!mirrorOnline) {
-    response.writeHead(503).end('Mirror unavailable')
-    return
-  }
-  if (
-    request.url === '/channels/stable.json' ||
-    request.url === '/channels/nightly.json'
-  ) {
+  if (request.url === '/channels/stable.json') {
     response.setHeader('Content-Type', 'application/json')
     response.end(mirrorChannel)
-    return
-  }
-  if (request.url === `${toolsPath}/tools-manifest.json`) {
-    response.end(toolsBytes)
-    return
-  }
-  if (request.url === `${toolsPath}/${toolsName}`) {
-    response.end(toolsArchive)
-    return
-  }
-  try {
-    await forwardMirror(`${publicRoot}${request.url}`, response)
-    failedMirrorRequests.delete(request.url)
-  } catch (error) {
-    failedMirrorRequests.add(request.url)
-    mirrorFailures.push(error)
-    console.error(error)
-    writeFileSync(
-      join(root, 'mirror-failures.json'),
-      JSON.stringify(
-        mirrorFailures.map((failure) => failure.diagnostic),
-        null,
-        2,
-      ),
-    )
+  } else if (request.url === '/tools-manifest.json') response.end(toolsBytes)
+  else if (request.url === `/${toolsName}`) response.end(toolsArchive)
+  else {
+    try {
+      await forwardMirror(`${publicRoot}${request.url}`, response)
+    } catch (error) {
+      mirrorFailures.push(error.diagnostic)
+    }
   }
 })
 await new Promise((done) => mirror.listen(0, '127.0.0.1', done))
 const mirrorUrl = `http://127.0.0.1:${mirror.address().port}`
-const app = await electron.launch({
-  executablePath,
-  args: ['--no-sandbox', `--user-data-dir=${join(root, 'electron')}`],
-  env,
-  timeout: 60_000,
-})
-let manager
-let toolsPython
+let app
+let page
+const receipt = { channel, manifest, mirrorUrl, mirrorRequests, mirrorFailures }
+async function quit() {
+  const closed = app.waitForEvent('close')
+  await app
+    .evaluate(({ Menu }) => {
+      Menu.getApplicationMenu()
+        .items[0].submenu.items.find((item) => item.label === 'Quit')
+        .click()
+    })
+    .catch(() => undefined)
+  await closed
+  app = undefined
+  await expect.poll(homeStopped, { timeout: 30_000 }).toBe(true)
+}
 try {
-  assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
-  await app.evaluate(() => {
-    const original = globalThis.fetch
-    globalThis.fetch = (input, options) => {
-      const url = new URL(
-        typeof input === 'string' || input instanceof URL ? input : input.url,
-      )
-      if (url.hostname === 'releases.dinkster.org')
-        throw new Error('Official tools origin denied')
-      return original(input, options)
-    }
+  app = await electron.launch({
+    executablePath,
+    args: [
+      '--no-sandbox',
+      // Hosted macOS checks must not wait for an interactive Keychain prompt.
+      ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
+      `--user-data-dir=${join(root, 'electron')}`,
+    ],
+    env,
+    timeout: 60_000,
   })
-  await assert.rejects(
-    app.evaluate(() => fetch('https://releases.dinkster.org/tools/denied')),
-    /Official tools origin denied/,
-  )
+  app
+    .process()
+    .stderr?.on('data', (bytes) =>
+      appendFileSync(join(root, 'desktop-stderr.log'), bytes),
+    )
+  assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
   assert.match(
     await app.evaluate(({ app }) => app.getVersion()),
     /^\d+\.\d+\.\d+$/,
   )
-  manager = await installationManager(app)
-  await manager
-    .getByRole('heading', { name: 'Environments', exact: true })
-    .waitFor()
-  assert.equal(
-    await manager.getByLabel('Channel', { exact: true }).inputValue(),
-    'stable',
+  page = await app.firstWindow({ timeout: 180_000 })
+  await expect(page).toHaveURL(
+    new RegExp(`^${homeUrl.replaceAll('.', '\\.')}[/?]`),
   )
-  const project = {
-    id: 'stable-project',
-    name: 'Fresh Stable project',
-    channel: 'stable',
-    root: projectRoot,
-    engines: [{ id: 'main', name: 'main', kind: 'local', gpus: [], port }],
-  }
-  const request = {
-    root: projectRoot,
-    operation: 'setup',
-    channel: 'stable',
-    variant: { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
-      process.platform
-    ],
-    mirrors: [mirrorUrl],
-    data: join(root, 'store'),
-    engine: 'main',
-    gpus: [],
-    port,
-  }
+  await expect(page.locator('.dinkster-window-toolbar-host')).toHaveAttribute(
+    'data-desktop-chrome',
+    '',
+  )
+  const status = await page.request.get(`${homeUrl}/supervisor/status`)
+  assert.equal(status.status(), 200)
+  receipt.home = await status.json()
+  assert.equal(receipt.home.role, 'home')
+  assert.equal(receipt.home.state, 'stopped')
+
+  const tools = await app.evaluate(
+    async ({ app }, { root, input, manifest, toolsName, mirrorUrl }) => {
+      const path = process.getBuiltinModule('node:path')
+      const fs = process.getBuiltinModule('node:fs/promises')
+      const require = process
+        .getBuiltinModule('node:module')
+        .createRequire(path.join(app.getAppPath(), 'package.json'))
+      const { acquireEnvironmentTools } = require(
+        path.join(app.getAppPath(), 'dist/environment-tools.js'),
+      )
+      const directory = path.join(root, 'corrupt-tools')
+      await fs.mkdir(directory)
+      const corrupt = {
+        ...input,
+        manifest: path.join(directory, 'tools-manifest.json'),
+        release: directory,
+      }
+      const integrity = {}
+      const refuse = async (name) => {
+        try {
+          await acquireEnvironmentTools(corrupt)
+          throw new Error(`Accepted corrupt tools: ${name}`)
+        } catch (error) {
+          if (error.message.startsWith('Accepted corrupt tools:')) throw error
+          integrity[name] = error.message
+        }
+      }
+      await fs.writeFile(corrupt.manifest, '{}')
+      await refuse('manifest')
+      await fs.writeFile(corrupt.manifest, manifest)
+      const native = JSON.parse(manifest).artifacts.find(
+        (row) => row.name === toolsName,
+      )
+      const archive = path.join(directory, native.name)
+      await fs.writeFile(archive, 'x')
+      await refuse('size')
+      await fs.truncate(archive, native.size)
+      await refuse('digest')
+      const original = globalThis.fetch
+      globalThis.fetch = (input, options) => {
+        const url = new URL(
+          typeof input === 'string' || input instanceof URL ? input : input.url,
+        )
+        if (url.hostname === 'releases.dinkster.org')
+          throw new Error('Official tools origin denied')
+        return original(input, options)
+      }
+      try {
+        let refused = false
+        try {
+          await fetch('https://releases.dinkster.org/tools/denied')
+        } catch (error) {
+          refused = error.message === 'Official tools origin denied'
+        }
+        if (!refused) throw new Error('Tools origin was not denied')
+        const acquired = await acquireEnvironmentTools({
+          ...input,
+          mirrorReleases: [mirrorUrl],
+          cacheRoot: path.join(root, 'stable-tools'),
+        })
+        return { ...acquired, integrity, officialOriginDenied: refused }
+      } finally {
+        globalThis.fetch = original
+      }
+    },
+    {
+      root,
+      input: channel.tools,
+      manifest: toolsBytes.toString('utf8'),
+      toolsName,
+      mirrorUrl,
+    },
+  )
+  assert.match(tools.integrity.manifest, /checksum mismatch/)
+  assert.match(tools.integrity.size, /size mismatch/)
+  assert.match(tools.integrity.digest, /checksum mismatch/)
+  assert.equal(tools.persistent, true)
+  assert(mirrorRequests.includes('/tools-manifest.json'))
+  assert(mirrorRequests.includes(`/${toolsName}`))
+  receipt.tools = tools
   const envelope = JSON.parse(channelText)
   const refusedChannels = {
     unsigned: JSON.stringify(envelope.signed),
@@ -225,114 +296,106 @@ try {
       },
     ),
   }
-  for (const [name, text] of Object.entries(refusedChannels)) {
-    assert.notEqual(text, channelText)
+  receipt.channelRefusals = {}
+  for (const [name, text] of Object.entries({
+    ...refusedChannels,
+    valid: channelText,
+  })) {
+    if (name !== 'valid') assert.notEqual(text, channelText)
     mirrorChannel = text
-    await assert.rejects(
-      manager.evaluate(
-        ({ project, request }) =>
-          window.dinksterProjects.plan(project, request),
-        { project, request },
-      ),
-      /no mirror supplied a valid trusted channel/,
-      name,
-    )
-    await assert.rejects(stat(projectRoot), { code: 'ENOENT' })
-  }
-  mirrorChannel = channelText
-  const integrity = await app.evaluate(
-    async ({ app }, { root, tools, manifest, toolsName }) => {
-      const path = process.getBuiltinModule('node:path')
-      const fs = process.getBuiltinModule('node:fs/promises')
-      const require = process
-        .getBuiltinModule('node:module')
-        .createRequire(path.join(app.getAppPath(), 'package.json'))
-      const { acquireEnvironmentTools } = require(
-        path.join(app.getAppPath(), 'dist/environment-tools.js'),
+    // The real native CLI must reject metadata before setup can create a root.
+    receipt.channelRefusals[name] = await new Promise((resolve, reject) => {
+      const child = spawn(
+        tools.python,
+        [
+          '-I',
+          '-m',
+          'dinkster_supervisor.environment',
+          '--root',
+          installation,
+          'setup',
+          '--channel',
+          'stable',
+          '--mirror',
+          mirrorUrl,
+          '--variant',
+          { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
+            process.platform
+          ],
+          '--plan',
+          '--json',
+        ],
+        { env, timeout: 120_000 },
       )
-      const directory = path.join(root, 'corrupt-tools')
-      await fs.mkdir(directory)
-      const input = {
-        ...tools,
-        manifest: path.join(directory, 'tools-manifest.json'),
-        release: directory,
-      }
-      const results = {}
-      const refuse = async (name) => {
+      const stdout = []
+      const stderr = []
+      child.stdout.on('data', (bytes) => stdout.push(bytes))
+      child.stderr.on('data', (bytes) => stderr.push(bytes))
+      child.once('error', reject)
+      child.once('close', (code) => {
         try {
-          const accepted = await acquireEnvironmentTools(input)
-          if (!accepted.persistent)
-            await fs.rm(accepted.directory, { recursive: true })
-          throw new Error(`Accepted corrupt tools: ${name}`)
+          const result = JSON.parse(Buffer.concat(stdout).toString())
+          if (name === 'valid') {
+            assert.equal(code, 0, JSON.stringify(result))
+            assert.equal(result.status, 'planned')
+          } else {
+            assert.notEqual(code, 0, `Accepted ${name} channel`)
+            assert.match(
+              result.error,
+              /no mirror supplied a valid trusted channel/,
+            )
+          }
+          resolve({ code, result, stderr: Buffer.concat(stderr).toString() })
         } catch (error) {
-          if (error.message.startsWith('Accepted corrupt tools:')) throw error
-          results[name] = error.message
+          reject(error)
         }
-      }
-      await fs.writeFile(input.manifest, '{}')
-      await refuse('manifest')
-      await fs.writeFile(input.manifest, manifest)
-      const native = JSON.parse(manifest).artifacts.find(
-        (row) => row.name === toolsName,
-      )
-      const archive = path.join(directory, native.name)
-      await fs.writeFile(archive, 'x')
-      await refuse('size')
-      await fs.truncate(archive, native.size)
-      await refuse('digest')
-      return results
+      })
+    })
+    await assert.rejects(stat(installation), { code: 'ENOENT' })
+  }
+  const planned = await page.request.get(`${homeUrl}/supervisor/setup`, {
+    params: {
+      root: installation,
+      channel: 'stable',
+      variant: { win32: 'win-cpu', linux: 'linux-cpu', darwin: 'mac-arm64' }[
+        process.platform
+      ],
     },
-    {
-      root,
-      tools: channel.tools,
-      manifest: toolsBytes.toString('utf8'),
-      toolsName,
-    },
-  )
-  assert.match(integrity.manifest, /checksum mismatch/)
-  assert.match(integrity.size, /size mismatch/)
-  assert.match(integrity.digest, /checksum mismatch/)
-  await writeFile(
-    join(root, 'refusals.json'),
-    JSON.stringify(
-      { channels: Object.keys(refusedChannels), integrity },
-      null,
-      2,
-    ),
-  )
-  const planned = await manager.evaluate(
-    ({ project, request }) => window.dinksterProjects.plan(project, request),
-    { project, request },
-  )
-  await writeFile(join(root, 'plan.json'), JSON.stringify(planned, null, 2))
-  assert.equal(planned.result.status, 'planned')
-  assert(planned.token)
-  const result = await manager.evaluate(
-    (token) => window.dinksterProjects.apply(token),
-    planned.token,
-  )
-  await writeFile(join(root, 'setup.json'), JSON.stringify(result, null, 2))
-  assert.equal(result.status, 'applied')
-  const number = (await readFile(join(projectRoot, 'current'), 'utf8')).trim()
+    timeout: 120_000,
+  })
+  assert.equal(planned.status(), 200)
+  const { plan } = await planned.json()
+  assert.equal(plan.refusal, null, JSON.stringify(plan.refusal))
+  assert.equal(plan.engineRelease, channel.engine.release)
+  receipt.plan = plan
+  const started = await page.request.post(`${homeUrl}/supervisor/setup`, {
+    data: { planId: plan.id },
+  })
+  assert.equal(started.status(), 202)
+  const job = await started.json()
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(
+          `${homeUrl}/supervisor/setup/${job.id}`,
+        )
+        assert.equal(response.status(), 200)
+        receipt.setup = await response.json()
+        assert.notEqual(
+          receipt.setup.state,
+          'failed',
+          JSON.stringify(receipt.setup.error),
+        )
+        return receipt.setup.state
+      },
+      { timeout: 30 * 60_000 },
+    )
+    .toBe('completed')
+  const number = (await readFile(join(installation, 'current'), 'utf8')).trim()
   assert.match(number, /^[1-9][0-9]*$/)
-  const generation = join(projectRoot, 'builds', number)
+  const generation = join(installation, 'builds', number)
   const record = JSON.parse(
     await readFile(join(generation, 'build.json'), 'utf8'),
-  )
-  const settings = JSON.parse(
-    await readFile(join(projectRoot, 'environment.json'), 'utf8'),
-  )
-  assert.equal(settings.channel, 'stable')
-  const readiness = await manager.evaluate(
-    (root) => window.dinksterProjects.sandbox(root),
-    projectRoot,
-  )
-  assert.equal(readiness.format, 'dinkster.sandbox-readiness/1')
-  assert.equal(typeof readiness.available, 'boolean')
-  assert(readiness.detail)
-  await writeFile(
-    join(root, 'sandbox-readiness.json'),
-    JSON.stringify(readiness, null, 2),
   )
   assert.equal(record.engine.release, channel.engine.release)
   assert.equal(record.engine.version, channel.engine.version)
@@ -383,7 +446,7 @@ print(json.dumps({'python': sys.executable, 'packages': packages, 'packs': packs
         generation,
         JSON.stringify(manifest.defaultPacks),
       ],
-      { encoding: 'utf8', env },
+      { encoding: 'utf8', env, timeout: 120_000 },
     ),
   )
   assert.equal(installed.packages.dinkster, channel.engine.version)
@@ -392,29 +455,11 @@ print(json.dumps({'python': sys.executable, 'packages': packages, 'packs': packs
     installed.packages['dinkster-frontend'],
     (channel.frontend ?? manifest.frontend).version,
   )
-  const toolsTrees = []
-  for (const name of await readdir(env.TEMP)) {
-    if (!name.startsWith('dinkster-tools-')) continue
-    const path = join(env.TEMP, name)
-    const bytes = await readFile(join(path, 'tools-manifest.json'))
-    if (
-      createHash('sha256').update(bytes).digest('hex') === channel.tools.sha256
-    )
-      toolsTrees.push(path)
-  }
-  assert.equal(
-    toolsTrees.length,
-    1,
-    'Desktop must acquire the exact Stable tools',
-  )
-  toolsPython = join(
-    toolsTrees[0],
-    'payload/python',
-    process.platform === 'win32' ? 'python.exe' : 'bin/python3',
-  )
-  const git = JSON.parse(
+  receipt.generation = record
+  receipt.installed = installed
+  receipt.git = JSON.parse(
     execFileSync(
-      toolsPython,
+      tools.python,
       [
         '-I',
         '-c',
@@ -427,90 +472,58 @@ with fetched_git_source(sys.argv[1]) as (checkout, provenance):
 `,
         `https://github.com/Kosinkadink/Dinkster.git#ref=${manifest.commit}`,
       ],
-      { encoding: 'utf8', env },
+      { encoding: 'utf8', env, timeout: 120_000 },
     ),
   )
-  assert(
-    mirrorRequests.includes(`/${location}`),
-    'engine manifest must pass through the configured mirror',
+  const installations = await page.request.get(
+    `${homeUrl}/supervisor/installations`,
   )
+  assert.equal(installations.status(), 200)
+  receipt.installations = await installations.json()
   assert(
-    mirrorRequests.some(
-      (path) => path.startsWith('/base/') && path.includes('base.tar.zst.'),
+    receipt.installations.installations.some(
+      (row) => row.root === installation,
     ),
-    'native Base must pass through the configured mirror',
   )
-  assert(
-    mirrorRequests.includes(`${toolsPath}/tools-manifest.json`),
-    'tools manifest must pass through the configured mirror with its origin denied',
-  )
-  assert(
-    mirrorRequests.includes(`${toolsPath}/${toolsName}`),
-    'native tools must pass through the configured mirror with their origin denied',
-  )
-  mirrorOnline = false
-  const offlineRequests = mirrorRequests.length
-  await manager.reload()
-  await expect(
-    manager.getByRole('button', { name: 'Open main', exact: true }),
-  ).toBeVisible({ timeout: 120_000 })
-  assert.equal(
-    mirrorRequests.length,
-    offlineRequests,
-    'installed project browsing must not consult the unavailable mirror',
-  )
-  mirrorOnline = true
-  const writer = spawn(
-    toolsPython,
-    [
-      '-I',
-      '-c',
-      `
-import sys, time
-from pathlib import Path
-from dinkster_supervisor.environment_state import writer_lock
-with writer_lock(Path(sys.argv[1])):
-    print('writer acquired', flush=True)
-    time.sleep(10)
-`,
-      projectRoot,
-    ],
-    { env, stdio: ['ignore', 'pipe', 'inherit'] },
-  )
-  const released = once(writer, 'exit')
-  const [ready] = await Promise.race([
-    once(writer.stdout, 'data'),
-    released.then(() => {
-      throw new Error(
-        'competing writer exited before acquiring the project lock',
-      )
-    }),
-  ])
-  assert.equal(ready.toString().trim(), 'writer acquired')
-  let engine
-  try {
-    const opened = app.waitForEvent('window', { timeout: 120_000 })
-    await manager
-      .getByRole('button', { name: 'Open main', exact: true })
-      .click()
-    engine = await opened
-  } finally {
-    const [code] = await released
-    assert.equal(code, 0)
-  }
-  await expect(engine.getByTestId('graph-canvas')).toBeVisible({
-    timeout: 120_000,
+  const opened = await page.request.post(`${homeUrl}/supervisor/engine`, {
+    data: { root: installation, engine: 'main' },
   })
-  const health = await engine.request.get(
-    new URL('/api/health', engine.url()).href,
-  )
-  assert(health.ok())
+  assert.equal(opened.status(), 200)
   await expect
     .poll(
       async () => {
-        const response = await engine.request.get(
-          new URL('/api/composition', engine.url()).href,
+        const response = await page.request.get(`${homeUrl}/supervisor/status`)
+        assert.equal(response.status(), 200)
+        receipt.ready = await response.json()
+        assert.equal(receipt.ready.open.root, installation)
+        assert.notEqual(
+          receipt.ready.state,
+          'failed',
+          JSON.stringify(receipt.ready),
         )
+        return receipt.ready.state
+      },
+      { timeout: 180_000 },
+    )
+    .toBe('ready')
+  assert.equal(typeof receipt.ready.installationFrontend, 'string')
+  await page.evaluate((url) => {
+    location.href = url
+  }, receipt.ready.installationFrontend)
+  await expect(page).toHaveURL(new URL(receipt.ready.installationFrontend).href)
+  await expect(page.getByTestId('graph-canvas')).toBeVisible({
+    timeout: 180_000,
+  })
+  const health = await page.request.get(new URL('/api/health', page.url()).href)
+  assert(health.ok())
+  receipt.health = await health.json()
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(
+          new URL('/api/composition', page.url()).href,
+        )
+        assert(response.ok())
         const state = await response.json()
         return (
           state.composing === undefined &&
@@ -521,402 +534,395 @@ with writer_lock(Path(sys.argv[1])):
       { timeout: 120_000 },
     )
     .toBe(true)
-  await expect(engine.getByText(/loading schemas/i)).toHaveCount(0, {
+  await expect(page.getByText(/loading schemas/i)).toHaveCount(0, {
     timeout: 120_000,
   })
-  await engine.screenshot({
+  await page.screenshot({
     path: join(root, 'stable-project.png'),
     fullPage: true,
   })
-  await writeFile(
-    join(root, 'installed-generation.json'),
-    JSON.stringify(
-      {
-        channel,
-        manifest,
-        generation: record,
-        installed,
-        git,
-        health: await health.json(),
-        url: engine.url(),
-      },
-      null,
-      2,
-    ),
+  const projectUrl = new URL(page.url())
+  projectUrl.searchParams.set('dinksterProject', 'default')
+  await page.goto(projectUrl.href)
+  const backendUrl = projectUrl.origin
+  const capabilities = await page.evaluate(
+    (url) => window.dinksterDesktop.fileCapabilities(url),
+    backendUrl,
   )
-  const startRequests = mirrorRequests.slice(offlineRequests)
-  assert(
-    startRequests.includes('/channels/stable.json'),
-    'installed start must select the signed channel tools',
-  )
-  assert(
-    startRequests.every(
-      (path) =>
-        path === '/channels/stable.json' || path.startsWith(`${toolsPath}/`),
-    ),
-    'installed start must not reacquire engine or base artifacts',
-  )
-  mirrorChannel = refusedChannels.wrongChannel
-  const nightly = verifyChannel(mirrorChannel, 'nightly')
-  const updatedPlan = await manager.evaluate(
-    ({ project, request }) => window.dinksterProjects.plan(project, request),
-    {
-      project,
-      request: {
-        root: projectRoot,
-        operation: 'update',
-        channel: 'nightly',
-        mirrors: [mirrorUrl],
-      },
-    },
-  )
-  assert.equal(updatedPlan.result.status, 'planned')
-  assert(updatedPlan.token)
-  const updated = await manager.evaluate(
-    (token) => window.dinksterProjects.apply(token),
-    updatedPlan.token,
-  )
-  assert.equal(updated.status, 'applied')
-  const nextNumber = (
-    await readFile(join(projectRoot, 'current'), 'utf8')
-  ).trim()
-  assert.notEqual(nextNumber, number)
-  const nextGeneration = join(projectRoot, 'builds', nextNumber)
-  const nextRecord = JSON.parse(
-    await readFile(join(nextGeneration, 'build.json'), 'utf8'),
-  )
-  assert.equal(nextRecord.engine.release, nightly.engine.release)
-  const nextPython = join(
-    nextGeneration,
-    'python',
-    process.platform === 'win32' ? 'python.exe' : 'bin/python3',
-  )
-  assert.equal(
-    execFileSync(
-      nextPython,
-      [
-        '-I',
-        '-c',
-        'from dinkster import __version__; import importlib.metadata as m; assert __version__ == m.version("dinkster-engine"); print(__version__)',
-      ],
-      { encoding: 'utf8', env },
-    ).trim(),
-    nightly.engine.version,
-  )
-  await expect(engine.getByTestId('graph-canvas')).toBeVisible({
-    timeout: 120_000,
-  })
-  await engine.screenshot({
-    path: join(root, 'nightly-project.png'),
-    fullPage: true,
-  })
-  mirrorOnline = false
-  const recoveryRequests = mirrorRequests.length
-  const nextManifest = JSON.parse(
-    await readFile(join(nextGeneration, 'engine-manifest.json'), 'utf8'),
-  )
-  const helperMigration =
-    nextManifest.capabilities.includes('library-helper/1') &&
-    !manifest.capabilities.includes('library-helper/1')
-  let recoveryRecord = record
-  let recoverySource = nextNumber
-  if (helperMigration) {
-    const libraryFormat = join(
-      projectRoot,
-      'dinkster-library/library-format.json',
-    )
-    const before = await readFile(libraryFormat, 'utf8')
-    const historyBefore = await readdir(join(projectRoot, 'history'))
-    const runtime = join(projectRoot, 'runtime', nextNumber, 'main.json')
-    const runtimeBefore = await readFile(runtime, 'utf8')
-    const refusedPlan = await manager.evaluate(
-      ({ project, root }) =>
-        window.dinksterProjects.plan(project, {
-          root,
-          operation: 'rollback',
-        }),
-      { project: { ...project, channel: 'nightly' }, root: projectRoot },
-    )
-    assert.equal(refusedPlan.result.status, 'planned')
-    assert(refusedPlan.token)
-    await assert.rejects(
-      manager.evaluate(
-        (token) => window.dinksterProjects.apply(token),
-        refusedPlan.token,
-      ),
-      /requires library-helper\/1.*This snapshot cannot open the migrated library/,
-    )
-    assert.equal(
-      (await readFile(join(projectRoot, 'current'), 'utf8')).trim(),
-      nextNumber,
-    )
-    assert.equal(await readFile(libraryFormat, 'utf8'), before)
-    assert.deepEqual(await readdir(join(projectRoot, 'history')), historyBefore)
-    assert.equal(await readFile(runtime, 'utf8'), runtimeBefore)
-    assert(
-      (
-        await engine.request.get(new URL('/api/health', engine.url()).href)
-      ).ok(),
-    )
-    assert.equal(mirrorRequests.length, recoveryRequests)
-    await writeFile(
-      join(root, 'incompatible-rollback.json'),
-      JSON.stringify(
-        { current: nextNumber, plan: refusedPlan.result },
-        null,
-        2,
-      ),
-    )
-
-    // A migrated library cannot return to an engine without its helper.
-    // Keep offline recovery coverage between two helper-compatible snapshots.
-    mirrorOnline = true
-    const repeatedPlan = await manager.evaluate(
-      ({ project, root, mirrors }) =>
-        window.dinksterProjects.plan(project, {
-          root,
-          operation: 'update',
-          channel: 'nightly',
-          mirrors,
-        }),
-      {
-        project: { ...project, channel: 'nightly' },
-        root: projectRoot,
-        mirrors: [mirrorUrl],
-      },
-    )
-    assert.equal(repeatedPlan.result.status, 'planned')
-    assert(repeatedPlan.token)
-    const repeated = await manager.evaluate(
-      (token) => window.dinksterProjects.apply(token),
-      repeatedPlan.token,
-    )
-    assert.equal(repeated.status, 'applied')
-    recoverySource = (
-      await readFile(join(projectRoot, 'current'), 'utf8')
-    ).trim()
-    assert.notEqual(recoverySource, nextNumber)
-    const repeatedRecord = JSON.parse(
-      await readFile(
-        join(projectRoot, 'builds', recoverySource, 'build.json'),
-        'utf8',
-      ),
-    )
-    assert.deepEqual(repeatedRecord.engine, nextRecord.engine)
-    assert.equal(repeatedRecord.base, nextRecord.base)
-    recoveryRecord = nextRecord
-    mirrorOnline = false
+  receipt.nativeFiles = { capabilities, dialogs: {} }
+  assert.equal(capabilities.nativeFolderChoice, true)
+  assert.equal(capabilities.reveal, true)
+  const denied = {
+    nativeFolderChoice: false,
+    reveal: false,
+    resolvePath: false,
   }
-  const rollbackRequests = mirrorRequests.length
-  const rollbackPlan = await manager.evaluate(
-    ({ project, request }) => window.dinksterProjects.plan(project, request),
-    {
-      project: { ...project, channel: 'nightly' },
-      request: { root: projectRoot, operation: 'rollback' },
+  receipt.nativeFiles.invalidProjects = []
+  await app.evaluate(({ dialog }) => {
+    globalThis.originalFolderDialog = dialog.showOpenDialog
+    globalThis.invalidFolderRequests = 0
+    dialog.showOpenDialog = async () => {
+      globalThis.invalidFolderRequests++
+      return { canceled: true, filePaths: [] }
+    }
+  })
+  try {
+    for (const query of [
+      '',
+      '?dinksterProject=',
+      '?dinksterProject=invalid_project',
+      '?dinksterProject=default&dinksterProject=default',
+      '?dinksterProject=default&dinksterProject=another-project',
+    ]) {
+      const invalidUrl = new URL(projectUrl)
+      invalidUrl.search = query
+      await page.goto(invalidUrl.href)
+      const result = await page.evaluate(async (url) => {
+        const capabilities = await window.dinksterDesktop.fileCapabilities(url)
+        try {
+          await window.dinksterDesktop.chooseDirectory(url)
+          return { capabilities, accepted: true }
+        } catch (error) {
+          return { capabilities, error: error.message }
+        }
+      }, backendUrl)
+      assert.deepEqual(result.capabilities, denied)
+      assert.equal(result.accepted, undefined)
+      assert.equal(typeof result.error, 'string')
+      receipt.nativeFiles.invalidProjects.push({ query, ...result })
+    }
+    assert.equal(await app.evaluate(() => globalThis.invalidFolderRequests), 0)
+  } finally {
+    await app.evaluate(({ dialog }) => {
+      dialog.showOpenDialog = globalThis.originalFolderDialog
+      delete globalThis.originalFolderDialog
+      delete globalThis.invalidFolderRequests
+    })
+  }
+  await page.goto(projectUrl.href)
+  assert.equal(
+    await page.evaluate(
+      (url) =>
+        window.dinksterDesktop
+          .fileCapabilities(url)
+          .then((value) => value.nativeFolderChoice),
+      backendUrl,
+    ),
+    true,
+  )
+  assert.deepEqual(
+    await page.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      homeUrl,
+    ),
+    denied,
+  )
+  const identity = {
+    digest: `blake3:${'a1'.repeat(32)}`,
+    scope: 'local',
+    project: 'default',
+  }
+  await assert.rejects(
+    page.evaluate(
+      ({ url, asset }) => window.dinksterDesktop.revealFile(url, asset),
+      { url: backendUrl, asset: identity },
+    ),
+    /No verified local copy/,
+  )
+  await assert.rejects(
+    page.evaluate(
+      ({ url, asset }) => window.dinksterDesktop.revealFile(url, asset),
+      { url: backendUrl, asset: { ...identity, project: 'another-project' } },
+    ),
+    /requesting project/,
+  )
+  const dropFolder = join(root, 'native-drop')
+  const dropPath = join(dropFolder, 'capture.txt')
+  const dropContent = 'asymmetric actual native file\n'
+  await mkdir(dropFolder)
+  await writeFile(dropPath, dropContent)
+  const mount = await page.request.post(`${homeUrl}/api/mounts`, {
+    data: {
+      id: 'native-drop',
+      path: dropFolder,
+      mode: 'read',
+      project: 'default',
+      shared: false,
     },
-  )
-  assert.equal(rollbackPlan.result.status, 'planned')
-  assert(rollbackPlan.token)
-  const rolledBack = await manager.evaluate(
-    (token) => window.dinksterProjects.apply(token),
-    rollbackPlan.token,
-  )
-  assert.equal(rolledBack.status, 'applied')
-  const recoveredNumber = (
-    await readFile(join(projectRoot, 'current'), 'utf8')
-  ).trim()
-  assert.notEqual(recoveredNumber, recoverySource)
-  assert.notEqual(recoveredNumber, nextNumber)
-  assert.notEqual(recoveredNumber, number)
-  const recovered = JSON.parse(
-    await readFile(
-      join(projectRoot, 'builds', recoveredNumber, 'build.json'),
-      'utf8',
-    ),
-  )
-  assert.deepEqual(recovered.engine, recoveryRecord.engine)
-  assert.equal(recovered.base, recoveryRecord.base)
-  await writeFile(
-    join(root, 'recovered-generation.json'),
-    JSON.stringify(
-      { previous: number, updated: nextNumber, recovered },
-      null,
-      2,
-    ),
-  )
-  assert.equal(
-    mirrorRequests.length,
-    rollbackRequests,
-    'rollback must not consult the unavailable mirror',
-  )
-  await expect(engine.getByTestId('graph-canvas')).toBeVisible({
-    timeout: 120_000,
   })
-  assert(
-    (await engine.request.get(new URL('/api/health', engine.url()).href)).ok(),
-  )
-  await engine.screenshot({
-    path: join(root, 'recovered-project.png'),
-    fullPage: true,
+  assert.equal(mount.status(), 200)
+  await page.evaluate(() => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.id = 'native-drop'
+    document.body.append(input)
   })
-  await writeFile(
-    join(root, 'mirror-recovery.json'),
-    JSON.stringify(
-      {
-        mirrorUrl,
-        requests: mirrorRequests,
-        updated,
-        generation: nextRecord,
-        rolledBack,
-      },
-      null,
-      2,
-    ),
-  )
-  await engine.close()
-  const stopPlan = await manager.evaluate(
-    ({ project, root }) =>
-      window.dinksterProjects.plan(project, {
-        root,
-        operation: 'stop',
-        engine: 'main',
-      }),
-    { project, root: projectRoot },
-  )
-  assert(stopPlan.token)
-  const stopped = await manager.evaluate(
-    (token) => window.dinksterProjects.apply(token),
-    stopPlan.token,
-  )
-  assert.equal(stopped.status, 'applied')
-  assert.equal(
-    stopped.engines.find((engine) => engine.name === 'main').state,
-    'stopped',
-  )
-  await writeFile(join(root, 'stopped.json'), JSON.stringify(stopped, null, 2))
-  assert.equal(
-    failedMirrorRequests.size,
-    0,
-    'Every failed upstream mirror request must recover',
-  )
-} catch (error) {
-  if (String(error).includes('another environment writer holds')) {
-    const lockPath = join(projectRoot, '.lock')
-    const diagnostic = {
-      error: String(error),
-      capturedAt: new Date().toISOString(),
-    }
-    try {
-      const bytes = await readFile(lockPath)
-      const metadata = await stat(lockPath)
-      diagnostic.lock = {
-        bytes: bytes.subarray(0, 4096).toString('base64'),
-        size: metadata.size,
-        inode: metadata.ino,
-        modifiedAt: metadata.mtime.toISOString(),
-      }
-    } catch (captureError) {
-      diagnostic.lockError = captureError.message
-    }
-    if (process.platform !== 'win32') {
+  await page.locator('#native-drop').setInputFiles(dropPath)
+  const resolveFile = () =>
+    page.evaluate(async (url) => {
       try {
-        diagnostic.openFiles = execFileSync(
-          'lsof',
-          ['-Fpcnfl', '--', lockPath],
-          {
-            encoding: 'utf8',
-            timeout: 5000,
-          },
-        )
-      } catch (captureError) {
-        diagnostic.openFiles = captureError.stdout?.toString() ?? ''
-        diagnostic.holderError = captureError.message
+        return {
+          value: await window.dinksterDesktop.resolveDroppedFile(
+            url,
+            document.querySelector('#native-drop').files[0],
+          ),
+        }
+      } catch (error) {
+        return { error: error.message }
       }
+    }, backendUrl)
+  const resolved = await resolveFile()
+  assert.equal(resolved.value?.status, 'resolved', JSON.stringify(resolved))
+  assert.equal(
+    resolved.value.asset.digest,
+    'blake3:e2c93bfe1d783b866199a510a026b7da32d081996d43207758036de903093992',
+  )
+  assert.equal(resolved.value.asset.name, 'capture.txt')
+  assert.equal(resolved.value.asset.size, Buffer.byteLength(dropContent))
+  assert.equal(
+    resolved.value.asset.virtualPath,
+    'mounts/native-drop/capture.txt',
+  )
+  const originalExecution = await page.request
+    .get(`${homeUrl}/supervisor/status?project=default`)
+    .then((response) => {
+      assert.equal(response.status(), 200)
+      return response.json()
+    })
+  await app.evaluate(() => {
+    globalThis.originalResolverFetch = globalThis.fetch
+    globalThis.fetch = async (...args) => {
+      if (new URL(String(args[0])).pathname !== '/api/mounts/resolve-path')
+        return globalThis.originalResolverFetch(...args)
+      globalThis.heldResolverRequest = {
+        headers: args[1].headers,
+        body: args[1].body,
+      }
+      await new Promise((done) => {
+        globalThis.releaseResolver = done
+      })
+      const response = await globalThis.originalResolverFetch(...args)
+      globalThis.heldResolverResponse = {
+        status: response.status,
+        cacheControl: response.headers.get('cache-control'),
+        body: await response.clone().json(),
+      }
+      return response
     }
-    await writeFile(
-      join(root, 'writer-lock-diagnostics.json'),
-      JSON.stringify(diagnostic, null, 2),
+  })
+  const heldResolution = resolveFile()
+  try {
+    await expect
+      .poll(() => app.evaluate(() => typeof globalThis.releaseResolver), {
+        timeout: 30_000,
+      })
+      .toBe('function')
+    const request = await app.evaluate(() => globalThis.heldResolverRequest)
+    assert.deepEqual(
+      JSON.parse(request.headers['X-Dinkster-Execution']),
+      originalExecution.execution,
     )
-  }
-  if (
-    process.platform === 'win32' &&
-    toolsPython &&
-    String(error).includes('authenticated supervisor did not stop')
-  ) {
-    try {
-      const diagnostic = execFileSync(
-        toolsPython,
-        [
-          '-I',
-          '-c',
-          `
-import hashlib, json, sys, time
-from pathlib import Path
-root = Path(sys.argv[1])
-number = (root / 'project/current').read_text().strip()
-record = json.loads((root / 'project/runtime' / number / 'main.json').read_text())
-instance = record['instance']
-lifecycle = root / 'project/runtime' / number / 'main.process' / hashlib.sha256(instance.encode()).hexdigest()
-state = json.loads((lifecycle / 'state.json').read_text())
-assert state['instance'] == instance and state['pid'] == record['pid']
-if state['state'] != 'running':
-    print('Supervisor lifecycle is not running; no attachment attempted')
-else:
-    output = root / 'supervisor-shutdown.log'
-    script = root / 'supervisor-shutdown-diagnostic.py'
-    script.write_text(r'''import asyncio, faulthandler, sys
-from pathlib import Path
-if (__INSTANCE__ in sys.argv
-        and Path(sys.argv[0]).name == 'supervisor.py'
-        and Path(sys.argv[0]).parent.name == 'dinkster_supervisor'):
-    with Path(__OUTPUT__).open('w') as output:
-        faulthandler.dump_traceback(file=output, all_threads=True)
-        try:
-            tasks = asyncio.all_tasks()
-        except RuntimeError:
-            tasks = ()
-        for task in tasks:
-            output.write('Async task\\n')
-            coroutine = task.get_coro()
-            while coroutine is not None:
-                frame = getattr(coroutine, 'cr_frame', getattr(coroutine, 'gi_frame', None))
-                if frame is not None:
-                    output.write(f'{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}\\n')
-                coroutine = getattr(coroutine, 'cr_await', getattr(coroutine, 'gi_yieldfrom', None))
-'''.replace('__INSTANCE__', repr('--instance=' + instance)).replace('__OUTPUT__', repr(str(output))), encoding='utf-8')
-    # A pending request may still read the script, so retain it until runner disposal.
-    sys.remote_exec(record['pid'], str(script))
-    deadline = time.monotonic() + 5
-    while not output.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
-    print('Shutdown stacks retained' if output.exists() else 'Attachment requested; target did not produce stacks')
-`,
-          root,
-        ],
-        { encoding: 'utf8', env, timeout: 10_000 },
-      )
-      await writeFile(join(root, 'shutdown-diagnostics.log'), diagnostic)
-    } catch (diagnosticError) {
-      await writeFile(
-        join(root, 'shutdown-diagnostics.log'),
-        `Shutdown stack capture failed: ${diagnosticError.message}`,
-      )
+    assert.deepEqual(JSON.parse(request.body), {
+      path: dropPath,
+      project: 'default',
+      scope: 'local',
+    })
+    const changed = await page.request.patch(
+      `${homeUrl}/api/projects/default`,
+      {
+        data: {
+          revision: originalExecution.execution.project.revision,
+          patch: { name: 'Native file request revision' },
+        },
+      },
+    )
+    assert.equal(changed.status(), 200)
+    await app.evaluate(() => globalThis.releaseResolver())
+    const resolverResult = await heldResolution
+    const response = await app.evaluate(() => globalThis.heldResolverResponse)
+    assert.equal(response.status, 409)
+    assert.equal(response.cacheControl, 'no-store')
+    assert.equal(response.body.error, 'execution-binding-mismatch')
+    assert.match(
+      resolverResult.error,
+      /Mounted file resolution failed; no upload fallback was authorized/,
+    )
+    receipt.nativeFiles.resolver = {
+      resolved,
+      request,
+      response,
+      result: resolverResult,
+      original: originalExecution.execution,
+      changedProject: await changed.json(),
     }
+  } finally {
+    await app.evaluate(() => {
+      globalThis.fetch = globalThis.originalResolverFetch
+      globalThis.releaseResolver?.()
+    })
+    await heldResolution
+    await app.evaluate(() => {
+      delete globalThis.originalResolverFetch
+      delete globalThis.releaseResolver
+      delete globalThis.heldResolverRequest
+      delete globalThis.heldResolverResponse
+    })
   }
-  await manager
+  assert.deepEqual(await resolveFile(), resolved)
+  for (const change of [
+    'none',
+    'restart',
+    'project',
+    'project-return',
+    'stop',
+  ]) {
+    await app.evaluate(({ dialog }) => {
+      globalThis.originalFolderDialog = dialog.showOpenDialog
+      globalThis.folderDialogEntered = false
+      dialog.showOpenDialog = () =>
+        new Promise((done) => {
+          globalThis.finishFolderDialog = done
+          globalThis.folderDialogEntered = true
+        })
+    })
+    const chosen = page.evaluate(async (url) => {
+      try {
+        return { path: await window.dinksterDesktop.chooseDirectory(url) }
+      } catch (error) {
+        return { error: error.message }
+      }
+    }, backendUrl)
+    try {
+      await expect
+        .poll(() => app.evaluate(() => globalThis.folderDialogEntered), {
+          timeout: 30_000,
+        })
+        .toBe(true)
+      if (change === 'restart' || change === 'stop') {
+        const response = await page.request.post(
+          `${homeUrl}/supervisor/engine/${change}`,
+          { data: {}, timeout: 300_000 },
+        )
+        assert.equal(response.status(), 200)
+        if (change === 'restart') {
+          await expect
+            .poll(
+              async () => {
+                const status = await page.request.get(
+                  `${homeUrl}/supervisor/status`,
+                )
+                assert.equal(status.status(), 200)
+                return (await status.json()).state
+              },
+              { timeout: 180_000 },
+            )
+            .toBe('ready')
+        } else {
+          assert.equal((await response.json()).state, 'stopped')
+        }
+      }
+      if (change === 'project' || change === 'project-return') {
+        const navigated = page.waitForEvent('framenavigated', {
+          timeout: 30_000,
+        })
+        await page.evaluate(() =>
+          history.replaceState(null, '', '?dinksterProject=another-project'),
+        )
+        await navigated
+        if (change === 'project-return') {
+          const returned = page.waitForEvent('framenavigated', {
+            timeout: 30_000,
+          })
+          await page.evaluate(
+            (url) => history.replaceState(null, '', url),
+            projectUrl.href,
+          )
+          await returned
+          assert.equal(page.url(), projectUrl.href)
+        }
+      }
+    } finally {
+      await app.evaluate(({ dialog }, path) => {
+        dialog.showOpenDialog = globalThis.originalFolderDialog
+        globalThis.finishFolderDialog?.({ canceled: false, filePaths: [path] })
+        delete globalThis.finishFolderDialog
+        delete globalThis.originalFolderDialog
+      }, home)
+    }
+    const result = await chosen
+    receipt.nativeFiles.dialogs[change] = result
+    if (change === 'none') assert.deepEqual(result, { path: home })
+    else {
+      assert.equal(result.path, undefined)
+      assert.equal(typeof result.error, 'string')
+    }
+    if (change === 'project')
+      await page.evaluate(
+        (url) => history.replaceState(null, '', url),
+        projectUrl.href,
+      )
+    if (change !== 'stop')
+      assert.equal(
+        await page.evaluate(
+          (url) =>
+            window.dinksterDesktop
+              .fileCapabilities(url)
+              .then((value) => value.nativeFolderChoice),
+          backendUrl,
+        ),
+        true,
+      )
+  }
+  assert.deepEqual(
+    await page.evaluate(
+      (url) => window.dinksterDesktop.fileCapabilities(url),
+      backendUrl,
+    ),
+    denied,
+  )
+  receipt.url = page.url()
+  receipt.stopped = await page.request
+    .get(`${homeUrl}/supervisor/status`)
+    .then((response) => response.json())
+  assert.equal(receipt.stopped.state, 'stopped')
+  await quit()
+  receipt.ownedShutdown = true
+} catch (error) {
+  receipt.error = String(error.stack ?? error)
+  await page
     ?.screenshot({ path: join(root, 'failed.png'), fullPage: true })
     .catch(() => undefined)
-  if (mirrorFailures.length)
-    throw new AggregateError(
-      [error, ...mirrorFailures],
-      'Stable verification failed after upstream mirror errors',
-    )
   throw error
 } finally {
-  try {
-    await app.close()
-  } finally {
-    mirror.closeAllConnections()
-    await new Promise((done) => mirror.close(done))
+  if (app)
+    await quit().catch((error) => {
+      receipt.stopError = String(error)
+      process.exitCode = 1
+    })
+  mirror.closeAllConnections()
+  await new Promise((done) => mirror.close(done))
+  async function logs(directory, prefix = '') {
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(
+      () => [],
+    )) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) await logs(path, `${prefix}${entry.name}-`)
+      else if (entry.isFile() && entry.name.endsWith('.log'))
+        await writeFile(
+          join(root, `runtime-${prefix}${entry.name}`),
+          await readFile(path),
+        )
+    }
   }
+  await logs(join(installation, 'runtime'))
+  await writeFile(
+    join(root, 'home.log'),
+    await readFile(join(env.DINKSTER_DESKTOP_DATA, 'home.log'), 'utf8').catch(
+      () => '',
+    ),
+  )
+  await writeFile(
+    join(root, 'installed-generation.json'),
+    JSON.stringify(receipt, null, 2),
+  )
 }

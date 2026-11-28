@@ -38,6 +38,43 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+  home-process:
+    name: Dinkster process ownership on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.8
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Start, adopt and stop the verified native tools
+        env:
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ runner.temp }}/home-process
+        run: pnpm --filter @dinkster/e2e exec node --import tsx scripts/verify-home-process.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: home-process-${{ runner.os }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/home-process/results.json
+            ${{ runner.temp }}/home-process/home.log
+
   window-chrome:
     name: Window buttons in the top bar on ${{ matrix.os }}
     if: github.event_name == 'pull_request'
@@ -73,6 +110,27 @@ jobs:
           sudo apt-get install -y xvfb openbox xdotool
           mkdir -p .amp/in
           xvfb-run -a -s '-screen 0 1600x1000x24' sh -c 'openbox & sleep 2; node packages/e2e/scripts/verify-window-chrome.mjs'
+      - name: Packaged shared Home startup and restart on Linux
+        if: runner.os == 'Linux'
+        env:
+          DINKSTER_DESKTOP_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ github.workspace }}/.amp/in/installed
+        run: |
+          pnpm --filter @dinkster/desktop prepare:tools
+          pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
+          node packages/desktop/scripts/verify-installed-tools.mjs packages/desktop/release/linux-unpacked/resources
+          xvfb-run -a node packages/e2e/scripts/verify-desktop-install.mjs
+      - name: Shared Home launch services on Linux
+        if: runner.os == 'Linux'
+        env:
+          DINKSTER_SERVICES_SOURCE_ONLY: '1'
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ github.workspace }}/.amp/in/services
+        run: xvfb-run -a node packages/e2e/scripts/verify-services.mjs
+      - name: Native IPC window authority on Linux
+        if: runner.os == 'Linux'
+        env:
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ github.workspace }}/.amp/in/native-ipc
+        run: xvfb-run -a node packages/e2e/scripts/verify-environment-client.mjs
       - name: Real window on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -82,6 +140,14 @@ jobs:
           New-Item -ItemType Directory -Force .amp/in | Out-Null
           node packages/e2e/scripts/verify-window-chrome.mjs
           exit $LASTEXITCODE
+      - name: Native IPC window authority on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          DINKSTER_DESKTOP_VERIFY_ROOT: ${{ github.workspace }}/.amp/in/native-ipc
+        run: |
+          node packages/e2e/scripts/verify-environment-client.mjs
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -90,3 +156,10 @@ jobs:
           path: |
             .amp/in/window-chrome/*.png
             .amp/in/window-chrome/*.json
+            .amp/in/installed/*.png
+            .amp/in/installed/*.json
+            .amp/in/installed/*.log
+            .amp/in/services/*.png
+            .amp/in/services/*.json
+            .amp/in/services/*.log
+            .amp/in/native-ipc/*.json

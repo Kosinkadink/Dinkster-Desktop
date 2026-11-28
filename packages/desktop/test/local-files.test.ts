@@ -1,24 +1,33 @@
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import * as filesystem from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { assetLocations, fileCapabilities, grantedFile, requireLocalFiles, resolveDroppedPath, revealGrantedFile, revealModelLocation } from '../src/local-files.js'
+
+vi.mock('node:fs/promises', async (original) => ({ ...await original<typeof filesystem>() }))
 
 describe('local file authority', () => {
   it('binds capabilities and requests to the running managed connection only', () => {
-    const managed = 'http://127.0.0.1:5011'
-    expect(fileCapabilities(`${managed}/`, managed, true)).toEqual({ nativeFolderChoice: true, reveal: false })
-    expect(fileCapabilities(`${managed}/`, managed, true, true).reveal).toBe(true)
-    expect(() => requireLocalFiles(managed, managed, true)).not.toThrow()
-    for (const url of [undefined, '', 'http://localhost:5011', 'http://127.0.0.1:5012', 'https://server.invalid', `${managed}/remote`, `${managed}?backend=remote`, 'http://user:password@127.0.0.1:5011']) {
+    const backend = 'http://127.0.0.1:5011'
+    const managed = `${backend}/?dinksterProject=work`
+    expect(fileCapabilities(`${backend}/`, managed, true)).toEqual({ nativeFolderChoice: true, reveal: false })
+    expect(fileCapabilities(`${backend}/`, managed, true, true).reveal).toBe(true)
+    expect(() => requireLocalFiles(backend, managed, true)).not.toThrow()
+    for (const document of [backend, `${backend}/?page=projects`, `${backend}/?dinksterProject=`, `${backend}/?dinksterProject=../other`]) {
+      expect(fileCapabilities(backend, document, true, true)).toEqual({ nativeFolderChoice: false, reveal: false })
+      expect(() => requireLocalFiles(backend, document, true)).toThrow('shell-managed backend')
+    }
+    expect(fileCapabilities(backend, `${backend}/?dinksterProject=default`, true).nativeFolderChoice).toBe(true)
+    for (const url of [undefined, '', 'http://localhost:5011', 'http://127.0.0.1:5012', 'https://server.invalid', `${backend}/remote`, `${backend}?backend=remote`, 'http://user:password@127.0.0.1:5011']) {
       expect(fileCapabilities(url, managed, true)).toEqual({ nativeFolderChoice: false, reveal: false })
       expect(fileCapabilities(url, managed, true, true).reveal).toBe(false)
       expect(() => requireLocalFiles(url, managed, true)).toThrow('shell-managed backend')
     }
-    expect(fileCapabilities(managed, managed, false).reveal).toBe(false)
-    expect(fileCapabilities(managed, undefined, true).nativeFolderChoice).toBe(false)
+    expect(fileCapabilities(backend, managed, false).reveal).toBe(false)
+    expect(fileCapabilities(backend, undefined, true).nativeFolderChoice).toBe(false)
   })
 
   it('uses exact scoped identity and active grants, distinguishing empty success from denied or unsupported lookup', async () => {
@@ -124,6 +133,13 @@ describe('local file authority', () => {
   it('resolves mounted drops without exposing paths or confusing errors with upload refusal', async () => {
     const path = join(tmpdir(), 'read only mount', 'dropped file.txt')
     const asset = { digest: `blake3:${'a2'.repeat(32)}`, name: 'dropped file.txt', size: 17, mediaType: 'text/plain', virtualPath: 'mounts/input/dropped file.txt' }
+    const execution = JSON.stringify({
+      project: { id: 'work', revision: 7 },
+      host: { kind: 'native', distribution: null },
+      installation: { id: 'studio', root: join(tmpdir(), 'installation-\u65e5\u672c') },
+      engine: { name: 'main', generation: 3, instance: 'original-engine', url: 'http://127.0.0.1:5011' },
+      filesystem: { binding: `blake3:${'b3'.repeat(32)}` },
+    })
     let probeStatus = 200
     const locations = { mounts: [], activeMounts: [], restartRequired: false, pendingRemovals: [] }
     let capability: unknown = { ...locations, resolvePath: true }
@@ -132,6 +148,7 @@ describe('local file authority', () => {
     let authorized = true
     let revoke = false
     let request: unknown
+    let requestExecution: unknown
     let receivedPath = false
     const server = createServer(async (incoming, response) => {
       if (incoming.method === 'GET') {
@@ -141,6 +158,7 @@ describe('local file authority', () => {
       }
       expect(incoming.method).toBe('POST')
       expect(incoming.url).toBe('/api/mounts/resolve-path')
+      requestExecution = incoming.headers['x-dinkster-execution']
       let text = ''
       for await (const chunk of incoming) text += chunk
       request = JSON.parse(text)
@@ -154,36 +172,42 @@ describe('local file authority', () => {
     const url = `http://127.0.0.1:${address.port}`
     const authorize = async () => { if (!authorized) throw new Error('project or backend changed') }
     try {
-      expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual({ status: 'resolved', asset })
+      expect(await resolveDroppedPath(url, path, 'work', authorize, execution)).toEqual({ status: 'resolved', asset })
       expect(request).toEqual({ path, project: 'work', scope: 'local' })
+      expect(JSON.parse(requestExecution as string)).toEqual(JSON.parse(execution))
+      expect(requestExecution).toMatch(/^[\x20-\x7e]+$/)
       body = { status: 'resolved', asset: { ...asset, size: 0 } }
-      expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual(body)
+      expect(await resolveDroppedPath(url, path, 'work', authorize, execution)).toEqual(body)
       body = { status: 'refused', reason: 'not-resolvable' }
-      expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual(body)
+      expect(await resolveDroppedPath(url, path, 'work', authorize, execution)).toEqual(body)
       for (const denied of [401, 403, 404, 405, 500]) {
         probeStatus = denied
         receivedPath = false
-        await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
+        await expect(resolveDroppedPath(url, path, 'work', authorize, execution)).rejects.toThrow('no upload fallback')
         expect(receivedPath).toBe(false)
       }
       probeStatus = 200
       for (const unsupported of [locations, { ...locations, resolvePath: false }]) {
         capability = unsupported
         receivedPath = false
-        expect(await resolveDroppedPath(url, path, 'work', authorize)).toEqual({ status: 'refused', reason: 'unsupported-backend' })
+        expect(await resolveDroppedPath(url, path, 'work', authorize, execution)).toEqual({ status: 'refused', reason: 'unsupported-backend' })
         expect(receivedPath).toBe(false)
       }
       for (const malformed of [{}, { ...locations, resolvePath: 'true' }, { ...locations, resolvePath: null }, { resolvePath: true }]) {
         capability = malformed
         receivedPath = false
-        await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
+        await expect(resolveDroppedPath(url, path, 'work', authorize, execution)).rejects.toThrow('no upload fallback')
         expect(receivedPath).toBe(false)
       }
       capability = { ...locations, resolvePath: true }
-      for (const denied of [400, 401, 403, 404, 405, 500]) {
+      for (const denied of [400, 401, 403, 404, 405, 409, 500]) {
         status = denied
-        body = { error: path }
-        await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
+        body = { error: denied === 409 ? 'execution-binding-mismatch' : denied === 400 ? 'execution-binding-invalid' : path }
+        const error = await resolveDroppedPath(url, path, 'work', authorize, execution).catch((error: Error) => error)
+        expect(error).toBeInstanceOf(Error)
+        expect(String(error)).toContain('no upload fallback')
+        expect(String(error)).not.toContain(path)
+        expect(JSON.parse(requestExecution as string)).toEqual(JSON.parse(execution))
       }
       status = 200
       for (const malformed of [
@@ -196,18 +220,65 @@ describe('local file authority', () => {
         ...[-1, true, '17', 1.5].map((size) => ({ status: 'resolved', asset: { ...asset, size } })),
       ]) {
         body = malformed
-        const error = await resolveDroppedPath(url, path, 'work', authorize).catch((error: Error) => error)
+        const error = await resolveDroppedPath(url, path, 'work', authorize, execution).catch((error: Error) => error)
         expect(error).toBeInstanceOf(Error)
         expect(String(error)).not.toContain(path)
       }
       body = { status: 'resolved', asset }
       revoke = true
-      await expect(resolveDroppedPath(url, path, 'work', authorize)).rejects.toThrow('no upload fallback')
+      await expect(resolveDroppedPath(url, path, 'work', authorize, execution)).rejects.toThrow('no upload fallback')
       authorized = true
-      await expect(resolveDroppedPath(url, '../relative', 'work', authorize)).rejects.toThrow('Invalid')
-      await expect(resolveDroppedPath(url, path, '../project', authorize)).rejects.toThrow('Invalid')
+      await expect(resolveDroppedPath(url, '../relative', 'work', authorize, execution)).rejects.toThrow('Invalid')
+      await expect(resolveDroppedPath(url, path, '../project', authorize, execution)).rejects.toThrow('Invalid')
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('does not reveal a file when authority is revoked during final filesystem verification', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop reveal '))
+    try {
+      const file = join(root, 'output.png')
+      await writeFile(file, 'image')
+      for (const platform of ['win32', 'linux'] as const) {
+        let authorized = true
+        let verifying = false
+        let entered!: () => void
+        let release!: () => void
+        const pending = new Promise<void>((resolve) => { entered = resolve })
+        const resume = new Promise<void>((resolve) => { release = resolve })
+        const nativeRealpath = filesystem.realpath
+        const lookup = vi.spyOn(filesystem, 'realpath').mockImplementation(async (path, options) => {
+          if (verifying) {
+            entered()
+            await resume
+          }
+          return nativeRealpath(path, options)
+        })
+        const selected: string[] = []
+        const opened: string[] = []
+        const result = revealGrantedFile(file, [root], {
+          showItemInFolder: (path) => { selected.push(path) },
+          openExternal: async (url) => { opened.push(url) },
+        }, async () => {
+          if (!authorized) throw new Error('revoked')
+          verifying = true
+        }, platform)
+        const rejected = expect(result).rejects.toThrow('revoked')
+        try {
+          await pending
+          authorized = false
+          release()
+          await rejected
+          expect(selected).toEqual([])
+          expect(opened).toEqual([])
+        } finally {
+          release()
+          lookup.mockRestore()
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 

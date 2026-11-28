@@ -13,11 +13,9 @@ on:
       - 'packages/desktop/electron-builder*.mjs'
       - 'packages/desktop/package.json'
       - 'packages/e2e/scripts/verify-environment-client.mjs'
-      - 'packages/e2e/scripts/verify-library-restore.mjs'
-      - 'packages/e2e/scripts/restore-command.cjs'
       - 'packages/e2e/scripts/verify-desktop-install.mjs'
-      - 'packages/e2e/scripts/verify-development-project.mjs'
       - 'packages/e2e/scripts/verify-services.mjs'
+      - 'packages/e2e/scripts/verify-wsl-project.mjs'
       - 'packages/e2e/scripts/verify-stable-project.mjs'
       - 'packages/e2e/scripts/forward-mirror.mjs'
       - 'packages/e2e/scripts/verify-shell-update.mjs'
@@ -45,7 +43,6 @@ jobs:
     outputs:
       installers: ${{ steps.paths.outputs.installers }}
       smoke: ${{ steps.paths.outputs.smoke }}
-      development: ${{ steps.paths.outputs.development }}
       stable: ${{ steps.paths.outputs.stable }}
       updater: ${{ steps.paths.outputs.updater }}
       windows: ${{ steps.paths.outputs.windows }}
@@ -63,9 +60,9 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          installers=false smoke=false development=false stable=false updater=false services=false
+          installers=false smoke=false stable=false updater=false services=false
           if [ "$EVENT" != pull_request ]; then
-            installers=true smoke=true development=true
+            installers=true smoke=true
           fi
           if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}"; then
             git diff --name-only "$BASE" "$HEAD" > "$RUNNER_TEMP/desktop-changed-paths"
@@ -75,7 +72,7 @@ jobs:
           while IFS= read -r path; do
             case "$path" in
               .github/workflows/*|pnpm-lock.yaml|package.json|pnpm-workspace.yaml)
-                installers=true smoke=true development=true stable=true ;;
+                installers=true smoke=true stable=true ;;
               packages/desktop/src/*|packages/desktop/resources/*|packages/desktop/package.json)
                 stable=true ;;
             esac
@@ -84,12 +81,8 @@ jobs:
                 installers=true ;;
             esac
             case "$path" in
-              packages/desktop/src/release.ts|packages/desktop/src/backend-release.json|packages/desktop/src/engine.ts|packages/desktop/src/library.ts|packages/desktop/src/main.ts|packages/desktop/src/preload.ts|packages/e2e/scripts/verify-desktop-install.mjs|packages/e2e/scripts/verify-environment-client.mjs|packages/e2e/scripts/verify-library-restore.mjs|packages/e2e/scripts/restore-command.cjs)
+              packages/desktop/src/release.ts|packages/desktop/src/backend-release.json|packages/desktop/src/home-process.ts|packages/desktop/src/main.ts|packages/desktop/src/preload.ts|packages/e2e/scripts/verify-desktop-install.mjs|packages/e2e/scripts/verify-environment-client.mjs)
                 smoke=true ;;
-            esac
-            case "$path" in
-              packages/desktop/src/environment.ts|packages/desktop/src/environment-tools-release.json|packages/desktop/src/main.ts|packages/desktop/src/preload.ts|packages/desktop/src/projects.ts|packages/desktop/src/types.ts|packages/desktop/src/window-chrome.ts|scripts/frontend-release.json|packages/e2e/scripts/verify-development-project.mjs)
-                development=true ;;
             esac
             case "$path" in
               packages/e2e/scripts/verify-stable-project.mjs|packages/e2e/scripts/forward-mirror.mjs)
@@ -100,14 +93,14 @@ jobs:
                 updater=true ;;
             esac
             case "$path" in
-              .github/workflows/verify-services.yml|packages/desktop/src/*|packages/e2e/scripts/verify-services.mjs|scripts/frontend-release.json)
+              .github/workflows/verify-services.yml|packages/desktop/src/*|packages/e2e/scripts/verify-services.mjs|packages/e2e/scripts/verify-wsl-project.mjs|scripts/frontend-release.json)
                 if [ "$EVENT" = pull_request ]; then services=true; fi ;;
             esac
           done < "$RUNNER_TEMP/desktop-changed-paths"
           if [ "$EVENT" != pull_request ]; then stable=false; fi
           windows=false
-          if $installers || $smoke || $development || $stable || $services; then windows=true; fi
-          for key in installers smoke development stable updater windows services; do
+          if $installers || $smoke || $stable || $services; then windows=true; fi
+          for key in installers smoke stable updater windows services; do
             printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_OUTPUT"
           done
 
@@ -144,13 +137,10 @@ jobs:
       - run: pnpm --filter @dinkster/desktop prepare:tools
       - run: pnpm --filter @dinkster/desktop exec electron-builder --linux --dir --config electron-builder.smoke.mjs --publish never
       - run: node packages/desktop/scripts/verify-installed-tools.mjs packages/desktop/release/linux-unpacked/resources
-      - run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-environment-client.mjs
+      - run: mkdir -p test-results/desktop-smoke && xvfb-run --auto-servernum node packages/e2e/scripts/verify-environment-client.mjs
         env:
           DINKSTER_ELECTRON_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
-      - run: xvfb-run --auto-servernum node packages/e2e/scripts/verify-library-restore.mjs
-        env:
-          DINKSTER_RESTORE_UI: '1'
-          DINKSTER_SMOKE_ARTIFACTS: test-results/desktop-smoke/library-restore
+          DINKSTER_DESKTOP_VERIFY_ROOT: test-results/desktop-smoke/native-ipc
       - run: mkdir -p test-results/desktop-smoke && xvfb-run --auto-servernum node packages/e2e/scripts/verify-desktop-install.mjs
         env:
           DINKSTER_DESKTOP_EXECUTABLE: packages/desktop/release/linux-unpacked/dinkster-desktop-smoke
@@ -162,6 +152,7 @@ jobs:
           path: |
             test-results/desktop-smoke/**/*.png
             test-results/desktop-smoke/**/*.json
+            test-results/desktop-smoke/**/*.log
           retention-days: 7
 
   windows-package:
@@ -269,11 +260,6 @@ jobs:
             $process = Start-Process -FilePath $uninstaller -ArgumentList @('/S', '/currentuser') -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw "Uninstaller exited $($process.ExitCode)" }
           }
-
-  development:
-    needs: [changes, windows-package]
-    if: needs.changes.outputs.development == 'true'
-    uses: ./.github/workflows/development-project.yml
 
   services:
     needs: [changes, windows-package]
